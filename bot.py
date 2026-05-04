@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import base64
+import requests
 from io import BytesIO
 from aiohttp import web
 
@@ -9,12 +10,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
-ADMIN_ID = int(os.environ.get('ADMIN_ID', '0'))
+ADMIN_ID = os.environ.get('ADMIN_ID', '0')
 PORT = int(os.environ.get('PORT', 8080))
 
-def get_bot():
-    import telegram
-    return telegram.Bot(token=BOT_TOKEN)
+TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
 
 async def upload_image(request):
     try:
@@ -27,24 +26,24 @@ async def upload_image(request):
             image_b64 = image_b64.split(',')[1]
         image_bytes = base64.b64decode(image_b64)
         
-        from PIL import Image
-        img = Image.open(BytesIO(image_bytes))
-        output = BytesIO()
-        img.save(output, format='JPEG', quality=85)
-        output.seek(0)
-        
-        bot = get_bot()
-        msg = bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=output,
-            caption=f"Elon №{listing_num}"
+        r = requests.post(
+            f'{TG_API}/sendPhoto',
+            data={'chat_id': ADMIN_ID, 'caption': f'Elon №{listing_num}'},
+            files={'photo': ('photo.jpg', BytesIO(image_bytes), 'image/jpeg')}
         )
-        file_id = msg.photo[-1].file_id
-        file_info = bot.get_file(file_id)
-        url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}'
+        result = r.json()
+        if not result.get('ok'):
+            return web.json_response({'error': result}, status=500)
+        
+        file_id = result['result']['photo'][-1]['file_id']
+        
+        fi = requests.get(f'{TG_API}/getFile?file_id={file_id}').json()
+        file_path = fi['result']['file_path']
+        url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'
+        
         return web.json_response({'success': True, 'file_id': file_id, 'url': url})
     except Exception as e:
-        logger.error(f'Upload error: {e}')
+        logger.error(f'Error: {e}')
         return web.json_response({'error': str(e)}, status=500)
 
 async def get_image_url(request):
@@ -52,15 +51,15 @@ async def get_image_url(request):
         file_id = request.query.get('file_id', '')
         if not file_id:
             return web.json_response({'error': 'No file_id'}, status=400)
-        bot = get_bot()
-        file_info = bot.get_file(file_id)
-        url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}'
+        fi = requests.get(f'{TG_API}/getFile?file_id={file_id}').json()
+        file_path = fi['result']['file_path']
+        url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'
         return web.json_response({'url': url})
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
 async def health(request):
-    return web.json_response({'status': 'ok', 'bot': 'Kraken Mobile'})
+    return web.json_response({'status': 'ok'})
 
 @web.middleware
 async def cors_middleware(request, handler):
