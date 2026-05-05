@@ -4,6 +4,7 @@ import asyncio
 import base64
 from io import BytesIO
 from aiohttp import web
+import requests as req
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -11,15 +12,13 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 PORT = int(os.environ.get('PORT', 8080))
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
-
-import requests as req
+CHANNEL = '@kraken_mobile_shop'
 
 async def upload_image(request):
     try:
         data = await request.json()
         image_b64 = data.get('image', '')
         listing_num = data.get('num', 0)
-        chat_id = data.get('chat_id', '')  # saytdan yuboriladi
         
         if not image_b64:
             return web.json_response({'error': 'No image'}, status=400)
@@ -27,26 +26,13 @@ async def upload_image(request):
             image_b64 = image_b64.split(',')[1]
         image_bytes = base64.b64decode(image_b64)
         
-        # chat_id yo'q bo'lsa - bot ga yubormaymiz, faqat file_id olamiz
-        # Buning uchun biror chat kerak - shuning uchun bot o'z suhbatiga yuboradi
         r = req.post(
             f'{TG_API}/sendPhoto',
-            data={'chat_id': '@Kraken_mobile', 'caption': f'Elon №{listing_num}'},
+            data={'chat_id': CHANNEL, 'caption': f'📸 Elon №{listing_num}'},
             files={'photo': ('photo.jpg', BytesIO(image_bytes), 'image/jpeg')}
         )
         result = r.json()
-        
-        if not result.get('ok'):
-            # Kanal ishlamasa, getUpdates dan birinchi chat_id ni olamiz
-            upd = req.get(f'{TG_API}/getUpdates?limit=1').json()
-            if upd.get('result'):
-                cid = upd['result'][0]['message']['chat']['id']
-                r = req.post(
-                    f'{TG_API}/sendPhoto',
-                    data={'chat_id': cid, 'caption': f'Elon №{listing_num}'},
-                    files={'photo': ('photo.jpg', BytesIO(image_bytes), 'image/jpeg')}
-                )
-                result = r.json()
+        logger.info(f'Upload result: {result}')
         
         if not result.get('ok'):
             return web.json_response({'error': result}, status=500)
