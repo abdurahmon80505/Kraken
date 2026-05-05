@@ -2,7 +2,6 @@ import os
 import logging
 import asyncio
 import base64
-import requests
 from io import BytesIO
 from aiohttp import web
 
@@ -10,34 +9,50 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
-ADMIN_ID = os.environ.get('ADMIN_ID', '0')
 PORT = int(os.environ.get('PORT', 8080))
-
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
+
+import requests as req
 
 async def upload_image(request):
     try:
         data = await request.json()
         image_b64 = data.get('image', '')
         listing_num = data.get('num', 0)
+        chat_id = data.get('chat_id', '')  # saytdan yuboriladi
+        
         if not image_b64:
             return web.json_response({'error': 'No image'}, status=400)
         if ',' in image_b64:
             image_b64 = image_b64.split(',')[1]
         image_bytes = base64.b64decode(image_b64)
         
-        r = requests.post(
+        # chat_id yo'q bo'lsa - bot ga yubormaymiz, faqat file_id olamiz
+        # Buning uchun biror chat kerak - shuning uchun bot o'z suhbatiga yuboradi
+        r = req.post(
             f'{TG_API}/sendPhoto',
-            data={'chat_id': ADMIN_ID, 'caption': f'Elon №{listing_num}'},
+            data={'chat_id': '@Kraken_mobile', 'caption': f'Elon №{listing_num}'},
             files={'photo': ('photo.jpg', BytesIO(image_bytes), 'image/jpeg')}
         )
         result = r.json()
+        
+        if not result.get('ok'):
+            # Kanal ishlamasa, getUpdates dan birinchi chat_id ni olamiz
+            upd = req.get(f'{TG_API}/getUpdates?limit=1').json()
+            if upd.get('result'):
+                cid = upd['result'][0]['message']['chat']['id']
+                r = req.post(
+                    f'{TG_API}/sendPhoto',
+                    data={'chat_id': cid, 'caption': f'Elon №{listing_num}'},
+                    files={'photo': ('photo.jpg', BytesIO(image_bytes), 'image/jpeg')}
+                )
+                result = r.json()
+        
         if not result.get('ok'):
             return web.json_response({'error': result}, status=500)
         
         file_id = result['result']['photo'][-1]['file_id']
-        
-        fi = requests.get(f'{TG_API}/getFile?file_id={file_id}').json()
+        fi = req.get(f'{TG_API}/getFile?file_id={file_id}').json()
         file_path = fi['result']['file_path']
         url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'
         
@@ -51,7 +66,7 @@ async def get_image_url(request):
         file_id = request.query.get('file_id', '')
         if not file_id:
             return web.json_response({'error': 'No file_id'}, status=400)
-        fi = requests.get(f'{TG_API}/getFile?file_id={file_id}').json()
+        fi = req.get(f'{TG_API}/getFile?file_id={file_id}').json()
         file_path = fi['result']['file_path']
         url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'
         return web.json_response({'url': url})
