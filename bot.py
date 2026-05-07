@@ -17,6 +17,7 @@ SAYT_URL = 'https://krakenmobileshop.netlify.app/'  # ← O'zingiznikini yozing
 
 # === /start komandasi ===
 async def handle_start(chat_id):
+    gif_file_id = 'CgACAgIAAxkBAAMhafvyjF0CZyhUTDgohAirQYATyi0AAn6kAALY09lLnY0h9qSQRV47BA'
     text = (
         "*Sotuvdagi barcha smartfonlarimizni ushbu saytimizga joylashtirdik*\n"
         "\n"
@@ -33,9 +34,10 @@ async def handle_start(chat_id):
             }]
         ]
     }
-    req.post(f'{TG_API}/sendMessage', json={
+    req.post(f'{TG_API}/sendAnimation', json={
         'chat_id': chat_id,
-        'text': text,
+        'animation': gif_file_id,
+        'caption': text,
         'parse_mode': 'Markdown',
         'reply_markup': keyboard
     })
@@ -50,13 +52,6 @@ async def webhook(request):
         
         if text == '/start' and chat_id:
             await handle_start(chat_id)
-        
-        if message.get('animation') and chat_id:
-            file_id = message['animation']['file_id']
-            req.post(f'{TG_API}/sendMessage', json={
-                'chat_id': chat_id,
-                'text': f'file_id: {file_id}'
-            })
         
         return web.json_response({'ok': True})
     except Exception as e:
