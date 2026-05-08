@@ -13,23 +13,21 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 PORT = int(os.environ.get('PORT', 8080))
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
 CHANNEL = '@kraken_mobile_shop'
-SAYT_URL = 'https://krakenmobileshop.netlify.app/'  # ← O'zingiznikini yozing
+SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 
 # === /start komandasi ===
 async def handle_start(chat_id):
-    gif_file_id = 'CgACAgIAAxkBAAMhafvyjF0CZyhUTDgohAirQYATyi0AAn6kAALY09lLnY0h9qSQRV47BA'
+    gif_file_id = 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA'
     text = (
-        "*Sotuvdagi barcha smartfonlarimizni ushbu saytimizga joylashtirdik*\n"
+        "🇺🇿 *Barcha aktual smartfonlarimiz saytimizga joylandi*\n"
+        "🇷🇺 *Все актуальные смартфоны уже на нашем сайте*\n"
         "\n"
-        "Bu yerdan o'zingizga kerakli Pixel smartfonini topishingiz mumkin — "
-        "qulay interfeys, aktual e'lonlar va narxlar\n"
-        "\n"
-        "Kirish uchun bosing 👇"
+        "Kirish uchun bosing / Нажмите, чтобы перейти 👇"
     )
     keyboard = {
         "inline_keyboard": [
             [{
-                "text": "🛍 Saytga kirish",
+                "text": "🛍 Saytga kirish / Перейти на сайт",
                 "web_app": {"url": SAYT_URL}
             }]
         ]
@@ -42,23 +40,23 @@ async def handle_start(chat_id):
         'reply_markup': keyboard
     })
 
-# === Telegram dan xabarlar keladi (webhook) ===
+# === Webhook ===
 async def webhook(request):
     try:
         data = await request.json()
         message = data.get('message', {})
         text = message.get('text', '')
         chat_id = message.get('chat', {}).get('id')
-        
+
         if text == '/start' and chat_id:
             await handle_start(chat_id)
-        
+
         return web.json_response({'ok': True})
     except Exception as e:
         logger.error(f'Webhook error: {e}')
         return web.json_response({'ok': False})
 
-# === Rasm yuklash (eski kod) ===
+# === Rasm yuklash ===
 async def upload_image(request):
     try:
         data = await request.json()
@@ -100,6 +98,19 @@ async def get_image_url(request):
 async def health(request):
     return web.json_response({'status': 'ok'})
 
+# === Keep-alive: har 10 daqiqada o'ziga ping ===
+async def keep_alive():
+    render_url = os.environ.get('RENDER_URL', '')
+    if not render_url:
+        return
+    while True:
+        await asyncio.sleep(600)
+        try:
+            req.get(f'{render_url}/health', timeout=10)
+            logger.info('Keep-alive ping sent')
+        except Exception as e:
+            logger.warning(f'Keep-alive failed: {e}')
+
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -111,19 +122,6 @@ async def cors_middleware(request, handler):
     response = await handler(request)
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
-
-async def keep_alive():
-    """Render free plan uxlab qolmasligi uchun har 10 daqiqada o'ziga ping"""
-    render_url = os.environ.get('RENDER_URL', '')
-    if not render_url:
-        return
-    while True:
-        await asyncio.sleep(600)  # 10 daqiqa
-        try:
-            req.get(f'{render_url}/health', timeout=10)
-            logger.info('Keep-alive ping sent')
-        except Exception as e:
-            logger.warning(f'Keep-alive failed: {e}')
 
 async def main():
     app = web.Application(middlewares=[cors_middleware])
@@ -142,7 +140,6 @@ async def main():
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook set: {r.json()}')
 
-    # Keep-alive task ni ishga tushiramiz
     asyncio.create_task(keep_alive())
 
     logger.info(f'Server started on port {PORT}')
