@@ -98,18 +98,22 @@ async def get_image_url(request):
 async def health(request):
     return web.json_response({'status': 'ok'})
 
-# === Keep-alive: har 10 daqiqada o'ziga ping ===
+# === Keep-alive: har 8 daqiqada o'ziga async ping ===
 async def keep_alive():
     render_url = os.environ.get('RENDER_URL', '')
     if not render_url:
+        logger.warning('RENDER_URL not set, keep-alive disabled')
         return
-    while True:
-        await asyncio.sleep(600)
-        try:
-            req.get(f'{render_url}/health', timeout=10)
-            logger.info('Keep-alive ping sent')
-        except Exception as e:
-            logger.warning(f'Keep-alive failed: {e}')
+    # Server to'liq ishga tushishi uchun biroz kutamiz
+    await asyncio.sleep(30)
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(f'{render_url}/health', timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    logger.info(f'Keep-alive ping sent, status: {resp.status}')
+            except Exception as e:
+                logger.warning(f'Keep-alive failed: {e}')
+            await asyncio.sleep(480)  # 8 daqiqa
 
 @web.middleware
 async def cors_middleware(request, handler):
