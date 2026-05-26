@@ -41,12 +41,23 @@ def save_participant(konkurs_id, user_id, username, full_name, phone):
 
 def get_active_konkurs():
     if not SHEET_URL:
+        logger.error('SHEET_URL not set!')
         return None
     try:
-        r = req.get(f"{SHEET_URL}?action=getKonkurs", timeout=10)
-        data = r.json()
+        url = f"{SHEET_URL}?action=getKonkurs&callback=direct"
+        r = req.get(url, timeout=15)
+        text = r.text.strip()
+        logger.info(f'getKonkurs response: {text[:200]}')
+        # callback=direct bo'lsa "direct({...})" formatda keladi
+        if text.startswith('direct(') and text.endswith(')'):
+            import json
+            data = json.loads(text[7:-1])
+        else:
+            data = r.json()
+        logger.info(f'getKonkurs data: {data}')
         if data and data.get('id'):
             return data
+        return None
     except Exception as e:
         logger.error(f'getKonkurs error: {e}')
     return None
