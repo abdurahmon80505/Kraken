@@ -57,16 +57,20 @@ def save_participant(konkurs_id, user_id, username, full_name, phone):
     if not SHEET_URL:
         return False
     try:
+        import urllib.parse
         data = {
-            'konkurs_id': konkurs_id,
+            'konkurs_id': str(konkurs_id),
             'user_id': str(user_id),
             'username': username or '',
             'full_name': full_name or '',
-            'phone': phone or '',
+            'phone': str(phone) or '',
         }
-        url = f"{SHEET_URL}?action=joinKonkurs&callback=direct&data={json.dumps(data)}"
+        encoded = urllib.parse.quote(json.dumps(data, ensure_ascii=False))
+        url = f"{SHEET_URL}?action=joinKonkurs&callback=direct&data={encoded}"
+        logger.info(f'save_participant url: {url[:150]}')
         r = req.get(url, timeout=15)
         text = r.text.strip()
+        logger.info(f'save_participant response: {text[:200]}')
         if text.startswith('direct(') and text.endswith(')'):
             res = json.loads(text[7:-1])
         else:
@@ -174,6 +178,7 @@ async def handle_phone_step(chat_id, phone, user):
             keyboard={"remove_keyboard": True})
         return
 
+    # Xabar har doim yuborilsin - res None bo'lsa ham
     send_message(chat_id,
         f"🎉 *Tabriklaymiz!*\n\n"
         f"Konkursda muvaffaqiyatli ro'yxatdan o'tdingiz!\n\n"
@@ -185,7 +190,8 @@ async def handle_phone_step(chat_id, phone, user):
             "inline_keyboard": [[{
                 "text": "🛍 Saytga qaytish",
                 "web_app": {"url": SAYT_URL}
-            }]]
+            }]],
+            "remove_keyboard": True
         })
 
 # === WEBHOOK ===
