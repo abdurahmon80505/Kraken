@@ -36,12 +36,13 @@ def is_channel_member(user_id):
         r = req.get(f'{TG_API}/getChatMember',
             params={'chat_id': CHANNEL, 'user_id': user_id},
             timeout=8)
-        status = r.json().get('result', {}).get('status', '')
-        logger.info(f'channel check {user_id}: {status}')
+        data = r.json()
+        logger.info(f'getChatMember {user_id}: {data}')
+        status = data.get('result', {}).get('status', '')
         return status in ['member', 'administrator', 'creator']
     except Exception as e:
         logger.error(f'getChatMember error: {e}')
-        return True  # xato bo'lsa bloklamas
+        return False
 
 def get_active_konkurs():
     import time
@@ -120,14 +121,18 @@ async def handle_konkurs_join(chat_id, user={}):
 
     # Kanal a'zoligini tekshirish
     if not is_channel_member(chat_id):
-        send_message(chat_id,
-            "❗ Konkursda qatnashish uchun avval kanalga a'zo bo'ling!\n\n"
-            "👉 @Kraken_mobile\n\n"
-            "A'zo bo'lgach, /konkurs yozing.",
-            keyboard={"inline_keyboard": [[{
-                "text": "📢 Kanalga a'zo bo'lish",
-                "url": "https://t.me/Kraken_mobile"
-            }]]})
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id,
+            'text': (
+                "❗ Konkursda qatnashish uchun kanalga a\'zo bo\'ling!\n"
+                "❗ Для участия подпишитесь на канал!"
+            ),
+            'reply_markup': {"inline_keyboard": [[
+                {"text": "📢 @Kraken_mobile ga a\'zo bo\'lish", "url": "https://t.me/Kraken_mobile"}
+            ], [
+                {"text": "✅ A\'zo bo\'ldim — qatnashish", "callback_data": "check_member"}
+            ]]}
+        }, timeout=10)
         return
 
     # State ga yozib darhol telefon so'raymiz
@@ -201,6 +206,28 @@ async def webhook(request):
         contact = message.get('contact')
 
         if not chat_id:
+            return web.json_response({'ok': True})
+
+        # Callback query (tugma bosilganda)
+        callback_query = data.get('callback_query', {})
+        if callback_query:
+            cb_chat_id = callback_query.get('message', {}).get('chat', {}).get('id')
+            cb_user = callback_query.get('from', {})
+            cb_data = callback_query.get('data', '')
+            cb_id = callback_query.get('id')
+            # Callback ga javob berish (loading ko'rsatmaslik uchun)
+            req.post(f'{TG_API}/answerCallbackQuery', json={'callback_query_id': cb_id}, timeout=5)
+            if cb_data == 'check_member' and cb_chat_id:
+                if is_channel_member(cb_chat_id):
+                    await handle_konkurs_join(cb_chat_id, cb_user)
+                else:
+                    req.post(f'{TG_API}/sendMessage', json={
+                        'chat_id': cb_chat_id,
+                        'text': "❌ Siz hali a\'zo emassiz! Avval kanalga a\'zo bo\'ling.",
+                        'reply_markup': {"inline_keyboard": [[
+                            {"text": "📢 Kanalga a\'zo bo\'lish", "url": "https://t.me/Kraken_mobile"}
+                        ]]}
+                    }, timeout=10)
             return web.json_response({'ok': True})
 
         if text.startswith('/start'):
