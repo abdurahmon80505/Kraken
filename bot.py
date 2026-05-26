@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 PORT = int(os.environ.get('PORT', 8080))
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
-CHANNEL = '@kraken_mobile_shop'
+CHANNEL = '@Kraken_mobile'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 
@@ -119,17 +119,9 @@ async def handle_konkurs_join(chat_id, user={}):
             "😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: @Kraken_mobile")
         return
 
-    # Kanal a'zoligini tekshirish
-    if not is_channel_member(chat_id):
-        send_message(chat_id,
-            f"❗ Konkursda qatnashish uchun avval kanalga a'zo bo'ling!\n\n"
-            f"👉 @Kraken_mobile\n\n"
-            f"A'zo bo'lgach, /konkurs buyrug'ini yuboring.",
-            keyboard={"inline_keyboard": [[{
-                "text": "📢 Kanalga a'zo bo'lish",
-                "url": "https://t.me/Kraken_mobile"
-            }]]})
-        return
+    # Kanal a'zoligini tekshirish — vaqtincha o'chirilgan
+    # if not is_channel_member(chat_id):
+    #     return
 
     # Telegram ismini avtomatik olish
     tg_name = user.get('first_name', '')
