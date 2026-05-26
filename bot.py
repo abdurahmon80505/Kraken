@@ -17,28 +17,23 @@ CHANNEL = '@kraken_mobile_shop'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 
-# === STATE (xotirada) ===
-# {chat_id: {'step': 'name'|'phone', 'name': '...', 'konkurs_id': '...'}}
 user_states = {}
 
-# === SHEETS GA YOZISH ===
-def save_participant(konkurs_id, user_id, username, full_name, phone):
-    if not SHEET_URL:
-        return
-    data = {
-        'konkurs_id': konkurs_id,
-        'user_id': str(user_id),
-        'username': username or '',
-        'full_name': full_name or '',
-        'phone': phone or '',
-    }
+# === KANAL A'ZOLIGINI TEKSHIRISH ===
+def is_channel_member(user_id):
     try:
-        url = f"{SHEET_URL}?action=joinKonkurs&data={json.dumps(data)}"
-        req.get(url, timeout=10)
-        logger.info(f'Participant saved: {full_name}')
+        r = req.get(f'{TG_API}/getChatMember', params={
+            'chat_id': CHANNEL,
+            'user_id': user_id
+        }, timeout=10)
+        data = r.json()
+        status = data.get('result', {}).get('status', '')
+        return status in ['member', 'administrator', 'creator']
     except Exception as e:
-        logger.error(f'Sheet error: {e}')
+        logger.error(f'getChatMember error: {e}')
+        return False
 
+# === SHEETS ===
 def get_active_konkurs():
     if not SHEET_URL:
         logger.error('SHEET_URL not set!')
@@ -47,14 +42,10 @@ def get_active_konkurs():
         url = f"{SHEET_URL}?action=getKonkurs&callback=direct"
         r = req.get(url, timeout=15)
         text = r.text.strip()
-        logger.info(f'getKonkurs response: {text[:200]}')
-        # callback=direct bo'lsa "direct({...})" formatda keladi
         if text.startswith('direct(') and text.endswith(')'):
-            import json
             data = json.loads(text[7:-1])
         else:
             data = r.json()
-        logger.info(f'getKonkurs data: {data}')
         if data and data.get('id'):
             return data
         return None
@@ -62,29 +53,56 @@ def get_active_konkurs():
         logger.error(f'getKonkurs error: {e}')
     return None
 
+def save_participant(konkurs_id, user_id, username, full_name, phone):
+    if not SHEET_URL:
+        return False
+    try:
+        data = {
+            'konkurs_id': konkurs_id,
+            'user_id': str(user_id),
+            'username': username or '',
+            'full_name': full_name or '',
+            'phone': phone or '',
+        }
+        url = f"{SHEET_URL}?action=joinKonkurs&callback=direct&data={json.dumps(data)}"
+        r = req.get(url, timeout=15)
+        text = r.text.strip()
+        if text.startswith('direct(') and text.endswith(')'):
+            res = json.loads(text[7:-1])
+        else:
+            res = r.json()
+        logger.info(f'save_participant result: {res}')
+        return res
+    except Exception as e:
+        logger.error(f'save_participant error: {e}')
+        return False
+
+def send_message(chat_id, text, keyboard=None, parse_mode='Markdown'):
+    payload = {
+        'chat_id': chat_id,
+        'text': text,
+        'parse_mode': parse_mode
+    }
+    if keyboard:
+        payload['reply_markup'] = keyboard
+    req.post(f'{TG_API}/sendMessage', json=payload)
+
 # === /start ===
-async def handle_start(chat_id, deep_link=''):
+async def handle_start(chat_id, deep_link='', user={}):
+    if deep_link == 'konkurs':
+        await handle_konkurs_join(chat_id, user)
+        return
+
     gif_file_id = 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA'
     text = (
         "🇺🇿 *Barcha aktual smartfonlarimiz saytimizga joylandi*\n"
-        "🇷🇺 *Все актуальные смартфоны уже на нашем сайте*\n"
-        "\n"
+        "🇷🇺 *Все актуальные смартфоны уже на нашем сайте*\n\n"
         "Kirish uchun bosing / Нажмите, чтобы перейти 👇"
     )
-    keyboard = {
-        "inline_keyboard": [
-            [{
-                "text": "🛍 Saytga kirish / Перейти на сайт",
-                "web_app": {"url": SAYT_URL}
-            }]
-        ]
-    }
-
-    # Agar konkurs deep link bo'lsa
-    if deep_link == 'konkurs':
-        await handle_konkurs_join(chat_id)
-        return
-
+    keyboard = {"inline_keyboard": [[{
+        "text": "🛍 Saytga kirish / Перейти на сайт",
+        "web_app": {"url": SAYT_URL}
+    }]]}
     req.post(f'{TG_API}/sendAnimation', json={
         'chat_id': chat_id,
         'animation': gif_file_id,
@@ -93,61 +111,61 @@ async def handle_start(chat_id, deep_link=''):
         'reply_markup': keyboard
     })
 
-# === KONKURS QATNASHISH ===
-async def handle_konkurs_join(chat_id):
+# === KONKURS ===
+async def handle_konkurs_join(chat_id, user={}):
     konkurs = get_active_konkurs()
     if not konkurs:
-        req.post(f'{TG_API}/sendMessage', json={
-            'chat_id': chat_id,
-            'text': '😕 Hozirda aktiv konkurs yo\'q.\n\nKanalimizni kuzating: @Kraken_mobile'
-        })
+        send_message(chat_id,
+            "😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: @Kraken_mobile")
         return
 
+    # Kanal a'zoligini tekshirish
+    if not is_channel_member(chat_id):
+        send_message(chat_id,
+            f"❗ Konkursda qatnashish uchun avval kanalga a'zo bo'ling!\n\n"
+            f"👉 @Kraken_mobile\n\n"
+            f"A'zo bo'lgach, /konkurs buyrug'ini yuboring.",
+            keyboard={"inline_keyboard": [[{
+                "text": "📢 Kanalga a'zo bo'lish",
+                "url": "https://t.me/Kraken_mobile"
+            }]]})
+        return
+
+    # Telegram ismini avtomatik olish
+    tg_name = user.get('first_name', '')
+    if user.get('last_name'):
+        tg_name += ' ' + user['last_name']
+
     user_states[chat_id] = {
-        'step': 'name',
+        'step': 'phone',
         'konkurs_id': konkurs['id'],
-        'prize': konkurs.get('prize', '')
+        'prize': konkurs.get('prize', ''),
+        'name': tg_name,
+        'user_id': user.get('id', chat_id),
+        'username': user.get('username', '')
     }
 
-    req.post(f'{TG_API}/sendMessage', json={
-        'chat_id': chat_id,
-        'text': (
-            f"🎁 *{konkurs.get('prize', 'Sovrin')}* konkursida qatnashish uchun:\n\n"
-            f"📝 Ismingizni yozing:"
-        ),
-        'parse_mode': 'Markdown',
-        'reply_markup': {'remove_keyboard': True}
-    })
-
-async def handle_name_step(chat_id, name, user):
-    state = user_states.get(chat_id, {})
-    state['name'] = name
-    state['step'] = 'phone'
-    user_states[chat_id] = state
-
-    req.post(f'{TG_API}/sendMessage', json={
-        'chat_id': chat_id,
-        'text': f"👋 Salom, *{name}*!\n\n📱 Telefon raqamingizni ulashing:",
-        'parse_mode': 'Markdown',
-        'reply_markup': {
-            'keyboard': [[{
-                'text': '📱 Raqamni ulashish',
-                'request_contact': True
-            }]],
-            'resize_keyboard': True,
-            'one_time_keyboard': True
-        }
-    })
+    send_message(chat_id,
+        f"🎁 *{konkurs.get('prize', 'Sovrin')}* konkursida qatnashish!\n\n"
+        f"👋 Salom, *{tg_name}*!\n\n"
+        f"📱 Telefon raqamingizni ulashing:",
+        keyboard={
+            "keyboard": [[{"text": "📱 Raqamni ulashish", "request_contact": True}]],
+            "resize_keyboard": True,
+            "one_time_keyboard": True
+        })
 
 async def handle_phone_step(chat_id, phone, user):
     state = user_states.get(chat_id, {})
+    if not state:
+        return
+
     konkurs_id = state.get('konkurs_id', '')
     name = state.get('name', '')
-    username = user.get('username', '')
-    user_id = user.get('id', chat_id)
+    username = state.get('username', '') or user.get('username', '')
+    user_id = state.get('user_id', chat_id)
 
-    # Sheetga yozish
-    save_participant(
+    res = save_participant(
         konkurs_id=konkurs_id,
         user_id=user_id,
         username=username,
@@ -155,28 +173,28 @@ async def handle_phone_step(chat_id, phone, user):
         phone=phone
     )
 
-    # State tozalash
     if chat_id in user_states:
         del user_states[chat_id]
 
-    req.post(f'{TG_API}/sendMessage', json={
-        'chat_id': chat_id,
-        'text': (
-            f"🎉 *Tabriklaymiz!*\n\n"
-            f"Siz konkursda muvaffaqiyatli ro'yxatdan o'tdingiz!\n\n"
-            f"👤 Ism: {name}\n"
-            f"📱 Telefon: {phone}\n\n"
-            f"🍀 G'olib e'lon qilinganda kanalimizda xabar beramiz!\n"
-            f"📢 @Kraken_mobile"
-        ),
-        'parse_mode': 'Markdown',
-        'reply_markup': {
-            'inline_keyboard': [[{
-                'text': '🛍 Saytga qaytish',
-                'web_app': {'url': SAYT_URL}
+    if res and res.get('msg') == 'already':
+        send_message(chat_id,
+            "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n\n🍀 Omad tilaymiz!",
+            keyboard={"remove_keyboard": True})
+        return
+
+    send_message(chat_id,
+        f"🎉 *Tabriklaymiz!*\n\n"
+        f"Konkursda muvaffaqiyatli ro'yxatdan o'tdingiz!\n\n"
+        f"👤 Ism: {name}\n"
+        f"📱 Telefon: {phone}\n\n"
+        f"🏆 G'olib e'lon qilinganda kanalimizda xabar beramiz!\n"
+        f"📢 @Kraken_mobile",
+        keyboard={
+            "inline_keyboard": [[{
+                "text": "🛍 Saytga qaytish",
+                "web_app": {"url": SAYT_URL}
             }]]
-        }
-    })
+        })
 
 # === WEBHOOK ===
 async def webhook(request):
@@ -191,19 +209,16 @@ async def webhook(request):
         if not chat_id:
             return web.json_response({'ok': True})
 
-        # /start
         if text.startswith('/start'):
             parts = text.split(' ')
             deep_link = parts[1] if len(parts) > 1 else ''
-            await handle_start(chat_id, deep_link)
+            await handle_start(chat_id, deep_link, user)
             return web.json_response({'ok': True})
 
-        # /konkurs
         if text == '/konkurs':
-            await handle_konkurs_join(chat_id)
+            await handle_konkurs_join(chat_id, user)
             return web.json_response({'ok': True})
 
-        # Telefon raqami (contact)
         if contact:
             phone = contact.get('phone_number', '')
             state = user_states.get(chat_id, {})
@@ -211,21 +226,16 @@ async def webhook(request):
                 await handle_phone_step(chat_id, phone, user)
             return web.json_response({'ok': True})
 
-        # State bo'yicha javob
         state = user_states.get(chat_id)
-        if state:
-            if state.get('step') == 'name' and text:
-                await handle_name_step(chat_id, text, user)
-            elif state.get('step') == 'phone' and text:
-                # Qo'lda yozilgan raqam
-                await handle_phone_step(chat_id, text, user)
+        if state and state.get('step') == 'phone' and text:
+            await handle_phone_step(chat_id, text, user)
 
         return web.json_response({'ok': True})
     except Exception as e:
         logger.error(f'Webhook error: {e}')
         return web.json_response({'ok': False})
 
-# === RASM YUKLASH (o'zgarishsiz) ===
+# === RASM YUKLASH ===
 async def upload_image(request):
     try:
         data = await request.json()
@@ -302,12 +312,10 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-
     render_url = os.environ.get('RENDER_URL', '')
     if render_url:
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook set: {r.json()}')
-
     asyncio.create_task(keep_alive())
     logger.info(f'Server started on port {PORT}')
     while True:
