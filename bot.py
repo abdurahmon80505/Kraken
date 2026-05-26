@@ -31,6 +31,18 @@ def send_message(chat_id, text, keyboard=None):
     except Exception as e:
         logger.error(f'sendMessage error: {e}')
 
+def is_channel_member(user_id):
+    try:
+        r = req.get(f'{TG_API}/getChatMember',
+            params={'chat_id': CHANNEL, 'user_id': user_id},
+            timeout=8)
+        status = r.json().get('result', {}).get('status', '')
+        logger.info(f'channel check {user_id}: {status}')
+        return status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.error(f'getChatMember error: {e}')
+        return True  # xato bo'lsa bloklamas
+
 def get_active_konkurs():
     import time
     now = time.time()
@@ -106,6 +118,18 @@ async def handle_konkurs_join(chat_id, user={}):
         send_message(chat_id, "😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: @Kraken_mobile")
         return
 
+    # Kanal a'zoligini tekshirish
+    if not is_channel_member(chat_id):
+        send_message(chat_id,
+            "❗ Konkursda qatnashish uchun avval kanalga a'zo bo'ling!\n\n"
+            "👉 @Kraken_mobile\n\n"
+            "A'zo bo'lgach, /konkurs yozing.",
+            keyboard={"inline_keyboard": [[{
+                "text": "📢 Kanalga a'zo bo'lish",
+                "url": "https://t.me/Kraken_mobile"
+            }]]})
+        return
+
     # State ga yozib darhol telefon so'raymiz
     user_states[chat_id] = {
         'step': 'phone',
@@ -136,10 +160,7 @@ async def handle_phone(chat_id, phone, user):
     konkurs_id = state.get('konkurs_id', '')
     prize = state.get('prize', '')
 
-    # Sheets ga yozish
     res = save_participant(konkurs_id, user_id, username, full_name, phone)
-
-    # Cache ni tozalash — yangi qatnashuvchi qo'shildi
     _konkurs_cache['time'] = 0
 
     if res and res.get('msg') == 'already':
@@ -148,25 +169,28 @@ async def handle_phone(chat_id, phone, user):
             keyboard={"remove_keyboard": True})
         return
 
+    # 1. Tabriklash + klaviatura olib tashlash
     send_message(chat_id,
-        f"🎉 *Tabriklaymiz!*\n\n"
-        f"*{prize}* konkursida ro'yxatdan o'tdingiz!\n\n"
-        f"🏆 G'olib e'lon qilinganda kanalimizda xabar beramiz!\n"
-        f"📢 @Kraken_mobile",
-        keyboard={
-            "inline_keyboard": [[{
-                "text": "🛍 Saytga qaytish",
-                "web_app": {"url": SAYT_URL}
-            }]]
-        })
-    # Klaviaturani olib tashlash
-    req.post(f'{TG_API}/sendMessage', json={
-        'chat_id': chat_id,
-        'text': '✅',
-        'reply_markup': {"remove_keyboard": True}
-    }, timeout=5)
+        f"🎉 *{prize}* konkursiga muvaffaqiyatli qatnashdingiz!",
+        keyboard={"remove_keyboard": True})
 
-# === WEBHOOK ===
+    # 2. Reklama + mini app
+    req.post(f'{TG_API}/sendAnimation', json={
+        'chat_id': chat_id,
+        'animation': 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA',
+        'caption': (
+            "🇺🇿 *Konkurs tugagunicha smartfonlarimizni ko'rishingiz mumkin!*\n"
+            "🇷🇺 *Пока идёт конкурс — смотрите наши смартфоны!*\n\n"
+            "📱 Barcha aktual modellar saytimizda 👇"
+        ),
+        'parse_mode': 'Markdown',
+        'reply_markup': {"inline_keyboard": [[{
+            "text": "🛍 Saytga kirish / Перейти на сайт",
+            "web_app": {"url": SAYT_URL}
+        }]]}
+    }, timeout=10)
+
+
 async def webhook(request):
     try:
         data = await request.json()
