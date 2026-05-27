@@ -19,7 +19,6 @@ SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 ADMIN_USERNAME = 'Krakens_admin'
 
-# Cache
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
 
@@ -61,7 +60,7 @@ def get_konkurs():
         logger.error(f'get_konkurs: {e}')
     return None
 
-def save_participant(konkurs_id, user_id, username, full_name, phone):
+def save_participant(konkurs_id, user_id, username, phone):
     if not SHEET_URL:
         return None
     try:
@@ -69,7 +68,6 @@ def save_participant(konkurs_id, user_id, username, full_name, phone):
             'konkurs_id': str(konkurs_id),
             'user_id': str(user_id),
             'username': username or '',
-            'full_name': full_name or '',
             'phone': str(phone),
         }, ensure_ascii=False)
         r = req.get(
@@ -81,18 +79,19 @@ def save_participant(konkurs_id, user_id, username, full_name, phone):
         logger.error(f'save_participant: {e}')
         return None
 
-def end_konkurs(konkurs_id):
+def get_participants(konkurs_id):
     if not SHEET_URL:
-        return None
+        return []
     try:
         r = req.get(
-            f"{SHEET_URL}?action=endKonkurs&callback=d&id={urllib.parse.quote(str(konkurs_id))}",
+            f"{SHEET_URL}?action=getParticipants&callback=d&id={urllib.parse.quote(str(konkurs_id))}",
             timeout=15)
         text = r.text.strip()
-        return json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        return data.get('participants', [])
     except Exception as e:
-        logger.error(f'end_konkurs: {e}')
-        return None
+        logger.error(f'get_participants: {e}')
+        return []
 
 def not_member_msg(chat_id):
     send_msg(chat_id,
@@ -119,12 +118,11 @@ async def start_konkurs_flow(chat_id, user):
         'prize': k.get('prize', ''),
         'user_id': user.get('id', chat_id),
         'username': user.get('username', ''),
-        'full_name': ((user.get('first_name') or '') + ' ' + (user.get('last_name') or '')).strip()
     }
 
     send_msg(chat_id,
         f"🎁 *{k.get('prize','Sovrin')}* konkursida qatnashish uchun\n"
-        f"📱 Telefon raqamingizni ulashing:",
+        f"📱 Telefon raqamingizni ulashing 👇",
         keyboard={
             "keyboard": [[{"text": "📱 Raqamni ulashish", "request_contact": True}]],
             "resize_keyboard": True, "one_time_keyboard": True
@@ -135,34 +133,36 @@ async def handle_phone(chat_id, phone, user):
     if not state:
         return
 
-    # Kanal a'zoligini yana tekshirish
     if not is_member(chat_id):
         not_member_msg(chat_id)
         return
 
-    full_name = state.get('full_name') or user.get('first_name', '')
     username = state.get('username') or user.get('username', '')
     user_id = state.get('user_id', chat_id)
     konkurs_id = state.get('konkurs_id', '')
     prize = state.get('prize', '')
 
-    res = save_participant(konkurs_id, user_id, username, full_name, phone)
-    _konkurs_cache['time'] = 0  # cache yangilash
+    res = save_participant(konkurs_id, user_id, username, phone)
+    _konkurs_cache['time'] = 0
 
     if res and res.get('msg') == 'already':
         send_msg(chat_id,
-            "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n\n🍀 Omad tilaymiz!",
+            "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n\n🎯 Omad bo'lsin!",
             keyboard={"remove_keyboard": True})
         return
 
-    # 1. Tabriklash
+    # 1. Tabriklash xabari - klaviatura olib tashlash
     send_msg(chat_id,
-        f"🎉 *{prize}* konkursiga muvaffaqiyatli qatnashdingiz!\n\n"
+        f"🎉 *Tabriklaymiz!*\n\n"
+        f"🇺🇿 *{prize}* konkursida muvaffaqiyatli qatnashdingiz!\n"
+        f"🇷🇺 Вы успешно участвуете в розыгрыше *{prize}*!\n\n"
         f"🏆 G'olib e'lon qilinganda kanalimizda xabar beramiz!\n"
+        f"🏆 Победитель будет объявлен в нашем канале!\n"
         f"📢 @Kraken_mobile",
         keyboard={"remove_keyboard": True})
 
-    # 2. Reklama + mini app
+    # 2. 2 soniyadan keyin reklama
+    await asyncio.sleep(2)
     req.post(f'{TG_API}/sendAnimation', json={
         'chat_id': chat_id,
         'animation': 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA',
@@ -178,52 +178,63 @@ async def handle_phone(chat_id, phone, user):
         }]]}
     }, timeout=10)
 
-def notify_participants(konkurs_id, winner_user_id, winner_name, prize):
-    """Barcha qatnashuvchilarga xabar yuborish"""
-    if not SHEET_URL:
+def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
+    """Barcha qatnashuvchilarga xabar - g'olib va yutqazganlar"""
+    participants = get_participants(konkurs_id)
+    if not participants:
+        logger.info('No participants to notify')
         return
-    try:
-        r = req.get(f"{SHEET_URL}?action=getParticipants&callback=d&id={urllib.parse.quote(str(konkurs_id))}", timeout=15)
-        text = r.text.strip()
-        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
-        participants = data.get('participants', [])
 
-        for p in participants:
-            uid = p.get('user_id', '')
-            if not uid:
-                continue
-            try:
-                if str(uid) == str(winner_user_id):
-                    # G'olibga maxsus xabar
-                    req.post(f'{TG_API}/sendMessage', json={
-                        'chat_id': uid,
-                        'text': (
-                            f"🏆 *Tabriklaymiz!*\n\n"
-                            f"Siz *{prize}* konkursida g'olib bo'ldingiz! 🎉\n\n"
-                            f"Sovg'angizni olish uchun adminga yozing 👇"
-                        ),
-                        'parse_mode': 'Markdown',
-                        'reply_markup': {"inline_keyboard": [[{
-                            "text": "📩 Adminga yozish",
-                            "url": f"https://t.me/{ADMIN_USERNAME}"
-                        }]]}
-                    }, timeout=5)
-                else:
-                    # Boshqa qatnashuvchilarga
-                    req.post(f'{TG_API}/sendMessage', json={
-                        'chat_id': uid,
-                        'text': (
-                            f"🎁 *{prize}* konkursi yakunlandi!\n\n"
-                            f"🏆 G'olib: *{winner_name}*\n\n"
-                            f"Har oy konkurslar o'tkaziladi — kanalimizni kuzating!\n"
-                            f"📢 @Kraken_mobile"
-                        ),
-                        'parse_mode': 'Markdown'
-                    }, timeout=5)
-            except:
-                pass
-    except Exception as e:
-        logger.error(f'notify_participants: {e}')
+    for p in participants:
+        uid = str(p.get('user_id', ''))
+        if not uid:
+            continue
+        try:
+            if uid == str(winner_user_id):
+                # G'olibga maxsus xabar
+                req.post(f'{TG_API}/sendMessage', json={
+                    'chat_id': uid,
+                    'text': (
+                        f"🏆 *Tabriklaymiz! Siz g'oldingiz!*\n\n"
+                        f"🇺🇿 *{prize}* konkursida g'olib bo'ldingiz! 🎊\n"
+                        f"🇷🇺 Вы выиграли в розыгрыше *{prize}*! 🎊\n\n"
+                        f"🎁 Sovg'angizni olish uchun adminga yozing:\n"
+                        f"🎁 Для получения приза напишите администратору:"
+                    ),
+                    'parse_mode': 'Markdown',
+                    'reply_markup': {"inline_keyboard": [[{
+                        "text": "📩 Adminga yozish / Написать админу",
+                        "url": f"https://t.me/{ADMIN_USERNAME}"
+                    }]]}
+                }, timeout=5)
+            else:
+                # Yutqazganlarga xabar
+                winner_display = f"@{winner_username}" if winner_username else "anonim"
+                req.post(f'{TG_API}/sendMessage', json={
+                    'chat_id': uid,
+                    'text': (
+                        f"🎁 *{prize}* konkursi yakunlandi!\n\n"
+                        f"🇺🇿 Afsuski, siz yutmadingiz 😔\n"
+                        f"🏆 G'olib: *{winner_display}*\n\n"
+                        f"💳 Lekin siz ham yutdingiz!\n"
+                        f"Kanalimizning istalgan smartfoniga *5$lik vauchеr* oldingiz!\n"
+                        f"Xohlagan smartfoningizni sotib olib ishlatavering 📱\n\n"
+                        f"🇷🇺 К сожалению, вы не выиграли 😔\n"
+                        f"🏆 Победитель: *{winner_display}*\n\n"
+                        f"💳 Но вы тоже в выигрыше!\n"
+                        f"Вы получили *ваучер на $5* на любой смартфон нашего канала!\n\n"
+                        f"📅 Каждый месяц проводим новые розыгрыши — не пропустите!\n"
+                        f"📅 Har oy yangi konkurslar — o'tkazib yubormang!\n"
+                        f"📢 @Kraken_mobile"
+                    ),
+                    'parse_mode': 'Markdown',
+                    'reply_markup': {"inline_keyboard": [[{
+                        "text": "🛍 Smartfonlarni ko'rish / Смотреть смартфоны",
+                        "web_app": {"url": SAYT_URL}
+                    }]]}
+                }, timeout=5)
+        except Exception as e:
+            logger.error(f'notify {uid}: {e}')
 
 async def webhook(request):
     try:
@@ -234,14 +245,14 @@ async def webhook(request):
         user = message.get('from', {})
         contact = message.get('contact')
 
-        # Callback query
         cq = data.get('callback_query', {})
         if cq:
             cq_chat = cq.get('message', {}).get('chat', {}).get('id')
             cq_user = cq.get('from', {})
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
-            req.post(f'{TG_API}/answerCallbackQuery', json={'callback_query_id': cq_id}, timeout=5)
+            req.post(f'{TG_API}/answerCallbackQuery',
+                json={'callback_query_id': cq_id}, timeout=5)
             if cq_data == 'check_member' and cq_chat:
                 if is_member(cq_chat):
                     await start_konkurs_flow(cq_chat, cq_user)
@@ -282,8 +293,7 @@ async def webhook(request):
             await start_konkurs_flow(chat_id, user)
 
         elif contact and chat_id in user_states:
-            phone = contact.get('phone_number', '')
-            await handle_phone(chat_id, phone, user)
+            await handle_phone(chat_id, contact.get('phone_number', ''), user)
 
         elif text and chat_id in user_states:
             await handle_phone(chat_id, text, user)
@@ -292,6 +302,22 @@ async def webhook(request):
     except Exception as e:
         logger.error(f'Webhook: {e}')
         return web.json_response({'ok': False})
+
+async def notify_endpoint(request):
+    try:
+        data = await request.json()
+        konkurs_id = data.get('konkurs_id', '')
+        winner_user_id = data.get('winner_user_id', '')
+        winner_username = data.get('winner_username', '')
+        prize = data.get('prize', '')
+        if konkurs_id and winner_user_id:
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(
+                None, notify_participants,
+                konkurs_id, winner_user_id, winner_username, prize)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        return web.json_response({'error': str(e)}, status=500)
 
 async def upload_image(request):
     try:
@@ -325,21 +351,6 @@ async def get_image_url(request):
         fi = req.get(f'{TG_API}/getFile?file_id={file_id}').json()
         file_path = fi['result']['file_path']
         return web.json_response({'url': f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'})
-    except Exception as e:
-        return web.json_response({'error': str(e)}, status=500)
-
-async def notify_endpoint(request):
-    """Admin g'olibni aniqlaganda barcha qatnashuvchilarga xabar"""
-    try:
-        data = await request.json()
-        konkurs_id = data.get('konkurs_id', '')
-        winner_user_id = data.get('winner_user_id', '')
-        winner_name = data.get('winner_name', '')
-        prize = data.get('prize', '')
-        if konkurs_id and winner_user_id:
-            asyncio.create_task(asyncio.get_event_loop().run_in_executor(
-                None, notify_participants, konkurs_id, winner_user_id, winner_name, prize))
-        return web.json_response({'ok': True})
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
