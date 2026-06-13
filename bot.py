@@ -22,6 +22,25 @@ ADMIN_USERNAME = 'Krakens_admin'
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
 
+# ── ELON YUBORISH ─────────────────────────────────────────
+ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
+
+# Premium emoji ID'lari (base emoji -> custom_emoji_id)
+PREMIUM = {
+    'google': ('📱', '5330169502279690330'),   # G logo (sarlavha)
+    'k':      ('💡', '5330189963503887513'),   # K logo (kanal/bot)
+    'money':  ('💰', '5375296873982604963'),   # pul qopcha (narx)
+}
+
+# Bot oxirgi yuborgan elon raqami (RAM'da; restartda Sheets'dan tiklanadi)
+_last_sent = {'num': 0}
+
+CONDITION_TXT = {
+    'new':     ("Yangi (Karobka)", "Новый (Коробка)"),
+    'openbox': ("Openbox (Ochilgan)", "Openbox (Вскрыт)"),
+    'used':    ("Ishlatilgan", "Б.у"),
+}
+
 def send_msg(chat_id, text, keyboard=None):
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
     if keyboard:
@@ -30,6 +49,168 @@ def send_msg(chat_id, text, keyboard=None):
         req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
     except Exception as e:
         logger.error(f'sendMessage: {e}')
+
+def get_products():
+    """Sheets'dan barcha elon va modellarni oladi (action'siz so'rov)."""
+    if not SHEET_URL:
+        return None, None
+    try:
+        r = req.get(f"{SHEET_URL}?callback=d", timeout=15)
+        text = r.text.strip()
+        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        return data.get('listings', []), data.get('models', [])
+    except Exception as e:
+        logger.error(f'get_products: {e}')
+        return None, None
+
+
+def build_elon(item, models_by_id):
+    """Bitta elon uchun (matn, entities) qaytaradi. entities premium emoji uchun."""
+    num = int(float(item.get('num', 0) or 0))
+    name_uz = item.get('nameUz', '') or item.get('name', '')
+    name_ru = item.get('nameRu', '') or name_uz
+    storage = item.get('storage', '')
+    price = str(item.get('price', '')).replace('.0', '')
+    old = str(item.get('oldPrice', '')).replace('.0', '')
+    cond = item.get('condition', 'new')
+    cycle = str(item.get('cycle', '') or '').replace('.0', '')
+    color_uz = item.get('color', '')
+    color_ru = item.get('colorRu', '') or color_uz
+    spec_id = item.get('specId', '')
+
+    model = models_by_id.get(spec_id, {})
+    spec_uz = model.get('specUz', '') or ''
+    spec_ru = model.get('specRu', '') or ''
+
+    cond_uz, cond_ru = CONDITION_TXT.get(cond, (cond, cond))
+    # cycle bo'lsa qo'shimcha (sikllar / circle)
+    extra_uz = f" • {cycle} sikl" if cycle else ""
+    extra_ru = f" • {cycle} цикл" if cycle else ""
+
+    # Sarlavha: G logo + nom + xotira
+    g_base = PREMIUM['google'][0]
+    k_base = PREMIUM['k'][0]
+    m_base = PREMIUM['money'][0]
+
+    # Matnni qism-qism yig'amiz, premium pozitsiyalarini belgilaymiz
+    # Har bir premium emoji uchun (key, matndagi indeks) saqlaymiz
+    parts = []
+    prem = []  # (custom_emoji_id, char_offset_in_text, base_emoji)
+
+    def add(s):
+        parts.append(s)
+
+    def add_prem(key):
+        base, eid = PREMIUM[key]
+        prem.append((eid, _utf16len(''.join(parts)), base))
+        parts.append(base)
+
+    # ── Sarlavha ──
+    add_prem('google'); add(f" {name_uz} ({storage})\n")
+    add(f"#phone #{num}\n\n")
+
+    # ── Texnik xarakteristika (quote) ──
+    add("Texnik xarakteristika/Технические характеристики:\n")
+    if spec_uz:
+        add(spec_uz + "\n\n")
+    if spec_ru:
+        add(spec_ru + "\n")
+    add("\n")
+
+    # ── Holati ──
+    add(f"🔸 • Holati: {cond_uz}{extra_uz}\n")
+    add(f"🔸 • Состояние: {cond_ru}{extra_ru}\n\n")
+
+    # ── Narx ──
+    add_prem('money'); add(" Цена/Narxi: ")
+    if old and old != price:
+        add(f"{old}$ {price}$\n\n")
+    else:
+        add(f"{price}$\n\n")
+
+    # ── Kontaktlar ──
+    add("📩 @Krakens_admin\n")
+    add("📞 +998997638595\n\n")
+    add_prem('k'); add(" @Kraken_Mobile (Kanal/Канал)\n")
+    add_prem('k'); add(" @Kraken_Mobile_shop_bot")
+
+    text = ''.join(parts)
+    entities = [{
+        'type': 'custom_emoji',
+        'offset': off,
+        'length': _utf16len(base),
+        'custom_emoji_id': eid,
+    } for (eid, off, base) in prem]
+    return num, text, entities
+
+
+def _utf16len(s):
+    """Telegram entities UTF-16 birlikda hisoblaydi."""
+    return len(s.encode('utf-16-le')) // 2
+
+
+def send_elon(chat_id, text, entities):
+    payload = {'chat_id': chat_id, 'text': text}
+    if entities:
+        payload['entities'] = entities
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json=payload, timeout=10)
+        return r.json()
+    except Exception as e:
+        logger.error(f'send_elon: {e}')
+        return None
+
+
+async def send_new_elons(chat_id, text):
+    parts = text.split()
+    listings, models = get_products()
+    if listings is None:
+        send_msg(chat_id, "❌ Sheets'dan ma'lumot olib bo'lmadi. SHEET_URL'ni tekshiring.")
+        return
+
+    models_by_id = {m.get('id'): m for m in (models or [])}
+
+    # /elon 199  yoki  /elon 199 200 205  -> aniq raqamlar
+    nums = [int(p) for p in parts[1:] if p.isdigit()]
+
+    if nums:
+        targets = [it for it in listings if int(float(it.get('num', 0) or 0)) in nums]
+        targets.sort(key=lambda x: int(float(x.get('num', 0) or 0)))
+    else:
+        # /yubor  ->  oxirgi yuborilgandan keyingi yangilar
+        last = _last_sent['num']
+        targets = [it for it in listings
+                   if int(float(it.get('num', 0) or 0)) > last]
+        targets.sort(key=lambda x: int(float(x.get('num', 0) or 0)))
+
+    if not targets:
+        send_msg(chat_id,
+            f"ℹ️ Yangi elon yo'q.\n"
+            f"Oxirgi yuborilgan: #{_last_sent['num']}\n\n"
+            f"Aniq raqam uchun: `/elon 199` yoki `/elon 199 200`")
+        return
+
+    send_msg(chat_id, f"📤 {len(targets)} ta elon yuborilmoqda...")
+
+    sent = 0
+    max_num = _last_sent['num']
+    for it in targets:
+        num, etext, entities = build_elon(it, models_by_id)
+        res = send_elon(chat_id, etext, entities)
+        if res and res.get('ok'):
+            sent += 1
+            if num > max_num:
+                max_num = num
+        await asyncio.sleep(0.4)  # flood limit'dan saqlanish
+
+    if not nums:
+        _last_sent['num'] = max_num
+
+    send_msg(chat_id,
+        f"✅ {sent} ta elon tayyor!\n"
+        f"📌 Har birini *Forward* qilib rasmga qo'shing va kanalga joylang.\n"
+        f"📊 Oxirgi: #{max_num}")
+
 
 def is_member(user_id):
     try:
@@ -268,6 +449,12 @@ async def webhook(request):
         if not chat_id:
             return web.json_response({'ok': True})
 
+        if text.startswith('/yubor') or text.startswith('/elon'):
+            if chat_id != ADMIN_ID:
+                return web.json_response({'ok': True})
+            await send_new_elons(chat_id, text)
+            return web.json_response({'ok': True})
+
         if text.startswith('/start'):
             parts = text.split(' ', 1)
             deep = parts[1].strip() if len(parts) > 1 else ''
@@ -397,6 +584,14 @@ async def main():
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook: {r.json()}')
     asyncio.create_task(keep_alive())
+    # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
+    try:
+        listings, _ = get_products()
+        if listings:
+            _last_sent['num'] = max(int(float(it.get('num', 0) or 0)) for it in listings)
+            logger.info(f"Last elon num: {_last_sent['num']}")
+    except Exception as e:
+        logger.error(f'init last_sent: {e}')
     logger.info(f'Started on port {PORT}')
     while True:
         await asyncio.sleep(3600)
