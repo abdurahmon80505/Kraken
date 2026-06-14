@@ -41,6 +41,18 @@ CONDITION_TXT = {
     'used':    ("Ishlatilgan", "Б.у"),
 }
 
+
+def holati_matni(cond, cycle):
+    """condition + cycle bo'yicha (uz_qator, ru_qator, emoji) qaytaradi."""
+    sikl_uz = f" ({cycle}tsikl)" if cycle else ""
+    sikl_ru = f" ({cycle}цикл)" if cycle else ""
+    if cond == 'new':
+        return ("Yangi ochilmagan!", "Новое запечатанное!", "📦")
+    if cond == 'openbox':
+        return (f"Yengi Openbox!{sikl_uz}", f"Новое Опенбокс!{sikl_ru}", "📦")
+    # used
+    return (f"Ishlatilgan{sikl_uz}", f"Б.у{sikl_ru}", "🔸")
+
 def send_msg(chat_id, text, keyboard=None):
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
     if keyboard:
@@ -82,10 +94,7 @@ def build_elon(item, models_by_id):
     spec_uz = model.get('specUz', '') or ''
     spec_ru = model.get('specRu', '') or ''
 
-    cond_uz, cond_ru = CONDITION_TXT.get(cond, (cond, cond))
-    # cycle bo'lsa qo'shimcha (sikllar / circle)
-    extra_uz = f" • {cycle} sikl" if cycle else ""
-    extra_ru = f" • {cycle} цикл" if cycle else ""
+    cond_uz, cond_ru, cond_emoji = holati_matni(cond, cycle)
 
     # Sarlavha: G logo + nom + xotira
     g_base = PREMIUM['google'][0]
@@ -93,9 +102,9 @@ def build_elon(item, models_by_id):
     m_base = PREMIUM['money'][0]
 
     # Matnni qism-qism yig'amiz, premium pozitsiyalarini belgilaymiz
-    # Har bir premium emoji uchun (key, matndagi indeks) saqlaymiz
     parts = []
-    prem = []  # (custom_emoji_id, char_offset_in_text, base_emoji)
+    prem = []  # (custom_emoji_id, char_offset, base_emoji)
+    quote = None  # (start_offset, length) - texnik xar. uchun blockquote
 
     def add(s):
         parts.append(s)
@@ -109,17 +118,20 @@ def build_elon(item, models_by_id):
     add_prem('google'); add(f" {name_uz} ({storage})\n")
     add(f"#phone #{num}\n\n")
 
-    # ── Texnik xarakteristika (quote) ──
+    # ── Texnik xarakteristika (collapsed blockquote) ──
+    q_start = _utf16len(''.join(parts))
     add("Texnik xarakteristika/Технические характеристики:\n")
     if spec_uz:
         add(spec_uz + "\n\n")
     if spec_ru:
-        add(spec_ru + "\n")
-    add("\n")
+        add(spec_ru)
+    q_end = _utf16len(''.join(parts))
+    quote = (q_start, q_end - q_start)
+    add("\n\n")
 
     # ── Holati ──
-    add(f"🔸 • Holati: {cond_uz}{extra_uz}\n")
-    add(f"🔸 • Состояние: {cond_ru}{extra_ru}\n\n")
+    add(f"{cond_emoji} • Holati: {cond_uz}\n")
+    add(f"{cond_emoji} • Состояние: {cond_ru}\n\n")
 
     # ── Narx ──
     add_prem('money'); add(" Цена/Narxi: ")
@@ -141,6 +153,13 @@ def build_elon(item, models_by_id):
         'length': _utf16len(base),
         'custom_emoji_id': eid,
     } for (eid, off, base) in prem]
+    # Collapsed blockquote (yopilgan quote)
+    if quote and quote[1] > 0:
+        entities.append({
+            'type': 'expandable_blockquote',
+            'offset': quote[0],
+            'length': quote[1],
+        })
     return num, text, entities
 
 
@@ -185,12 +204,9 @@ async def send_new_elons(chat_id, text):
 
     if not targets:
         send_msg(chat_id,
-            f"ℹ️ Yangi elon yo'q.\n"
-            f"Oxirgi yuborilgan: #{_last_sent['num']}\n\n"
-            f"Aniq raqam uchun: `/elon 199` yoki `/elon 199 200`")
+            f"ℹ️ Yangi elon yo'q. Oxirgi: #{_last_sent['num']}\n"
+            f"Aniq raqam: `/elon 199`")
         return
-
-    send_msg(chat_id, f"📤 {len(targets)} ta elon yuborilmoqda...")
 
     sent = 0
     max_num = _last_sent['num']
@@ -205,11 +221,6 @@ async def send_new_elons(chat_id, text):
 
     if not nums:
         _last_sent['num'] = max_num
-
-    send_msg(chat_id,
-        f"✅ {sent} ta elon tayyor!\n"
-        f"📌 Har birini *Forward* qilib rasmga qo'shing va kanalga joylang.\n"
-        f"📊 Oxirgi: #{max_num}")
 
 
 def is_member(user_id):
