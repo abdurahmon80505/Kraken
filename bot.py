@@ -42,6 +42,14 @@ CONDITION_TXT = {
 }
 
 
+def clean_color(color):
+    """'Obsidian Black (Qora)' -> 'Obsidian Black' (qavsni olib tashlaydi)."""
+    if not color:
+        return ''
+    import re
+    return re.sub(r'\s*\([^)]*\)', '', str(color)).strip()
+
+
 def holati_matni(cond, cycle):
     """condition + cycle bo'yicha (uz_qator, ru_qator, emoji) qaytaradi."""
     sikl_uz = f" ({cycle}tsikl)" if cycle else ""
@@ -105,6 +113,7 @@ def build_elon(item, models_by_id):
     parts = []
     prem = []  # (custom_emoji_id, char_offset, base_emoji)
     quote = None  # (start_offset, length) - texnik xar. uchun blockquote
+    fmt = []  # (type, start_offset, length) - bold/strikethrough
 
     def add(s):
         parts.append(s)
@@ -114,8 +123,20 @@ def build_elon(item, models_by_id):
         prem.append((eid, _utf16len(''.join(parts)), base))
         parts.append(base)
 
-    # ── Sarlavha ──
-    add_prem('google'); add(f" {name_uz} ({storage})\n")
+    def add_fmt(s, ftype):
+        start = _utf16len(''.join(parts))
+        parts.append(s)
+        fmt.append((ftype, start, _utf16len(s)))
+
+    color_clean = clean_color(color_uz)
+
+    # ── Sarlavha: G logo + BOLD nom (xotira) + rang ──
+    add_prem('google'); add(" ")
+    title = f"{name_uz} ({storage})"
+    add_fmt(title, 'bold')
+    if color_clean:
+        add(f" {color_clean}")
+    add("\n")
     add(f"#phone #{num}\n\n")
 
     # ── Texnik xarakteristika (collapsed blockquote) ──
@@ -133,12 +154,16 @@ def build_elon(item, models_by_id):
     add(f"{cond_emoji} • Holati: {cond_uz}\n")
     add(f"{cond_emoji} • Состояние: {cond_ru}\n\n")
 
-    # ── Narx ──
+    # ── Narx: eski (strikethrough) + yangi (bold) ──
     add_prem('money'); add(" Цена/Narxi: ")
     if old and old != price:
-        add(f"{old}$ {price}$\n\n")
+        add_fmt(f"{old}$", 'strikethrough')
+        add(" ")
+        add_fmt(f"{price}$", 'bold')
+        add("\n\n")
     else:
-        add(f"{price}$\n\n")
+        add_fmt(f"{price}$", 'bold')
+        add("\n\n")
 
     # ── Kontaktlar ──
     add("📩 @Krakens_admin\n")
@@ -153,6 +178,9 @@ def build_elon(item, models_by_id):
         'length': _utf16len(base),
         'custom_emoji_id': eid,
     } for (eid, off, base) in prem]
+    # Bold / strikethrough
+    for ftype, off, length in fmt:
+        entities.append({'type': ftype, 'offset': off, 'length': length})
     # Collapsed blockquote (yopilgan quote)
     if quote and quote[1] > 0:
         entities.append({
