@@ -341,6 +341,24 @@ def _now_tk():
     return datetime.utcnow() + timedelta(hours=5)
 
 
+def get_my_status(konkurs_id, user_id):
+    """Apps Script'dan user statusini oladi: none|kutilyapti|tasdiqlandi|yakunlandi."""
+    if not SHEET_URL:
+        return 'none'
+    try:
+        r = req.get(
+            f"{SHEET_URL}?action=getMyStatus&callback=d"
+            f"&id={urllib.parse.quote(str(konkurs_id))}"
+            f"&user_id={urllib.parse.quote(str(user_id))}",
+            timeout=10)
+        text = r.text.strip()
+        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        return data.get('status', 'none')
+    except Exception as e:
+        logger.error(f'get_my_status: {e}')
+        return 'none'
+
+
 def get_pending(konkurs_id):
     """Sheets'dan status=tasdiqlandi bo'lganlarni oladi."""
     if not SHEET_URL:
@@ -493,43 +511,19 @@ async def handle_phone(chat_id, phone, user):
     konkurs_id = state.get('konkurs_id', '')
     prize = state.get('prize', '')
 
-    res = save_participant(konkurs_id, user_id, username, phone)
-    _konkurs_cache['time'] = 0
+    # ── TEZKOR: avval mijozning statusini tekshiramiz (allaqachon bormi) ──
+    # save_participant sekin (Google), shuning uchun avval status so'raymiz,
+    # so'ng darrov javob beramiz, yozishni FONDA bajaramiz.
+    existing = get_my_status(konkurs_id, user_id)
 
-    # Allaqachon qatnashgan bo'lsa — statusiga qarab xabar
-    if res and res.get('msg') == 'already':
-        st = res.get('status', '')
-        if st in ('tasdiqlandi', 'yakunlandi'):
-            send_msg(chat_id,
-                "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n\n🎯 Omad bo'lsin!",
-                keyboard={"remove_keyboard": True})
-        else:
-            # Telefon bergan, lekin saytda tasdiqlamagan — yana saytga yuboramiz
-            send_msg(chat_id,
-                "⏳ *Qatnashishingiz hali yakunlanmagan!*\n\n"
-                "🇺🇿 Qatnashishni yakunlash uchun saytga kirib "
-                "*Tasdiqlash* tugmasini bosing 👇\n"
-                "🇷🇺 Чтобы завершить участие, зайдите на сайт и нажмите "
-                "*Подтвердить* 👇",
-                keyboard={"remove_keyboard": True})
-            await asyncio.sleep(1)
-            req.post(f'{TG_API}/sendMessage', json={
-                'chat_id': chat_id,
-                'text': "👇",
-                'reply_markup': {"inline_keyboard": [[{
-                    "text": "✅ Tasdiqlash / Подтвердить",
-                    "web_app": {"url": SAYT_URL + '?p=konkurs'}
-                }]]}
-            }, timeout=10)
+    if existing in ('tasdiqlandi', 'yakunlandi'):
+        send_msg(chat_id,
+            "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n\n🎯 Omad bo'lsin!",
+            keyboard={"remove_keyboard": True})
         return
 
-    # ── Yangi qatnashuvchi: ro'yxatga oldik (status=kutilyapti) ──
-    # Bot poll watcher'ni ishga tushiramiz (bir konkurs uchun bitta)
+    # Yangi yoki kutilyapti — darrov tasdiqlash xabarini yuboramiz (kutmasdan)
     start_watcher(konkurs_id)
-
-    # Bitta xabar + WebApp tugma. Reply-klaviatura va inline-tugma
-    # bir xabarda birga ketmaydi, shuning uchun matn + inline tugma,
-    # va remove_keyboard ni shu xabarga bermay, alohida yengil signal beramiz.
     req.post(f'{TG_API}/sendMessage', json={
         'chat_id': chat_id,
         'text': (
@@ -547,6 +541,17 @@ async def handle_phone(chat_id, phone, user):
             }]]
         }
     }, timeout=10)
+
+    # ── FONDA: Sheets'ga yozish (yangi bo'lsa). Mijoz allaqachon javob oldi. ──
+    if existing == 'none':
+        async def _save():
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, save_participant, konkurs_id, user_id, username, phone)
+                _konkurs_cache['time'] = 0
+            except Exception as e:
+                logger.error(f'bg save_participant: {e}')
+        asyncio.create_task(_save())
 
 def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
     """Barcha qatnashuvchilarga xabar - g'olib va yutqazganlar"""
