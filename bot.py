@@ -314,153 +314,6 @@ def get_participants(konkurs_id):
         return []
 
 
-# ═══ VORONKA: TASDIQLASH WATCHER ═══════════════════════════
-# Bir konkurs uchun bitta background watcher ishlaydi.
-# Har 10 soniyada Sheets'dan "tasdiqlandi" larni so'raydi,
-# joined_at + 15s kelganda OVOZSIZ xabar yuboradi, keyin "yakunlandi" qiladi.
-
-_watchers = {}  # konkurs_id -> True (ishlab turgan watcher bor)
-
-CONFIRM_DELAY = 20      # tasdiqlangach necha soniyadan keyin xabar (sayt bilan bir xil)
-POLL_EVERY = 10        # necha soniyada bir Sheets tekshiriladi
-MAX_POLLS = 12         # maksimal necha marta (12*10 = 120s)
-
-
-def _parse_tk(ts):
-    """'2026-06-28 11:33:18' -> naive datetime (Toshkent)."""
-    from datetime import datetime
-    try:
-        return datetime.strptime(str(ts).strip(), '%Y-%m-%d %H:%M:%S')
-    except Exception:
-        return None
-
-
-def _now_tk():
-    """Hozirgi Toshkent vaqti (naive)."""
-    from datetime import datetime, timedelta
-    return datetime.utcnow() + timedelta(hours=5)
-
-
-def get_my_status(konkurs_id, user_id):
-    """Apps Script'dan user statusini oladi: none|kutilyapti|tasdiqlandi|yakunlandi."""
-    if not SHEET_URL:
-        return 'none'
-    try:
-        r = req.get(
-            f"{SHEET_URL}?action=getMyStatus&callback=d"
-            f"&id={urllib.parse.quote(str(konkurs_id))}"
-            f"&user_id={urllib.parse.quote(str(user_id))}",
-            timeout=10)
-        text = r.text.strip()
-        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
-        return data.get('status', 'none')
-    except Exception as e:
-        logger.error(f'get_my_status: {e}')
-        return 'none'
-
-
-def get_pending(konkurs_id):
-    """Sheets'dan status=tasdiqlandi bo'lganlarni oladi."""
-    if not SHEET_URL:
-        return []
-    try:
-        r = req.get(
-            f"{SHEET_URL}?action=getPending&callback=d&id={urllib.parse.quote(str(konkurs_id))}",
-            timeout=12)
-        text = r.text.strip()
-        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
-        return data.get('pending', [])
-    except Exception as e:
-        logger.error(f'get_pending: {e}')
-        return []
-
-
-def mark_yakunlandi(konkurs_id, user_id):
-    """Xabar yuborilgach Sheets'da yakunlandi deb belgilaydi."""
-    if not SHEET_URL:
-        return
-    try:
-        req.get(
-            f"{SHEET_URL}?action=markYakunlandi&callback=d"
-            f"&id={urllib.parse.quote(str(konkurs_id))}"
-            f"&user_id={urllib.parse.quote(str(user_id))}",
-            timeout=12)
-    except Exception as e:
-        logger.error(f'mark_yakunlandi: {e}')
-
-
-def send_silent(chat_id, text):
-    """Ovozsiz (notification'siz) xabar — mijoz saytni tark etmasligi uchun."""
-    try:
-        req.post(f'{TG_API}/sendMessage', json={
-            'chat_id': chat_id,
-            'text': text,
-            'parse_mode': 'Markdown',
-            'disable_notification': True,
-            'reply_markup': {"inline_keyboard": [[{
-                "text": "🛍 Smartfonlarni ko'rish / Смотреть смартфоны",
-                "web_app": {"url": SAYT_URL}
-            }]]}
-        }, timeout=8)
-    except Exception as e:
-        logger.error(f'send_silent: {e}')
-
-
-def start_watcher(konkurs_id):
-    """Watcher yo'q bo'lsa ishga tushiradi (bir konkurs uchun bitta)."""
-    if not konkurs_id:
-        return
-    key = str(konkurs_id)
-    if _watchers.get(key):
-        return  # allaqachon ishlayapti
-    _watchers[key] = True
-    asyncio.create_task(watch_confirmations(key))
-    logger.info(f'Watcher started: konkurs {key}')
-
-
-async def watch_confirmations(konkurs_id):
-    """Har 10s tasdiqlanganlarni tekshiradi, vaqt kelganda ovozsiz xabar yuboradi."""
-    sent = set()  # bu sessiyada xabar yuborilgan user_id lar
-    logger.info(f'[WATCH] start konkurs={konkurs_id} delay={CONFIRM_DELAY}s poll={POLL_EVERY}s')
-    try:
-        for poll_n in range(MAX_POLLS):
-            await asyncio.sleep(POLL_EVERY)
-            try:
-                pending = await asyncio.get_event_loop().run_in_executor(
-                    None, get_pending, konkurs_id)
-            except Exception as e:
-                logger.error(f'[WATCH] poll error: {e}')
-                pending = []
-
-            logger.info(f'[WATCH] poll#{poll_n+1} pending={len(pending)} sent={len(sent)}')
-            now = _now_tk()
-            for p in pending:
-                uid = str(p.get('user_id', ''))
-                if not uid or uid in sent:
-                    continue
-                ja = _parse_tk(p.get('joined_at', ''))
-                if not ja:
-                    logger.warning(f'[WATCH] bad joined_at: {p.get("joined_at")!r} uid={uid}')
-                    continue
-                elapsed = (now - ja).total_seconds()
-                logger.info(f'[WATCH] uid={uid} joined_at={p.get("joined_at")} elapsed={elapsed:.0f}s')
-                if elapsed >= CONFIRM_DELAY:
-                    # Vaqt keldi — ovozsiz xabar + belgilash
-                    send_silent(uid,
-                        "✅ *Tasdiqlandi!*\n\n"
-                        "🇺🇿 Siz konkursda muvaffaqiyatli qatnashdingiz! 🎉\n"
-                        "🇷🇺 Вы успешно участвуете в розыгрыше! 🎉\n\n"
-                        "🏆 G'olib kanalimizda e'lon qilinadi: @Kraken_mobile\n"
-                        "🏆 Победитель будет объявлен в канале: @Kraken_mobile")
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, mark_yakunlandi, konkurs_id, uid)
-                    sent.add(uid)
-                    logger.info(f'[WATCH] ✅ CONFIRMED SENT uid={uid}')
-    except Exception as e:
-        logger.error(f'[WATCH] fatal: {e}')
-    finally:
-        _watchers.pop(str(konkurs_id), None)
-        logger.info(f'[WATCH] stopped konkurs={konkurs_id} total_sent={len(sent)}')
 
 def not_member_msg(chat_id):
     send_msg(chat_id,
@@ -514,11 +367,10 @@ async def handle_phone(chat_id, phone, user):
 
     # ── DARROV javob: hech qanday Google so'rovini KUTMAYMIZ ──
     # Mijoz raqam berishi bilan tasdiqlash xabarini yuboramiz.
-    start_watcher(konkurs_id)
     req.post(f'{TG_API}/sendMessage', json={
         'chat_id': chat_id,
         'text': (
-            "📲 *Deyarli tayyor!*\n\n"
+            "📲 *Deyarli tayyor! / Почти готово!*\n\n"
             "🇺🇿 Qatnashishni yakunlash uchun pastdagi tugmani bosing "
             "va saytda \"✅ Tasdiqlash\"ni bosing 👇\n"
             "🇷🇺 Чтобы завершить участие, нажмите кнопку ниже "
@@ -533,21 +385,13 @@ async def handle_phone(chat_id, phone, user):
         }
     }, timeout=10)
 
-    # ── FONDA: Sheets'ga yozamiz (joinKonkurs o'zi "already" ni aniqlaydi). ──
+    # ── FONDA: telefonni Sheets'ga yozamiz (g'olib aniqlash uchun ro'yxat). ──
     # Mijoz allaqachon javob oldi, bu yozish orqada ketadi — kechikish sezilmaydi.
     async def _save():
         try:
-            res = await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_event_loop().run_in_executor(
                 None, save_participant, konkurs_id, user_id, username, phone)
             _konkurs_cache['time'] = 0
-            # Agar allaqachon TASDIQLAGAN bo'lsa — qo'shimcha eslatma yuboramiz
-            if res and res.get('msg') == 'already':
-                st = res.get('status', '')
-                if st in ('tasdiqlandi', 'yakunlandi'):
-                    req.post(f'{TG_API}/sendMessage', json={
-                        'chat_id': chat_id,
-                        'text': "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n🎯 Omad bo'lsin!",
-                    }, timeout=8)
         except Exception as e:
             logger.error(f'bg save_participant: {e}')
     asyncio.create_task(_save())
@@ -786,14 +630,6 @@ async def main():
     except Exception as e:
         logger.error(f'init last_sent: {e}')
     logger.info(f'Started on port {PORT}')
-    # Restartda yo'qolib qolgan tasdiqlanganlarni qutqaramiz:
-    # aktiv konkurs bo'lsa watcher'ni bir marta ishga tushiramiz
-    try:
-        k = get_konkurs()
-        if k and k.get('id'):
-            start_watcher(k['id'])
-    except Exception as e:
-        logger.error(f'startup watcher: {e}')
     while True:
         await asyncio.sleep(3600)
 
