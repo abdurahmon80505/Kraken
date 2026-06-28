@@ -321,9 +321,9 @@ def get_participants(konkurs_id):
 
 _watchers = {}  # konkurs_id -> True (ishlab turgan watcher bor)
 
-CONFIRM_DELAY = 15      # tasdiqlangach necha soniyadan keyin xabar (sayt bilan bir xil)
+CONFIRM_DELAY = 20      # tasdiqlangach necha soniyadan keyin xabar (sayt bilan bir xil)
 POLL_EVERY = 10        # necha soniyada bir Sheets tekshiriladi
-MAX_POLLS = 10         # maksimal necha marta (10*10 = 100s, kimdir tugagach kutmaymiz)
+MAX_POLLS = 12         # maksimal necha marta (12*10 = 120s)
 
 
 def _parse_tk(ts):
@@ -403,16 +403,18 @@ def start_watcher(konkurs_id):
 async def watch_confirmations(konkurs_id):
     """Har 10s tasdiqlanganlarni tekshiradi, vaqt kelganda ovozsiz xabar yuboradi."""
     sent = set()  # bu sessiyada xabar yuborilgan user_id lar
+    logger.info(f'[WATCH] start konkurs={konkurs_id} delay={CONFIRM_DELAY}s poll={POLL_EVERY}s')
     try:
-        for _ in range(MAX_POLLS):
+        for poll_n in range(MAX_POLLS):
             await asyncio.sleep(POLL_EVERY)
             try:
                 pending = await asyncio.get_event_loop().run_in_executor(
                     None, get_pending, konkurs_id)
             except Exception as e:
-                logger.error(f'watch poll: {e}')
+                logger.error(f'[WATCH] poll error: {e}')
                 pending = []
 
+            logger.info(f'[WATCH] poll#{poll_n+1} pending={len(pending)} sent={len(sent)}')
             now = _now_tk()
             for p in pending:
                 uid = str(p.get('user_id', ''))
@@ -420,22 +422,27 @@ async def watch_confirmations(konkurs_id):
                     continue
                 ja = _parse_tk(p.get('joined_at', ''))
                 if not ja:
+                    logger.warning(f'[WATCH] bad joined_at: {p.get("joined_at")!r} uid={uid}')
                     continue
                 elapsed = (now - ja).total_seconds()
+                logger.info(f'[WATCH] uid={uid} joined_at={p.get("joined_at")} elapsed={elapsed:.0f}s')
                 if elapsed >= CONFIRM_DELAY:
                     # Vaqt keldi — ovozsiz xabar + belgilash
                     send_silent(uid,
                         "✅ *Tasdiqlandi!*\n\n"
                         "🇺🇿 Siz konkursda muvaffaqiyatli qatnashdingiz! 🎉\n"
                         "🇷🇺 Вы успешно участвуете в розыгрыше! 🎉\n\n"
-                        "🏆 G'olib kanalimizda e'lon qilinadi: @Kraken_mobile")
+                        "🏆 G'olib kanalimizda e'lon qilinadi: @Kraken_mobile\n"
+                        "🏆 Победитель будет объявлен в канале: @Kraken_mobile")
                     await asyncio.get_event_loop().run_in_executor(
                         None, mark_yakunlandi, konkurs_id, uid)
                     sent.add(uid)
-                    logger.info(f'Confirmed sent: {uid}')
+                    logger.info(f'[WATCH] ✅ CONFIRMED SENT uid={uid}')
+    except Exception as e:
+        logger.error(f'[WATCH] fatal: {e}')
     finally:
         _watchers.pop(str(konkurs_id), None)
-        logger.info(f'Watcher stopped: konkurs {konkurs_id}')
+        logger.info(f'[WATCH] stopped konkurs={konkurs_id} total_sent={len(sent)}')
 
 def not_member_msg(chat_id):
     send_msg(chat_id,
@@ -520,28 +527,25 @@ async def handle_phone(chat_id, phone, user):
     # Bot poll watcher'ni ishga tushiramiz (bir konkurs uchun bitta)
     start_watcher(konkurs_id)
 
-    # 1. Klaviaturani olib tashlash + tasdiqlash so'rovi
-    send_msg(chat_id,
-        "📲 *Deyarli tayyor!*\n\n"
-        "🇺🇿 Qatnashishni yakunlash uchun saytga kirib "
-        "*Tasdiqlash* tugmasini bosing 👇\n"
-        "🇷🇺 Чтобы завершить участие, зайдите на сайт и нажмите "
-        "*Подтвердить* 👇",
-        keyboard={"remove_keyboard": True})
-
-    # 2. WebApp tugmasi — saytdagi konkurs sahifasiga olib boradi
-    await asyncio.sleep(1)
+    # Bitta xabar + WebApp tugma. Reply-klaviatura va inline-tugma
+    # bir xabarda birga ketmaydi, shuning uchun matn + inline tugma,
+    # va remove_keyboard ni shu xabarga bermay, alohida yengil signal beramiz.
     req.post(f'{TG_API}/sendMessage', json={
         'chat_id': chat_id,
         'text': (
-            "🇺🇿 Pastdagi tugmani bosing va saytda *Tasdiqlash*ni bosing.\n"
-            "🇷🇺 Нажмите кнопку ниже и подтвердите на сайте."
+            "📲 *Deyarli tayyor!*\n\n"
+            "🇺🇿 Qatnashishni yakunlash uchun pastdagi tugmani bosing "
+            "va saytda \"✅ Tasdiqlash\"ni bosing 👇\n"
+            "🇷🇺 Чтобы завершить участие, нажмите кнопку ниже "
+            "и подтвердите на сайте 👇"
         ),
         'parse_mode': 'Markdown',
-        'reply_markup': {"inline_keyboard": [[{
-            "text": "✅ Saytda tasdiqlash / Подтвердить на сайте",
-            "web_app": {"url": SAYT_URL + '?p=konkurs'}
-        }]]}
+        'reply_markup': {
+            "inline_keyboard": [[{
+                "text": "✅ Saytda tasdiqlash / Подтвердить",
+                "web_app": {"url": SAYT_URL + '?p=konkurs'}
+            }]]
+        }
     }, timeout=10)
 
 def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
