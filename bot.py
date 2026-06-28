@@ -490,10 +490,11 @@ async def start_konkurs_flow(chat_id, user):
     }
 
     send_msg(chat_id,
-        f"🎁 *{k.get('prize','Sovrin')}* konkursida qatnashish uchun\n"
-        f"📱 Telefon raqamingizni ulashing 👇",
+        f"🎁 *{k.get('prize','Sovrin')}*\n\n"
+        f"🇺🇿 Konkursda qatnashish uchun telefon raqamingizni ulashing 👇\n"
+        f"🇷🇺 Чтобы участвовать в розыгрыше, поделитесь номером телефона 👇",
         keyboard={
-            "keyboard": [[{"text": "📱 Raqamni ulashish", "request_contact": True}]],
+            "keyboard": [[{"text": "📱 Raqamni ulashish / Поделиться номером", "request_contact": True}]],
             "resize_keyboard": True, "one_time_keyboard": True
         })
 
@@ -511,18 +512,8 @@ async def handle_phone(chat_id, phone, user):
     konkurs_id = state.get('konkurs_id', '')
     prize = state.get('prize', '')
 
-    # ── TEZKOR: avval mijozning statusini tekshiramiz (allaqachon bormi) ──
-    # save_participant sekin (Google), shuning uchun avval status so'raymiz,
-    # so'ng darrov javob beramiz, yozishni FONDA bajaramiz.
-    existing = get_my_status(konkurs_id, user_id)
-
-    if existing in ('tasdiqlandi', 'yakunlandi'):
-        send_msg(chat_id,
-            "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n\n🎯 Omad bo'lsin!",
-            keyboard={"remove_keyboard": True})
-        return
-
-    # Yangi yoki kutilyapti — darrov tasdiqlash xabarini yuboramiz (kutmasdan)
+    # ── DARROV javob: hech qanday Google so'rovini KUTMAYMIZ ──
+    # Mijoz raqam berishi bilan tasdiqlash xabarini yuboramiz.
     start_watcher(konkurs_id)
     req.post(f'{TG_API}/sendMessage', json={
         'chat_id': chat_id,
@@ -531,7 +522,7 @@ async def handle_phone(chat_id, phone, user):
             "🇺🇿 Qatnashishni yakunlash uchun pastdagi tugmani bosing "
             "va saytda \"✅ Tasdiqlash\"ni bosing 👇\n"
             "🇷🇺 Чтобы завершить участие, нажмите кнопку ниже "
-            "и подтвердите на сайте 👇"
+            "и нажмите \"✅ Подтвердить\" на сайте 👇"
         ),
         'parse_mode': 'Markdown',
         'reply_markup': {
@@ -542,16 +533,24 @@ async def handle_phone(chat_id, phone, user):
         }
     }, timeout=10)
 
-    # ── FONDA: Sheets'ga yozish (yangi bo'lsa). Mijoz allaqachon javob oldi. ──
-    if existing == 'none':
-        async def _save():
-            try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, save_participant, konkurs_id, user_id, username, phone)
-                _konkurs_cache['time'] = 0
-            except Exception as e:
-                logger.error(f'bg save_participant: {e}')
-        asyncio.create_task(_save())
+    # ── FONDA: Sheets'ga yozamiz (joinKonkurs o'zi "already" ni aniqlaydi). ──
+    # Mijoz allaqachon javob oldi, bu yozish orqada ketadi — kechikish sezilmaydi.
+    async def _save():
+        try:
+            res = await asyncio.get_event_loop().run_in_executor(
+                None, save_participant, konkurs_id, user_id, username, phone)
+            _konkurs_cache['time'] = 0
+            # Agar allaqachon TASDIQLAGAN bo'lsa — qo'shimcha eslatma yuboramiz
+            if res and res.get('msg') == 'already':
+                st = res.get('status', '')
+                if st in ('tasdiqlandi', 'yakunlandi'):
+                    req.post(f'{TG_API}/sendMessage', json={
+                        'chat_id': chat_id,
+                        'text': "✅ Siz allaqachon bu konkursda qatnashyapsiz!\n🎯 Omad bo'lsin!",
+                    }, timeout=8)
+        except Exception as e:
+            logger.error(f'bg save_participant: {e}')
+    asyncio.create_task(_save())
 
 def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
     """Barcha qatnashuvchilarga xabar - g'olib va yutqazganlar"""
