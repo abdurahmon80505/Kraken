@@ -988,6 +988,9 @@ async def update_channel_endpoint(request):
     except Exception as e:
         logger.error(f'update_channel_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
+
+
+async def upload_image(request):
     try:
         data = await request.json()
         image_b64 = data.get('image', '')
