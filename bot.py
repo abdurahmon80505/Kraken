@@ -19,8 +19,17 @@ SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 ADMIN_USERNAME = 'Krakens_admin'
 
+# ── ImageKit (saytdagi bilan bir xil — barqaror rasm hosting) ──
+IK_PRIVATE_KEY = os.environ.get('IK_PRIVATE_KEY', 'private_uRjC2/psPBQPc5fAhmshbRw9K1o=')
+IK_UPLOAD_URL = 'https://upload.imagekit.io/api/v1/files/upload'
+
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
+
+# Admin rasm yuborganda albom (media group)ni yig'ish uchun bufer
+# {media_group_id: {'file_ids': [...], 'task': asyncio_handle}}
+_photo_groups = {}
+_single_photo_lock = {'last': 0}
 
 # ── ELON YUBORISH ─────────────────────────────────────────
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
@@ -220,14 +229,24 @@ async def send_new_elons(chat_id, text):
     # /elon 199  yoki  /elon 199 200 205  -> aniq raqamlar
     nums = [int(p) for p in parts[1:] if p.isdigit()]
 
+    def _is_sold(it):
+        try:
+            return float(it.get('price', '') or -1) == 0
+        except (ValueError, TypeError):
+            return False
+
     if nums:
         targets = [it for it in listings if int(float(it.get('num', 0) or 0)) in nums]
         targets.sort(key=lambda x: int(float(x.get('num', 0) or 0)))
+        # Aniq raqamlar ichida sotilgani bo'lsa ogohlantiramiz (lekin yuboramiz — admin qarori)
+        sold_nums = [int(float(it.get('num', 0) or 0)) for it in targets if _is_sold(it)]
+        if sold_nums:
+            send_msg(chat_id, "⚠️ Sotilgan: " + ", ".join('#' + str(n) for n in sold_nums))
     else:
-        # /yubor  ->  oxirgi yuborilgandan keyingi yangilar
+        # /yubor  ->  oxirgi yuborilgandan keyingi yangilar (sotilganlarni chiqarib tashlaymiz)
         last = _last_sent['num']
         targets = [it for it in listings
-                   if int(float(it.get('num', 0) or 0)) > last]
+                   if int(float(it.get('num', 0) or 0)) > last and not _is_sold(it)]
         targets.sort(key=lambda x: int(float(x.get('num', 0) or 0)))
 
     if not targets:
@@ -396,26 +415,54 @@ async def handle_phone(chat_id, phone, user):
             logger.error(f'bg save_participant: {e}')
     asyncio.create_task(_save())
 
-def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
-    """Barcha qatnashuvchilarga xabar - g'olib va yutqazganlar"""
+def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winners=None):
+    """Barcha qatnashuvchilarga xabar - g'oliblar va yutqazganlar.
+    winners: [{user_id, username, prize}, ...] — ko'p g'olib ro'yxati."""
     participants = get_participants(konkurs_id)
     if not participants:
         logger.info('No participants to notify')
         return
+
+    # G'oliblar xaritasi: user_id -> {o'rin, sovg'a}
+    winners = winners or []
+    win_map = {}
+    for idx, w in enumerate(winners):
+        wid = str(w.get('user_id', ''))
+        if wid:
+            win_map[wid] = {'place': idx + 1, 'prize': w.get('prize', '') or prize}
+    # Agar winners bo'sh bo'lsa — eski (bitta g'olib) usul
+    if not win_map and winner_user_id:
+        win_map[str(winner_user_id)] = {'place': 1, 'prize': prize}
+
+    # G'oliblar ro'yxatini matn uchun (yutqazganlarga ko'rsatamiz)
+    medals = ['🥇', '🥈', '🥉']
+    win_lines = []
+    for idx, w in enumerate(winners):
+        uname = w.get('username', '')
+        disp = f"@{uname}" if uname else f"ID {w.get('user_id','')}"
+        medal = medals[idx] if idx < 3 else f"{idx+1}."
+        wp = w.get('prize', '')
+        win_lines.append(f"{medal} {disp}" + (f" — {wp}" if wp else ""))
+    win_text = "\n".join(win_lines) if win_lines else (f"@{winner_username}" if winner_username else "anonim")
 
     for p in participants:
         uid = str(p.get('user_id', ''))
         if not uid:
             continue
         try:
-            if uid == str(winner_user_id):
-                # G'olibga maxsus xabar
+            if uid in win_map:
+                # G'olibga maxsus xabar (o'z o'rni va sovg'asi bilan)
+                info = win_map[uid]
+                place = info['place']
+                my_prize = info['prize']
+                medal = medals[place-1] if place <= 3 else f"{place}."
                 req.post(f'{TG_API}/sendMessage', json={
                     'chat_id': uid,
                     'text': (
-                        f"🏆 *Tabriklaymiz! Siz g'oldingiz!*\n\n"
-                        f"🇺🇿 *{prize}* konkursida g'olib bo'ldingiz! 🎊\n"
-                        f"🇷🇺 Вы выиграли в розыгрыше *{prize}*! 🎊\n\n"
+                        f"🏆 *Tabriklaymiz! Siz g'olib bo'ldingiz!*\n\n"
+                        f"{medal} *{place}-o'rin* — *{my_prize}*\n\n"
+                        f"🇺🇿 Konkursda g'olib bo'ldingiz! 🎊\n"
+                        f"🇷🇺 Вы выиграли *{place} место* — *{my_prize}*! 🎊\n\n"
                         f"🎁 Sovg'angizni olish uchun adminga yozing:\n"
                         f"🎁 Для получения приза напишите администратору:"
                     ),
@@ -426,22 +473,17 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
                     }]]}
                 }, timeout=5)
             else:
-                # Yutqazganlarga xabar
-                winner_display = f"@{winner_username}" if winner_username else "anonim"
+                # Yutqazganlarga xabar (barcha g'oliblar ro'yxati bilan)
                 req.post(f'{TG_API}/sendMessage', json={
                     'chat_id': uid,
                     'text': (
                         f"🎁 *{prize}* konkursi yakunlandi!\n\n"
-                        f"🇺🇿 Afsuski, siz yutmadingiz 😔\n"
-                        f"🏆 G'olib: *{winner_display}*\n\n"
+                        f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
+                        f"🇺🇿 Afsuski, bu safar siz yutmadingiz 😔\n"
                         f"💳 Lekin siz ham yutdingiz!\n"
-                        f"Kanalimizning istalgan smartfoniga *5$lik vauchеr* oldingiz!\n"
-                        f"Xohlagan smartfoningizni sotib olib ishlatavering 📱\n\n"
-                        f"🇷🇺 К сожалению, вы не выиграли 😔\n"
-                        f"🏆 Победитель: *{winner_display}*\n\n"
-                        f"💳 Но вы тоже в выигрыше!\n"
-                        f"Вы получили *ваучер на $5* на любой смартфон нашего канала!\n\n"
-                        f"📅 Каждый месяц проводим новые розыгрыши — не пропустите!\n"
+                        f"Kanalimizning istalgan smartfoniga *5$lik vauchеr* oldingiz!\n\n"
+                        f"🇷🇺 К сожалению, в этот раз вы не выиграли 😔\n"
+                        f"💳 Но вы тоже в выигрыше — *ваучер на $5*!\n\n"
                         f"📅 Har oy yangi konkurslar — o'tkazib yubormang!\n"
                         f"📢 @Kraken_mobile"
                     ),
@@ -453,6 +495,130 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize):
                 }, timeout=5)
         except Exception as e:
             logger.error(f'notify {uid}: {e}')
+
+
+def tg_file_url(file_id):
+    """Telegram file_id dan yuklab olinadigan URL qaytaradi."""
+    try:
+        fi = req.get(f'{TG_API}/getFile?file_id={file_id}', timeout=10).json()
+        if fi.get('ok'):
+            fp = fi['result']['file_path']
+            return f'https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}'
+    except Exception as e:
+        logger.error(f'getFile: {e}')
+    return ''
+
+
+def upload_to_imagekit(file_id):
+    """Telegram file_id'ni yuklab olib, ImageKit'ga yuboradi. Barqaror URL qaytaradi.
+    Xato bo'lsa — Telegram URL'iga qaytadi (fallback)."""
+    tg_url = tg_file_url(file_id)
+    if not tg_url:
+        return ''
+    try:
+        # 1) Telegram'dan rasmni yuklab olamiz
+        img = req.get(tg_url, timeout=20)
+        if img.status_code != 200:
+            return tg_url
+        # 2) ImageKit'ga yuklaymiz (Basic Auth: private_key username, parol bo'sh)
+        import time as _t
+        fname = f"{int(_t.time()*1000)}_{file_id[:8]}.jpg"
+        r = req.post(
+            IK_UPLOAD_URL,
+            auth=(IK_PRIVATE_KEY, ''),
+            files={'file': (fname, img.content)},
+            data={'fileName': fname, 'folder': '/kraken'},
+            timeout=30
+        )
+        j = r.json()
+        if r.status_code == 200 and j.get('url'):
+            return j['url']
+        logger.error(f'ImageKit upload: {j}')
+        return tg_url  # fallback
+    except Exception as e:
+        logger.error(f'upload_to_imagekit: {e}')
+        return tg_url  # fallback
+
+
+def create_bot_elon(file_ids):
+    """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets."""
+    urls = []
+    for fid in file_ids:
+        u = upload_to_imagekit(fid)
+        if u:
+            urls.append(u)
+    if not urls:
+        return None
+    try:
+        payload = urllib.parse.quote(json.dumps({'images': urls}))
+        r = req.get(f'{SHEET_URL}?action=botCreateElon&data={payload}', timeout=20)
+        res = r.json()
+        return res if res.get('ok') else None
+    except Exception as e:
+        logger.error(f'create_bot_elon: {e}')
+        return None
+
+
+def finalize_photo_group(mgid, chat_id):
+    """Albom to'planib bo'lgach chaqiriladi — chala elon yaratadi."""
+    grp = _photo_groups.pop(mgid, None)
+    if not grp:
+        return
+    file_ids = grp.get('file_ids', [])
+    res = create_bot_elon(file_ids)
+    if res:
+        num = res.get('num', '?')
+        cnt = res.get('images', len(file_ids))
+        send_msg(chat_id,
+            f"✅ Yangi elon yaratildi: *№{num}*\n"
+            f"📸 {cnt} ta rasm saqlandi.\n\n"
+            f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+            keyboard={"inline_keyboard": [[{
+                "text": "🛠 Admin panel / Saytga kirish",
+                "web_app": {"url": SAYT_URL}
+            }]]})
+    else:
+        send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+
+
+async def handle_admin_photo(chat_id, file_id, media_group_id):
+    """Admin rasm yuborsa — chala elon yaratadi.
+    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi."""
+    if media_group_id:
+        # Albom: rasmlarni yig'amiz, 2 sekund kutib, keyin bitta elon qilamiz
+        grp = _photo_groups.get(media_group_id)
+        if not grp:
+            grp = {'file_ids': [], 'chat_id': chat_id}
+            _photo_groups[media_group_id] = grp
+        grp['file_ids'].append(file_id)
+        # Oldingi taymer bo'lsa bekor qilamiz, yangisini o'rnatamiz
+        old = grp.get('timer')
+        if old:
+            old.cancel()
+        loop = asyncio.get_event_loop()
+        grp['timer'] = loop.call_later(
+            2.0, finalize_photo_group, media_group_id, chat_id)
+    else:
+        # Bitta rasm — darrov elon
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _single_photo_elon, chat_id, file_id)
+
+
+def _single_photo_elon(chat_id, file_id):
+    res = create_bot_elon([file_id])
+    if res:
+        num = res.get('num', '?')
+        send_msg(chat_id,
+            f"✅ Yangi elon yaratildi: *№{num}*\n"
+            f"📸 1 ta rasm saqlandi.\n\n"
+            f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+            keyboard={"inline_keyboard": [[{
+                "text": "🛠 Admin panel / Saytga kirish",
+                "web_app": {"url": SAYT_URL}
+            }]]})
+    else:
+        send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+
 
 async def webhook(request):
     try:
@@ -484,6 +650,15 @@ async def webhook(request):
             return web.json_response({'ok': True})
 
         if not chat_id:
+            return web.json_response({'ok': True})
+
+        # ── ADMIN rasm yuborsa: chala elon yaratamiz (rasm + raqam) ──
+        photo = message.get('photo')
+        if photo and chat_id == ADMIN_ID:
+            mgid = message.get('media_group_id')
+            largest = photo[-1]  # eng katta o'lcham
+            file_id = largest.get('file_id', '')
+            await handle_admin_photo(chat_id, file_id, mgid)
             return web.json_response({'ok': True})
 
         if text.startswith('/yubor') or text.startswith('/elon'):
@@ -534,11 +709,12 @@ async def notify_endpoint(request):
         winner_user_id = data.get('winner_user_id', '')
         winner_username = data.get('winner_username', '')
         prize = data.get('prize', '')
-        if konkurs_id and winner_user_id:
+        winners = data.get('winners', [])  # ko'p g'olib: [{user_id, username, prize}, ...]
+        if konkurs_id and (winner_user_id or winners):
             loop = asyncio.get_event_loop()
             loop.run_in_executor(
                 None, notify_participants,
-                konkurs_id, winner_user_id, winner_username, prize)
+                konkurs_id, winner_user_id, winner_username, prize, winners)
         return web.json_response({'ok': True})
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
