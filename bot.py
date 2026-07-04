@@ -163,9 +163,23 @@ def build_elon(item, models_by_id):
     add(f"{cond_emoji} • Holati: {cond_uz}\n")
     add(f"{cond_emoji} • Состояние: {cond_ru}\n\n")
 
-    # ── Narx: eski (strikethrough) + yangi (bold) ──
+    # ── Narx: eski (strikethrough) + yangi (bold), yoki SOTILDI ──
+    # Sotildi = price bo'sh/0 (oldPrice'da asl narx turadi)
+    price_num = 0.0
+    try:
+        price_num = float(price) if price else 0.0
+    except Exception:
+        price_num = 0.0
+    is_sold = (price_num == 0) and bool(old)
+
     add_prem('money'); add(" Цена/Narxi: ")
-    if old and old != price:
+    if is_sold:
+        # ~~400$~~ ❗️SOTILDI❗️
+        add_fmt(f"{old}$", 'strikethrough')
+        add(" ")
+        add_fmt("❗️SOTILDI❗️", 'bold')
+        add("\n\n")
+    elif old and old != price:
         add_fmt(f"{old}$", 'strikethrough')
         add(" ")
         add_fmt(f"{price}$", 'bold')
@@ -214,6 +228,121 @@ def send_elon(chat_id, text, entities):
         return r.json()
     except Exception as e:
         logger.error(f'send_elon: {e}')
+        return None
+
+
+def send_elon_with_photos(chat_id, text, entities, images, reply_markup=None):
+    """Rasm(lar) + caption yuboradi. 1 rasm -> sendPhoto, ko'p -> sendMediaGroup.
+    Caption 1024 belgidan uzun bo'lsa -> rasm(lar) + alohida matn.
+    Qaytaradi: {'message_id': ..., 'is_media_group': bool, 'text_message_id': ...}"""
+    images = [u for u in (images or []) if u]
+    CAP_LIMIT = 1024
+    caption_fits = _utf16len(text) <= CAP_LIMIT
+
+    # Rasm yo'q — oddiy matn
+    if not images:
+        payload = {'chat_id': chat_id, 'text': text}
+        if entities:
+            payload['entities'] = entities
+        if reply_markup:
+            payload['reply_markup'] = reply_markup
+        try:
+            r = req.post(f'{TG_API}/sendMessage', json=payload, timeout=10).json()
+            mid = r.get('result', {}).get('message_id')
+            return {'message_id': mid, 'is_media_group': False, 'text_message_id': mid}
+        except Exception as e:
+            logger.error(f'send_elon text: {e}')
+            return None
+
+    try:
+        # Bitta rasm — sendPhoto (caption sig'sa) yoki rasm + alohida matn
+        if len(images) == 1:
+            if caption_fits:
+                payload = {'chat_id': chat_id, 'photo': images[0], 'caption': text}
+                if entities:
+                    payload['caption_entities'] = entities
+                if reply_markup:
+                    payload['reply_markup'] = reply_markup
+                r = req.post(f'{TG_API}/sendPhoto', json=payload, timeout=15).json()
+                mid = r.get('result', {}).get('message_id')
+                return {'message_id': mid, 'is_media_group': False, 'text_message_id': mid}
+            else:
+                # Rasm alohida, matn alohida
+                pr = req.post(f'{TG_API}/sendPhoto', json={'chat_id': chat_id, 'photo': images[0]}, timeout=15).json()
+                tpayload = {'chat_id': chat_id, 'text': text}
+                if entities:
+                    tpayload['entities'] = entities
+                if reply_markup:
+                    tpayload['reply_markup'] = reply_markup
+                tr = req.post(f'{TG_API}/sendMessage', json=tpayload, timeout=10).json()
+                return {
+                    'message_id': pr.get('result', {}).get('message_id'),
+                    'is_media_group': False,
+                    'text_message_id': tr.get('result', {}).get('message_id')
+                }
+
+        # Ko'p rasm — sendMediaGroup (grid). Caption 1-rasmga (agar sig'sa)
+        media = []
+        for i, url in enumerate(images[:10]):
+            item = {'type': 'photo', 'media': url}
+            if i == 0 and caption_fits:
+                item['caption'] = text
+                if entities:
+                    item['caption_entities'] = entities
+            media.append(item)
+        r = req.post(f'{TG_API}/sendMediaGroup', json={'chat_id': chat_id, 'media': media}, timeout=20).json()
+        results = r.get('result', [])
+        first_mid = results[0].get('message_id') if results else None
+
+        # Caption sig'madi — alohida matn (media group'dan keyin)
+        text_mid = first_mid
+        if not caption_fits:
+            tpayload = {'chat_id': chat_id, 'text': text}
+            if entities:
+                tpayload['entities'] = entities
+            if reply_markup:
+                tpayload['reply_markup'] = reply_markup
+            tr = req.post(f'{TG_API}/sendMessage', json=tpayload, timeout=10).json()
+            text_mid = tr.get('result', {}).get('message_id')
+        elif reply_markup:
+            # Media group tugma qo'ymaydi — alohida bitta xabar bilan tugma
+            tr = req.post(f'{TG_API}/sendMessage', json={
+                'chat_id': chat_id, 'text': '👆',
+                'reply_markup': reply_markup
+            }, timeout=10).json()
+
+        return {'message_id': first_mid, 'is_media_group': True, 'text_message_id': text_mid}
+    except Exception as e:
+        logger.error(f'send_elon_with_photos: {e}')
+        return None
+
+
+def edit_channel_post(channel, message_id, text, entities, is_media_group=False, text_message_id=None):
+    """Kanaldagi postni yangilaydi. Media group bo'lsa — caption yoki alohida matnni edit qiladi."""
+    target_mid = text_message_id or message_id
+    try:
+        if is_media_group and text_message_id and text_message_id != message_id:
+            # Alohida matn xabari bор — uni edit qilamiz
+            payload = {'chat_id': channel, 'message_id': text_message_id, 'text': text}
+            if entities:
+                payload['entities'] = entities
+            r = req.post(f'{TG_API}/editMessageText', json=payload, timeout=10).json()
+            return r
+        else:
+            # Caption edit (rasm + caption)
+            payload = {'chat_id': channel, 'message_id': target_mid, 'caption': text}
+            if entities:
+                payload['caption_entities'] = entities
+            r = req.post(f'{TG_API}/editMessageCaption', json=payload, timeout=10).json()
+            # Agar caption emas, oddiy matn bo'lsa — editMessageText sinaymiz
+            if not r.get('ok'):
+                payload2 = {'chat_id': channel, 'message_id': target_mid, 'text': text}
+                if entities:
+                    payload2['entities'] = entities
+                r = req.post(f'{TG_API}/editMessageText', json=payload2, timeout=10).json()
+            return r
+    except Exception as e:
+        logger.error(f'edit_channel_post: {e}')
         return None
 
 
@@ -647,6 +776,20 @@ async def webhook(request):
                             [{"text": "📢 Kanalga a'zo bo'lish", "url": "https://t.me/Kraken_mobile"}],
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
+            elif cq_data.startswith('pub_') and cq_user.get('id') == ADMIN_ID:
+                # Elonni kanalga chiqarish tasdiqlandi
+                num = cq_data[4:]
+                cq_msg_id = cq.get('message', {}).get('message_id')
+                await publish_elon_to_channel(num, cq_chat, cq_msg_id)
+            elif cq_data.startswith('cancel_') and cq_user.get('id') == ADMIN_ID:
+                # Bekor qilindi
+                cq_msg_id = cq.get('message', {}).get('message_id')
+                if cq_msg_id:
+                    req.post(f'{TG_API}/editMessageReplyMarkup', json={
+                        'chat_id': cq_chat, 'message_id': cq_msg_id,
+                        'reply_markup': {'inline_keyboard': []}
+                    }, timeout=5)
+                send_msg(cq_chat, "❌ Bekor qilindi. Kanalga yuborilmadi.")
             return web.json_response({'ok': True})
 
         if not chat_id:
@@ -702,6 +845,104 @@ async def webhook(request):
         logger.error(f'Webhook: {e}')
         return web.json_response({'ok': False})
 
+def fetch_elon_by_num(num):
+    """Sheets'dan bitta elon + modellar ma'lumotini oladi."""
+    try:
+        r = req.get(f'{SHEET_URL}?action=getElon&num={num}', timeout=15).json()
+        if r.get('ok'):
+            return r.get('elon'), r.get('models_by_id', {})
+    except Exception as e:
+        logger.error(f'fetch_elon_by_num: {e}')
+    return None, {}
+
+
+async def preview_elon_to_admin(num, admin_chat):
+    """Adminга elon preview'ini + Tasdiqlash tugmasini yuboradi (kanalга yuborishдан oldin)."""
+    elon, models = fetch_elon_by_num(num)
+    if not elon:
+        send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
+        return
+    _, text, entities = build_elon(elon, models)
+    images = elon.get('images', [])
+    if isinstance(images, str):
+        try:
+            images = json.loads(images)
+        except Exception:
+            images = [images] if images else []
+
+    # Preview: matn oldiga "PREVIEW" belgisi (adminga)
+    header = "👁 *PREVIEW* — kanalga yuborishdan oldin tekshiring:"
+    send_msg(admin_chat, header)
+    # Rasm(lar) + matn + tasdiqlash tugmasi
+    markup = {"inline_keyboard": [[
+        {"text": "✅ Tasdiqlash (kanalga)", "callback_data": f"pub_{num}"},
+        {"text": "❌ Bekor", "callback_data": f"cancel_{num}"}
+    ]]}
+    res = send_elon_with_photos(admin_chat, text, entities, images, reply_markup=markup)
+    if not res:
+        send_msg(admin_chat, "❌ Preview yuborishda xatolik.")
+
+
+async def publish_elon_to_channel(num, admin_chat, preview_msg_id=None):
+    """Elonни kanalга yuboради va channel_message_id'ни Sheets'ga saqlaydi."""
+    elon, models = fetch_elon_by_num(num)
+    if not elon:
+        send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
+        return
+    _, text, entities = build_elon(elon, models)
+    images = elon.get('images', [])
+    if isinstance(images, str):
+        try:
+            images = json.loads(images)
+        except Exception:
+            images = [images] if images else []
+
+    res = send_elon_with_photos(CHANNEL, text, entities, images)
+    if not res or not res.get('message_id'):
+        send_msg(admin_chat, "❌ Kanalga yuborishda xatolik.")
+        return
+
+    # channel_message_id'ni Sheets'ga saqlaymiz
+    save_channel_msg_id(num, res.get('message_id'), res.get('is_media_group', False), res.get('text_message_id'))
+
+    # Preview tugmalarini o'chiramiz
+    if preview_msg_id:
+        req.post(f'{TG_API}/editMessageReplyMarkup', json={
+            'chat_id': admin_chat, 'message_id': preview_msg_id,
+            'reply_markup': {'inline_keyboard': []}
+        }, timeout=5)
+    send_msg(admin_chat, f"✅ №{num} kanalga yuborildi!")
+
+
+def save_channel_msg_id(num, msg_id, is_media_group, text_msg_id):
+    """channel_message_id va qo'shimcha ma'lumotni Sheets'ga yozadi."""
+    try:
+        payload = urllib.parse.quote(json.dumps({
+            'num': num,
+            'channel_message_id': msg_id,
+            'is_media_group': is_media_group,
+            'text_message_id': text_msg_id or msg_id
+        }))
+        req.get(f'{SHEET_URL}?action=saveChannelMsgId&data={payload}', timeout=15)
+    except Exception as e:
+        logger.error(f'save_channel_msg_id: {e}')
+
+
+def update_channel_elon(num):
+    """Tahrir/sotildi bo'lganda kanaldagi postni yangilaydi (avtomatik, tasdiqsiz)."""
+    elon, models = fetch_elon_by_num(num)
+    if not elon:
+        return False
+    ch_mid = elon.get('channel_message_id', '')
+    if not ch_mid:
+        return False  # kanalga hali yuborilmagan
+    _, text, entities = build_elon(elon, models)
+    is_mg = str(elon.get('is_media_group', '')).lower() in ('true', '1', 'yes')
+    text_mid = elon.get('text_message_id', '') or ch_mid
+    edit_channel_post(CHANNEL, ch_mid, text, entities, is_media_group=is_mg, text_message_id=text_mid)
+    return True
+
+
 async def notify_endpoint(request):
     try:
         data = await request.json()
@@ -719,7 +960,34 @@ async def notify_endpoint(request):
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
 
-async def upload_image(request):
+
+async def publish_endpoint(request):
+    """Sayt 'Kanalga yuborish' bosganda — bot adminга preview + tasdiqlash yuboradi."""
+    try:
+        data = await request.json()
+        num = str(data.get('num', ''))
+        if not num:
+            return web.json_response({'error': 'No num'}, status=400)
+        await preview_elon_to_admin(num, ADMIN_ID)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'publish_endpoint: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def update_channel_endpoint(request):
+    """Sayt tahrir/sotildi qilganda — kanaldagi postni avtomatik yangilaydi (tasdiqsiz)."""
+    try:
+        data = await request.json()
+        num = str(data.get('num', ''))
+        if not num:
+            return web.json_response({'error': 'No num'}, status=400)
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, update_channel_elon, num)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'update_channel_endpoint: {e}')
+        return web.json_response({'error': str(e)}, status=500)
     try:
         data = await request.json()
         image_b64 = data.get('image', '')
@@ -784,6 +1052,8 @@ async def main():
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/notify', notify_endpoint)
+    app.router.add_post('/publish', publish_endpoint)
+    app.router.add_post('/update_channel', update_channel_endpoint)
     app.router.add_post('/upload', upload_image)
     app.router.add_get('/image', get_image_url)
     app.router.add_get('/health', health)
