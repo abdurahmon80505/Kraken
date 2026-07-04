@@ -14,7 +14,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 PORT = int(os.environ.get('PORT', 8080))
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
-CHANNEL = '@Kraken_mobile'
+# Kanal ID — Render'dan CHANNEL_ID env orqali o'zgartiriladi.
+# Test paytida:  CHANNEL_ID=@Kraken_mobile_test  (Render dashboard'ga qo'shasan)
+# Testdan keyin: env'ni o'chirasan yoki @Kraken_mobile qilasan → asosiy kanalga qaytadi.
+CHANNEL = os.environ.get('CHANNEL_ID', '@Kraken_mobile')
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 ADMIN_USERNAME = 'Krakens_admin'
@@ -217,6 +220,97 @@ def build_elon(item, models_by_id):
 def _utf16len(s):
     """Telegram entities UTF-16 birlikda hisoblaydi."""
     return len(s.encode('utf-16-le')) // 2
+
+
+def strip_custom_emoji(entities):
+    """Kanalga yuborishda custom_emoji entity'larni olib tashlaydi.
+
+    Telegram cheklovi: bot custom emoji'ni faqat private/guruh/supergruhga
+    yubora oladi (bot egasida Premium bo'lsa). KANALGA custom emoji umuman
+    o'tmaydi — shu sabab lichkada premium chiqadi, kanalda oddiy emoji.
+    Entity'ni qoldirib yuborsak, Telegram ba'zida g'alati bo'shliq qoldiradi.
+    Shuning uchun kanal uchun custom_emoji'ni tashlaymiz — oddiy emoji (📱💰💡)
+    baribir matnda turibdi, u toza ko'rinadi. Bold/strikethrough/quote qoladi."""
+    if not entities:
+        return entities
+    return [e for e in entities if e.get('type') != 'custom_emoji']
+
+
+def build_olx_text(item, models_by_id):
+    """OLX uchun elon matni (premium emoji'siz, oddiy matn).
+
+    Tuzilishi (prompt 5 bo'yicha):
+      ELON RAQAMI: #150
+      <birxil shablon: telegramdan arzon, har oy konkurs, 20+ model>
+      • Holati (uz/ru)
+      Narxi: ~~eski~~ yangi
+      ---
+      Texnik xarakteristika (rang, xotira, ekran... uz+ru)
+    """
+    num = int(float(item.get('num', 0) or 0))
+    name_uz = item.get('nameUz', '') or item.get('name', '')
+    storage = item.get('storage', '')
+    price = str(item.get('price', '')).replace('.0', '')
+    old = str(item.get('oldPrice', '')).replace('.0', '')
+    cond = item.get('condition', 'new')
+    cycle = str(item.get('cycle', '') or '').replace('.0', '')
+    color_uz = clean_color(item.get('color', ''))
+    color_ru = clean_color(item.get('colorRu', '') or item.get('color', ''))
+
+    model = models_by_id.get(item.get('specId', ''), {})
+    spec_uz = model.get('specUz', '') or ''
+    spec_ru = model.get('specRu', '') or ''
+
+    cond_uz, cond_ru, _ = holati_matni(cond, cycle)
+
+    lines = []
+    lines.append(f"ELON RAQAMI: #{num}")
+    lines.append("")
+    # ── Birxil shablon (har elon uchun bir xil) ──
+    lines.append("Telegram kanal yoki saytimizdan zakaz qilganlarga narxi arzonroq "
+                 "va kanalda har oy rozigrish (konkurs) bo'ladi!")
+    lines.append("Bundan tashqari 20 ga yaqin modellar va boshqa aksessuarlar, "
+                 "zapchastlar bor!")
+    lines.append("Telegramdan yozing — linklarini tashlab beraman.")
+    lines.append("")
+    # ── Holati ──
+    lines.append(f"• Holati: {cond_uz}")
+    lines.append(f"• Состояние: {cond_ru}")
+    lines.append("")
+    # ── Narx ──
+    price_num = 0.0
+    try:
+        price_num = float(price) if price else 0.0
+    except Exception:
+        price_num = 0.0
+    is_sold = (price_num == 0) and bool(old)
+    if is_sold:
+        lines.append(f"Цена/Narxi: {old}$ — SOTILDI ❗️")
+    elif old and old != price:
+        lines.append(f"Цена/Narxi: ~~{old}$~~ {price}$")
+    else:
+        lines.append(f"Цена/Narxi: {price}$")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    # ── Texnik xarakteristika ──
+    lines.append("Texnik xarakteristika/Технические характеристики:")
+    # Rang / Xotira (spec ichida ekran va h.k. bor)
+    if color_uz:
+        lines.append(f"• Rangi: {color_uz}")
+    if storage:
+        lines.append(f"• Xotira: {storage}")
+    if spec_uz:
+        lines.append(spec_uz)
+    lines.append("")
+    if color_ru:
+        lines.append(f"• Цвет: {color_ru}")
+    if storage:
+        lines.append(f"• Память: {storage}")
+    if spec_ru:
+        lines.append(spec_ru)
+
+    return f"{name_uz} ({storage})".strip(), "\n".join(lines).strip()
 
 
 def send_elon(chat_id, text, entities):
@@ -625,6 +719,31 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
         except Exception as e:
             logger.error(f'notify {uid}: {e}')
 
+    # ── #6.4: KANALGA natija posti (konkurs tugadi, g'oliblar ro'yxati) ──
+    # CHANNEL env test kanaliга (@Kraken_mobile_test) o'rnatilса — o'shanga ketadi,
+    # aks holda asosiy kanalga. Testdan keyin env'ni almashtirasan.
+    try:
+        ch_text = (
+            f"🎊 *KONKURS YAKUNLANDI!* 🎊\n"
+            f"🎁 *{prize}*\n\n"
+            f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
+            f"🇺🇿 G'oliblarni tabriklaymiz! Sovg'ani olish uchun admin bilan bog'laning.\n"
+            f"🇷🇺 Поздравляем победителей! Для получения приза свяжитесь с админом.\n\n"
+            f"📅 Har oy yangi konkurslar — kuzatib boring!\n"
+            f"📅 Каждый месяц новые розыгрыши — следите за нами!"
+        )
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': CHANNEL,
+            'text': ch_text,
+            'parse_mode': 'Markdown',
+            'reply_markup': {"inline_keyboard": [[{
+                "text": "🛍 Do'kon / Магазин",
+                "url": "https://t.me/kraken_mobile_shop_bot?startapp"
+            }]]}
+        }, timeout=8)
+    except Exception as e:
+        logger.error(f'channel konkurs post: {e}')
+
 
 def tg_file_url(file_id):
     """Telegram file_id dan yuklab olinadigan URL qaytaradi."""
@@ -710,6 +829,32 @@ def finalize_photo_group(mgid, chat_id):
         send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
 
 
+async def handle_konkurs_photo(chat_id, file_id):
+    """#6.5: Admin konkurs rejimida rasm yuborsa — ImageKit'ga yuklab,
+    Sheets'dagi sovrin rasmlar ro'yxatiga saqlaydi."""
+    send_msg(chat_id, "⏳ Rasm yuklanmoqda...")
+
+    def _work():
+        url = upload_to_imagekit(file_id)
+        if not url:
+            send_msg(chat_id, "❌ Rasm yuklashda xatolik. Qayta urining.")
+            return
+        # Sheets'ga saqlaymiz
+        try:
+            payload = urllib.parse.quote(json.dumps({'url': url}))
+            r = req.get(f'{SHEET_URL}?action=addKonkursRasm&data={payload}', timeout=15)
+            res = r.json()
+            num = res.get('num', '?') if isinstance(res, dict) else '?'
+            send_msg(chat_id,
+                f"✅ Sovrin rasmi saqlandi: *№{num}*\n\n"
+                f"Yana rasm yuboring yoki /tayyor deб yozing.")
+        except Exception as e:
+            logger.error(f'konkurs rasm sheet: {e}')
+            send_msg(chat_id, "❌ Sheets'ga saqlashda xatolik.")
+
+    await asyncio.get_event_loop().run_in_executor(None, _work)
+
+
 async def handle_admin_photo(chat_id, file_id, media_group_id):
     """Admin rasm yuborsa — chala elon yaratadi.
     Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi."""
@@ -777,12 +922,13 @@ async def webhook(request):
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
             elif cq_data.startswith('pub_') and cq_user.get('id') == ADMIN_ID:
-                # Elonni kanalga chiqarish tasdiqlandi
+                # (VAQTINCHA REJIMDA ishlatilmaydi — tugma yuborilmaydi.
+                #  Avtomatik tizim qaytarilганда yana faollashadi.)
                 num = cq_data[4:]
                 cq_msg_id = cq.get('message', {}).get('message_id')
                 await publish_elon_to_channel(num, cq_chat, cq_msg_id)
             elif cq_data.startswith('cancel_') and cq_user.get('id') == ADMIN_ID:
-                # Bekor qilindi
+                # (VAQTINCHA REJIMDA ishlatilmaydi.)
                 cq_msg_id = cq.get('message', {}).get('message_id')
                 if cq_msg_id:
                     req.post(f'{TG_API}/editMessageReplyMarkup', json={
@@ -795,12 +941,18 @@ async def webhook(request):
         if not chat_id:
             return web.json_response({'ok': True})
 
-        # ── ADMIN rasm yuborsa: chala elon yaratamiz (rasm + raqam) ──
+        # ── ADMIN rasm yuborsa ──
         photo = message.get('photo')
         if photo and chat_id == ADMIN_ID:
-            mgid = message.get('media_group_id')
             largest = photo[-1]  # eng katta o'lcham
             file_id = largest.get('file_id', '')
+            # #6.5: Konkurs sovrin rasmi rejimida bo'lsa — elon emas, sovrin rasmi saqlaymiz
+            st = user_states.get(chat_id, {})
+            if st.get('step') == 'konkurs_photo':
+                await handle_konkurs_photo(chat_id, file_id)
+                return web.json_response({'ok': True})
+            # Aks holda — eski logika: chala elon yaratamiz
+            mgid = message.get('media_group_id')
             await handle_admin_photo(chat_id, file_id, mgid)
             return web.json_response({'ok': True})
 
@@ -832,7 +984,24 @@ async def webhook(request):
                 }, timeout=10)
 
         elif text == '/konkurs':
-            await start_konkurs_flow(chat_id, user)
+            # #6.5: ADMIN uchun — sovrin rasmi yig'ish rejimi.
+            #       Oddiy mijoz uchun — konkursда qatnashish flow'i.
+            if chat_id == ADMIN_ID:
+                user_states[chat_id] = {'step': 'konkurs_photo'}
+                send_msg(chat_id,
+                    "🎁 *Konkurs sovrin rasmi qo'shish*\n\n"
+                    "📸 Sovrin rasm(lar)ini yuboring — saqlab qo'yaman.\n"
+                    "Keyin saytda konkurs yaratishda \"sovrin rasmi\" ro'yxatidan tanlaysiz.\n\n"
+                    "Tugagach /tayyor deb yozing yoki boshqa buyruq bering.")
+            else:
+                await start_konkurs_flow(chat_id, user)
+
+        elif text == '/tayyor' and chat_id == ADMIN_ID:
+            # Konkurs rasm yig'ish rejimini yopamiz
+            st = user_states.get(chat_id, {})
+            if st.get('step') == 'konkurs_photo':
+                user_states.pop(chat_id, None)
+                send_msg(chat_id, "✅ Tayyor. Saytda konkurs yaratishda rasmlarni ko'rasiz.")
 
         elif contact and chat_id in user_states:
             await handle_phone(chat_id, contact.get('phone_number', ''), user)
@@ -857,12 +1026,18 @@ def fetch_elon_by_num(num):
 
 
 async def preview_elon_to_admin(num, admin_chat):
-    """Adminга elon preview'ini + Tasdiqlash tugmasini yuboradi (kanalга yuborishдан oldin)."""
+    """VAQTINCHA REJIM: avtomatik kanal tizimi o'chirilgan.
+    'Kanalga yuborish' bosilganda bot elonni FAQAT adminga (lichkaga) yuboradi:
+      1) Kanal eloni — rasm(lar) + premium emoji bilan (copy qilib kanalga qo'yish uchun)
+      2) OLX matni — alohida xabar (#5)
+    Kanalga hech narsa yuborilmaydi, tasdiqlash tugmasi yo'q.
+    (publish_elon_to_channel / update_channel_elon funksiyalari kodda qoladi —
+     kelajakda avtomatik tizimni qaytarish uchun.)"""
     elon, models = fetch_elon_by_num(num)
     if not elon:
         send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
         return
-    _, text, entities = build_elon(elon, models)
+    _, text, entities = build_elon(elon, models)   # premium emoji lichkaga chiqadi
     images = elon.get('images', [])
     if isinstance(images, str):
         try:
@@ -870,17 +1045,26 @@ async def preview_elon_to_admin(num, admin_chat):
         except Exception:
             images = [images] if images else []
 
-    # Preview: matn oldiga "PREVIEW" belgisi (adminga)
-    header = "👁 *PREVIEW* — kanalga yuborishdan oldin tekshiring:"
-    send_msg(admin_chat, header)
-    # Rasm(lar) + matn + tasdiqlash tugmasi
-    markup = {"inline_keyboard": [[
-        {"text": "✅ Tasdiqlash (kanalga)", "callback_data": f"pub_{num}"},
-        {"text": "❌ Bekor", "callback_data": f"cancel_{num}"}
-    ]]}
-    res = send_elon_with_photos(admin_chat, text, entities, images, reply_markup=markup)
+    # ── 1) KANAL ELONI (premium emoji bilan, copy uchun tayyor) ──
+    send_msg(admin_chat, "📋 *KANAL ELONI* — nusxalab kanalga joylang 👇")
+    res = send_elon_with_photos(admin_chat, text, entities, images)
     if not res:
-        send_msg(admin_chat, "❌ Preview yuborishda xatolik.")
+        send_msg(admin_chat, "❌ Kanal elonini yuborishda xatolik.")
+
+    # ── 2) OLX MATNI (alohida xabar, #5) ──
+    _, olx_text = build_olx_text(elon, models)
+    # Markdown yubormaymiz — OLX matnida ~~ va $ belgilari bor, oddiy text
+    try:
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': admin_chat,
+            'text': "🟢 OLX UCHUN MATN — nusxalab OLX'ga joylang 👇",
+        }, timeout=8)
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': admin_chat,
+            'text': olx_text,
+        }, timeout=10)
+    except Exception as e:
+        logger.error(f'OLX send: {e}')
 
 
 async def publish_elon_to_channel(num, admin_chat, preview_msg_id=None):
@@ -890,6 +1074,9 @@ async def publish_elon_to_channel(num, admin_chat, preview_msg_id=None):
         send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
         return
     _, text, entities = build_elon(elon, models)
+    # Kanalga custom emoji o'tmaydi (Telegram cheklovi) — tashlab yuboramiz,
+    # oddiy emoji toza ko'rinadi. Bold/strikethrough/quote qoladi.
+    entities = strip_custom_emoji(entities)
     images = elon.get('images', [])
     if isinstance(images, str):
         try:
@@ -937,6 +1124,7 @@ def update_channel_elon(num):
     if not ch_mid:
         return False  # kanalga hali yuborilmagan
     _, text, entities = build_elon(elon, models)
+    entities = strip_custom_emoji(entities)   # kanalda custom emoji yo'q (#4)
     is_mg = str(elon.get('is_media_group', '')).lower() in ('true', '1', 'yes')
     text_mid = elon.get('text_message_id', '') or ch_mid
     edit_channel_post(CHANNEL, ch_mid, text, entities, is_media_group=is_mg, text_message_id=text_mid)
@@ -976,18 +1164,12 @@ async def publish_endpoint(request):
 
 
 async def update_channel_endpoint(request):
-    """Sayt tahrir/sotildi qilganda — kanaldagi postni avtomatik yangilaydi (tasdiqsiz)."""
-    try:
-        data = await request.json()
-        num = str(data.get('num', ''))
-        if not num:
-            return web.json_response({'error': 'No num'}, status=400)
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, update_channel_elon, num)
-        return web.json_response({'ok': True})
-    except Exception as e:
-        logger.error(f'update_channel_endpoint: {e}')
-        return web.json_response({'error': str(e)}, status=500)
+    """VAQTINCHA O'CHIRILGAN: sayt tahrir/sotildi qilganda kanalni AVTOMATIK
+    tahrirlamaydi. Sabab: bot edit qilganda kanaldagi premium emoji yo'qoladi.
+    Endi kanalni admin qo'lda boshqaradi. (update_channel_elon kodi qoladi —
+    avtomatik tizim qaytarilганda shu endpoint ichini yana yoqamiz.)"""
+    # Hech narsa qilmaymiz — 'ok' qaytaramiz (sayt xato bermasin).
+    return web.json_response({'ok': True, 'skipped': 'auto-channel disabled'})
 
 
 async def upload_image(request):
