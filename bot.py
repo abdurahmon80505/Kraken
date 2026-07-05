@@ -379,10 +379,18 @@ def send_elon_with_photos(chat_id, text, entities, images, reply_markup=None):
                 }
 
         # Ko'p rasm — sendMediaGroup (grid). Caption 1-rasmga (agar sig'sa)
+        # Media group tugma qo'ya olmaydi. Shuning uchun:
+        #  - caption sig'sa VA tugma bo'lsa: rasmlarni caption bilan yuboramiz,
+        #    keyin tugmani MATN xabariga emas — caption ostidagi oxirgi rasmga
+        #    biriktirib bo'lmaydi, shuning uchun tugmani matn bilan birga yuboramiz.
+        #  - Alohida bo'sh '👆' YUBORMAYMIZ (xunuk edi).
         media = []
+        # Agar tugma bo'lsa, matnni media group caption'iga QO'YMAYMIZ — matn+tugmani
+        # media group'dan keyin bitta xabar qilib yuboramiz (rasmlar tepada, matn+tugma pastda).
+        put_caption_in_group = caption_fits and not reply_markup
         for i, url in enumerate(images[:10]):
             item = {'type': 'photo', 'media': url}
-            if i == 0 and caption_fits:
+            if i == 0 and put_caption_in_group:
                 item['caption'] = text
                 if entities:
                     item['caption_entities'] = entities
@@ -391,9 +399,9 @@ def send_elon_with_photos(chat_id, text, entities, images, reply_markup=None):
         results = r.get('result', [])
         first_mid = results[0].get('message_id') if results else None
 
-        # Caption sig'madi — alohida matn (media group'dan keyin)
         text_mid = first_mid
-        if not caption_fits:
+        # Caption group'ga kirmagan bo'lsa (uzun YOKI tugma bor) — matn+tugmani alohida
+        if not put_caption_in_group:
             tpayload = {'chat_id': chat_id, 'text': text}
             if entities:
                 tpayload['entities'] = entities
@@ -401,12 +409,6 @@ def send_elon_with_photos(chat_id, text, entities, images, reply_markup=None):
                 tpayload['reply_markup'] = reply_markup
             tr = req.post(f'{TG_API}/sendMessage', json=tpayload, timeout=10).json()
             text_mid = tr.get('result', {}).get('message_id')
-        elif reply_markup:
-            # Media group tugma qo'ymaydi — alohida bitta xabar bilan tugma
-            tr = req.post(f'{TG_API}/sendMessage', json={
-                'chat_id': chat_id, 'text': '👆',
-                'reply_markup': reply_markup
-            }, timeout=10).json()
 
         return {'message_id': first_mid, 'is_media_group': True, 'text_message_id': text_mid}
     except Exception as e:
@@ -706,14 +708,12 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
                     'text': (
                         f"🎁 *{prize}* konkursi yakunlandi!\n\n"
                         f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
-                        f"🇺🇿 Bu safar sizga omad kulib boqmadi 😔\n"
-                        f"Ammo sizga *10$lik vaucher* sovg'a qilamiz! 🎁\n"
-                        f"Saytimizdagi istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
-                        f"❗Vaucher faqat 1 kun davomida amal qiladi.\n\n"
-                        f"🇷🇺 В этот раз удача вам не улыбнулась 😔\n"
-                        f"Но мы дарим вам *ваучер на 10$*! 🎁\n"
-                        f"Выберите любой смартфон на нашем сайте и получите скидку 10$ на покупку. 🛒\n"
-                        f"❗Ваучер действует только 1 день."
+                        f"🎁 Ammo sizga *10$lik vaucher* sovg'a qilamiz!\n"
+                        f"istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
+                        f"❗️Vaucher faqat 1 kun davomida amal qiladi.\n\n"
+                        f"🎁 Но мы дарим вам *ваучер на 10$*!\n"
+                        f"Выберите любой смартфон и получите скидку 10$ на покупку. 🛒\n"
+                        f"❗️Ваучер действует только 1 день."
                     ),
                     'parse_mode': 'Markdown',
                     'reply_markup': {"inline_keyboard": [[{
@@ -873,28 +873,46 @@ def finalize_konkurs_photos(key, chat_id):
 
 
 def _save_konkurs_photos(chat_id, file_ids):
-    """Rasmlarni ImageKit'ga yuklab, file_id + URL bilan Sheetsga saqlaydi.
-    Bitta javob beradi (elon kabi)."""
+    """Konkurs rasmlarini ImageKit'ga yuklaydi va BITTA 'waited' konkurs yaratadi
+    (elon logikasi kabi): rasmlar bitta qatorga [,] bilan (prizePics), file_id'lar
+    ham saqlanadi (25 kun kanalga yuborish uchun). Javobda 'admin panel' tugmasi."""
     if not file_ids:
         return
-    saved = 0
+    urls = []
+    fids = []
     for fid in file_ids:
         url = upload_to_imagekit(fid)
-        if not url:
-            continue
-        try:
-            payload = urllib.parse.quote(json.dumps({'url': url, 'file_id': fid}))
-            r = req.get(f'{SHEET_URL}?action=addKonkursRasm&data={payload}', timeout=15)
-            if r.json().get('ok'):
-                saved += 1
-        except Exception as e:
-            logger.error(f'konkurs rasm save: {e}')
-    if saved:
-        send_msg(chat_id,
-            f"✅ *{saved} ta sovrin rasmi saqlandi!*\n\n"
-            f"Saytda konkurs yaratishda \"sovrin rasmi\" ro'yxatidan tanlaysiz.")
-    else:
+        if url:
+            urls.append(url)
+            fids.append(fid)
+    if not urls:
         send_msg(chat_id, "❌ Rasm saqlashda xatolik. Qayta urining.")
+        # rejimni yopamiz
+        user_states.pop(chat_id, None)
+        return
+    # Bitta waited konkurs yaratamiz — rasmlar bitta qatorda vergul bilan
+    try:
+        payload = urllib.parse.quote(json.dumps({
+            'prizePics': ','.join(urls),
+            'prizePicFileIds': ','.join(fids)
+        }))
+        r = req.get(f'{SHEET_URL}?action=createWaitedKonkurs&data={payload}', timeout=15)
+        ok = r.json().get('ok')
+    except Exception as e:
+        logger.error(f'createWaitedKonkurs: {e}')
+        ok = False
+    # Rejimni yopamiz (bir marta yig'ildi)
+    user_states.pop(chat_id, None)
+    if ok:
+        send_msg(chat_id,
+            f"✅ *{len(urls)} ta sovrin rasmi qabul qilindi!*\n\n"
+            f"Admin panelda konkursni to'ldiring 👇",
+            keyboard={"inline_keyboard": [[{
+                "text": "⚙️ Admin panelni ochish",
+                "web_app": {"url": SAYT_URL + "#admin"}
+            }]]})
+    else:
+        send_msg(chat_id, "❌ Konkurs yaratishda xatolik. Qayta urining.")
 
 
 async def handle_admin_photo(chat_id, file_id, media_group_id):
@@ -1026,24 +1044,13 @@ async def webhook(request):
                 }, timeout=10)
 
         elif text == '/konkurs':
-            # #6.5: ADMIN uchun — sovrin rasmi yig'ish rejimi.
-            #       Oddiy mijoz uchun — konkursда qatnashish flow'i.
+            # ADMIN: sovrin rasmi yig'ish rejimi (hech narsa demay rasm kutadi).
+            # Oddiy mijoz: konkursda qatnashish flow'i.
             if chat_id == ADMIN_ID:
                 user_states[chat_id] = {'step': 'konkurs_photo'}
-                send_msg(chat_id,
-                    "🎁 *Konkurs sovrin rasmi qo'shish*\n\n"
-                    "📸 Sovrin rasm(lar)ini yuboring — saqlab qo'yaman.\n"
-                    "Keyin saytda konkurs yaratishda \"sovrin rasmi\" ro'yxatidan tanlaysiz.\n\n"
-                    "Tugagach /tayyor deb yozing yoki boshqa buyruq bering.")
+                # Javob matni YO'Q — bot jimgina rasm kutadi (docx #9)
             else:
                 await start_konkurs_flow(chat_id, user)
-
-        elif text == '/tayyor' and chat_id == ADMIN_ID:
-            # Konkurs rasm yig'ish rejimini yopamiz
-            st = user_states.get(chat_id, {})
-            if st.get('step') == 'konkurs_photo':
-                user_states.pop(chat_id, None)
-                send_msg(chat_id, "✅ Tayyor. Saytda konkurs yaratishda rasmlarni ko'rasiz.")
 
         elif contact and chat_id in user_states:
             await handle_phone(chat_id, contact.get('phone_number', ''), user)
