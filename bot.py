@@ -18,6 +18,9 @@ TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
 # Test paytida:  CHANNEL_ID=@Kraken_mobile_test  (Render dashboard'ga qo'shasan)
 # Testdan keyin: env'ni o'chirasan yoki @Kraken_mobile qilasan → asosiy kanalga qaytadi.
 CHANNEL = os.environ.get('CHANNEL_ID', '@Kraken_mobile')
+# CHANNEL'dan username va link (a'zolik tugmalari uchun — test kanalga ham mos)
+CHANNEL_USERNAME = CHANNEL.lstrip('@')
+CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 ADMIN_USERNAME = 'Krakens_admin'
@@ -562,14 +565,14 @@ def not_member_msg(chat_id):
         "❗ *Konkursda qatnashish uchun kanalga a'zo bo'ling!*\n"
         "❗ *Для участия подпишитесь на канал!*",
         keyboard={"inline_keyboard": [
-            [{"text": "📢 @Kraken_mobile ga a'zo bo'lish", "url": "https://t.me/Kraken_mobile"}],
+            [{"text": f"📢 {CHANNEL} ga a'zo bo'lish", "url": CHANNEL_LINK}],
             [{"text": "✅ A'zo bo'ldim — qatnashish", "callback_data": "check_member"}]
         ]})
 
 async def start_konkurs_flow(chat_id, user):
     k = get_konkurs()
     if not k:
-        send_msg(chat_id, "😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: @Kraken_mobile")
+        send_msg(chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
         return
 
     if not is_member(chat_id):
@@ -638,9 +641,10 @@ async def handle_phone(chat_id, phone, user):
             logger.error(f'bg save_participant: {e}')
     asyncio.create_task(_save())
 
-def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winners=None):
+def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winners=None, pics=None):
     """Barcha qatnashuvchilarga xabar - g'oliblar va yutqazganlar.
-    winners: [{user_id, username, prize}, ...] — ko'p g'olib ro'yxati."""
+    winners: [{user_id, username, prize}, ...] — ko'p g'olib ro'yxati.
+    pics: konkurs sovrin rasmlari (file_id yoki url) — kanal postiga biriktiriladi."""
     participants = get_participants(konkurs_id)
     if not participants:
         logger.info('No participants to notify')
@@ -702,13 +706,14 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
                     'text': (
                         f"🎁 *{prize}* konkursi yakunlandi!\n\n"
                         f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
-                        f"🇺🇿 Afsuski, bu safar siz yutmadingiz 😔\n"
-                        f"💳 Lekin siz ham yutdingiz!\n"
-                        f"Kanalimizning istalgan smartfoniga *5$lik vauchеr* oldingiz!\n\n"
-                        f"🇷🇺 К сожалению, в этот раз вы не выиграли 😔\n"
-                        f"💳 Но вы тоже в выигрыше — *ваучер на $5*!\n\n"
-                        f"📅 Har oy yangi konkurslar — o'tkazib yubormang!\n"
-                        f"📢 @Kraken_mobile"
+                        f"🇺🇿 Bu safar sizga omad kulib boqmadi 😔\n"
+                        f"Ammo sizga *10$lik vaucher* sovg'a qilamiz! 🎁\n"
+                        f"Saytimizdagi istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
+                        f"❗Vaucher faqat 1 kun davomida amal qiladi.\n\n"
+                        f"🇷🇺 В этот раз удача вам не улыбнулась 😔\n"
+                        f"Но мы дарим вам *ваучер на 10$*! 🎁\n"
+                        f"Выберите любой смартфон на нашем сайте и получите скидку 10$ на покупку. 🛒\n"
+                        f"❗Ваучер действует только 1 день."
                     ),
                     'parse_mode': 'Markdown',
                     'reply_markup': {"inline_keyboard": [[{
@@ -719,28 +724,33 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
         except Exception as e:
             logger.error(f'notify {uid}: {e}')
 
-    # ── #6.4: KANALGA natija posti (konkurs tugadi, g'oliblar ro'yxati) ──
-    # CHANNEL env test kanaliга (@Kraken_mobile_test) o'rnatilса — o'shanga ketadi,
-    # aks holda asosiy kanalga. Testdan keyin env'ni almashtirasan.
+    # ── #6.4: KANALGA natija posti — SOVRIN RASMLARI + g'oliblar matni + tugma ──
+    # CHANNEL env test kanaliга (@Kraken_mobile_test) o'rnatilса — o'shanga ketadi.
     try:
         ch_text = (
-            f"🎊 *KONKURS YAKUNLANDI!* 🎊\n"
-            f"🎁 *{prize}*\n\n"
-            f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
+            f"🎊 KONKURS YAKUNLANDI! 🎊\n"
+            f"🎁 {prize}\n\n"
+            f"🏆 G'oliblar / Победители:\n{win_text}\n\n"
             f"🇺🇿 G'oliblarni tabriklaymiz! Sovg'ani olish uchun admin bilan bog'laning.\n"
             f"🇷🇺 Поздравляем победителей! Для получения приза свяжитесь с админом.\n\n"
             f"📅 Har oy yangi konkurslar — kuzatib boring!\n"
             f"📅 Каждый месяц новые розыгрыши — следите за нами!"
         )
-        req.post(f'{TG_API}/sendMessage', json={
-            'chat_id': CHANNEL,
-            'text': ch_text,
-            'parse_mode': 'Markdown',
-            'reply_markup': {"inline_keyboard": [[{
-                "text": "🛍 Do'kon / Магазин",
-                "url": "https://t.me/kraken_mobile_shop_bot?startapp"
-            }]]}
-        }, timeout=8)
+        markup = {"inline_keyboard": [[{
+            "text": "🛍 Do'kon / Магазин",
+            "url": "https://t.me/kraken_mobile_shop_bot?startapp"
+        }]]}
+        # pics — file_id yoki url ro'yxati (Sheets'dan). Rasm bo'lsa — rasm+caption,
+        # bo'lmasa — oddiy matn (elon yuborish funksiyasidan foydalanamiz).
+        pic_list = [p for p in (pics or []) if p]
+        if pic_list:
+            send_elon_with_photos(CHANNEL, ch_text, None, pic_list, reply_markup=markup)
+        else:
+            req.post(f'{TG_API}/sendMessage', json={
+                'chat_id': CHANNEL,
+                'text': ch_text,
+                'reply_markup': markup
+            }, timeout=8)
     except Exception as e:
         logger.error(f'channel konkurs post: {e}')
 
@@ -829,30 +839,62 @@ def finalize_photo_group(mgid, chat_id):
         send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
 
 
-async def handle_konkurs_photo(chat_id, file_id):
-    """#6.5: Admin konkurs rejimida rasm yuborsa — ImageKit'ga yuklab,
-    Sheets'dagi sovrin rasmlar ro'yxatiga saqlaydi."""
-    send_msg(chat_id, "⏳ Rasm yuklanmoqda...")
+async def handle_konkurs_photo(chat_id, file_id, media_group_id=None):
+    """#6.5: Admin konkurs rejimida rasm yuborsa — elon kabi GROUP qilib yig'adi,
+    hammasi kelgach BITTADA javob beradi. Har rasm: file_id (kanalga yuborish uchun)
+    + ImageKit URL (saytda ko'rsatish uchun) — ikkalasi Sheetsga saqlanadi."""
+    if media_group_id:
+        # Albom: rasmlarni yig'amiz, 2 sekund kutib, keyin bittada saqlaymiz
+        key = f'konkurs_{media_group_id}'
+        grp = _photo_groups.get(key)
+        if not grp:
+            grp = {'file_ids': [], 'chat_id': chat_id, 'is_konkurs': True}
+            _photo_groups[key] = grp
+        grp['file_ids'].append(file_id)
+        old = grp.get('timer')
+        if old:
+            old.cancel()
+        loop = asyncio.get_event_loop()
+        grp['timer'] = loop.call_later(
+            2.0, finalize_konkurs_photos, key, chat_id)
+    else:
+        # Bitta rasm — darrov
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _save_konkurs_photos, chat_id, [file_id])
 
-    def _work():
-        url = upload_to_imagekit(file_id)
+
+def finalize_konkurs_photos(key, chat_id):
+    """Albom to'planib bo'lgach — barcha konkurs rasmlarini bittada saqlaydi."""
+    grp = _photo_groups.pop(key, None)
+    if not grp:
+        return
+    file_ids = grp.get('file_ids', [])
+    _save_konkurs_photos(chat_id, file_ids)
+
+
+def _save_konkurs_photos(chat_id, file_ids):
+    """Rasmlarni ImageKit'ga yuklab, file_id + URL bilan Sheetsga saqlaydi.
+    Bitta javob beradi (elon kabi)."""
+    if not file_ids:
+        return
+    saved = 0
+    for fid in file_ids:
+        url = upload_to_imagekit(fid)
         if not url:
-            send_msg(chat_id, "❌ Rasm yuklashda xatolik. Qayta urining.")
-            return
-        # Sheets'ga saqlaymiz
+            continue
         try:
-            payload = urllib.parse.quote(json.dumps({'url': url}))
+            payload = urllib.parse.quote(json.dumps({'url': url, 'file_id': fid}))
             r = req.get(f'{SHEET_URL}?action=addKonkursRasm&data={payload}', timeout=15)
-            res = r.json()
-            num = res.get('num', '?') if isinstance(res, dict) else '?'
-            send_msg(chat_id,
-                f"✅ Sovrin rasmi saqlandi: *№{num}*\n\n"
-                f"Yana rasm yuboring yoki /tayyor deб yozing.")
+            if r.json().get('ok'):
+                saved += 1
         except Exception as e:
-            logger.error(f'konkurs rasm sheet: {e}')
-            send_msg(chat_id, "❌ Sheets'ga saqlashda xatolik.")
-
-    await asyncio.get_event_loop().run_in_executor(None, _work)
+            logger.error(f'konkurs rasm save: {e}')
+    if saved:
+        send_msg(chat_id,
+            f"✅ *{saved} ta sovrin rasmi saqlandi!*\n\n"
+            f"Saytda konkurs yaratishda \"sovrin rasmi\" ro'yxatidan tanlaysiz.")
+    else:
+        send_msg(chat_id, "❌ Rasm saqlashda xatolik. Qayta urining.")
 
 
 async def handle_admin_photo(chat_id, file_id, media_group_id):
@@ -918,7 +960,7 @@ async def webhook(request):
                     send_msg(cq_chat,
                         "❌ Hali a'zo emassiz! Avval kanalga a'zo bo'ling.",
                         keyboard={"inline_keyboard": [
-                            [{"text": "📢 Kanalga a'zo bo'lish", "url": "https://t.me/Kraken_mobile"}],
+                            [{"text": "📢 Kanalga a'zo bo'lish", "url": CHANNEL_LINK}],
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
             elif cq_data.startswith('pub_') and cq_user.get('id') == ADMIN_ID:
@@ -946,13 +988,13 @@ async def webhook(request):
         if photo and chat_id == ADMIN_ID:
             largest = photo[-1]  # eng katta o'lcham
             file_id = largest.get('file_id', '')
+            mgid = message.get('media_group_id')
             # #6.5: Konkurs sovrin rasmi rejimida bo'lsa — elon emas, sovrin rasmi saqlaymiz
             st = user_states.get(chat_id, {})
             if st.get('step') == 'konkurs_photo':
-                await handle_konkurs_photo(chat_id, file_id)
+                await handle_konkurs_photo(chat_id, file_id, mgid)
                 return web.json_response({'ok': True})
             # Aks holda — eski logika: chala elon yaratamiz
-            mgid = message.get('media_group_id')
             await handle_admin_photo(chat_id, file_id, mgid)
             return web.json_response({'ok': True})
 
@@ -1006,7 +1048,8 @@ async def webhook(request):
         elif contact and chat_id in user_states:
             await handle_phone(chat_id, contact.get('phone_number', ''), user)
 
-        elif text and chat_id in user_states:
+        elif text and chat_id in user_states and user_states[chat_id].get('step') != 'konkurs_photo':
+            # Admin konkurs rasm rejimida matn yozsa — telefon deb qabul qilmaymiz
             await handle_phone(chat_id, text, user)
 
         return web.json_response({'ok': True})
@@ -1045,15 +1088,8 @@ async def preview_elon_to_admin(num, admin_chat):
         except Exception:
             images = [images] if images else []
 
-    # ── 1) KANAL ELONI (premium emoji bilan, copy uchun tayyor) ──
-    send_msg(admin_chat, "📋 *KANAL ELONI* — nusxalab kanalga joylang 👇")
-    res = send_elon_with_photos(admin_chat, text, entities, images)
-    if not res:
-        send_msg(admin_chat, "❌ Kanal elonini yuborishda xatolik.")
-
-    # ── 2) OLX MATNI (alohida xabar, #5) ──
+    # ── 1) OLX MATNI (avval — #5) ──
     _, olx_text = build_olx_text(elon, models)
-    # Markdown yubormaymiz — OLX matnida ~~ va $ belgilari bor, oddiy text
     try:
         req.post(f'{TG_API}/sendMessage', json={
             'chat_id': admin_chat,
@@ -1065,6 +1101,12 @@ async def preview_elon_to_admin(num, admin_chat):
         }, timeout=10)
     except Exception as e:
         logger.error(f'OLX send: {e}')
+
+    # ── 2) KANAL ELONI (keyin — premium emoji bilan, forward/joylash uchun) ──
+    send_msg(admin_chat, "📋 *KANAL ELONI* — Kanalga joylashingiz mumkin 👇")
+    res = send_elon_with_photos(admin_chat, text, entities, images)
+    if not res:
+        send_msg(admin_chat, "❌ Kanal elonini yuborishda xatolik.")
 
 
 async def publish_elon_to_channel(num, admin_chat, preview_msg_id=None):
@@ -1139,11 +1181,12 @@ async def notify_endpoint(request):
         winner_username = data.get('winner_username', '')
         prize = data.get('prize', '')
         winners = data.get('winners', [])  # ko'p g'olib: [{user_id, username, prize}, ...]
+        pics = data.get('pics', [])        # konkurs sovrin rasmlari (file_id yoki url)
         if konkurs_id and (winner_user_id or winners):
             loop = asyncio.get_event_loop()
             loop.run_in_executor(
                 None, notify_participants,
-                konkurs_id, winner_user_id, winner_username, prize, winners)
+                konkurs_id, winner_user_id, winner_username, prize, winners, pics)
         return web.json_response({'ok': True})
     except Exception as e:
         return web.json_response({'error': str(e)}, status=500)
