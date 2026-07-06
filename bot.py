@@ -225,6 +225,31 @@ def _utf16len(s):
     return len(s.encode('utf-16-le')) // 2
 
 
+def md_escape(s):
+    """Markdown maxsus belgilarini himoyalaydi (username'dagi _ buzilmasin).
+    #6 bug: @Eco_print_uz -> @Ecoprintuz bo'lib qolar edi (_ = kursiv)."""
+    if not s:
+        return ''
+    for ch in ['_', '*', '[', ']', '`']:
+        s = s.replace(ch, '\\' + ch)
+    return s
+
+
+def winner_display(w):
+    """G'olibni ko'rsatish (Markdown):
+       username bor  -> @username  (_ escape bilan)
+       username yo'q -> [Ism](tg://resolve?phone=RAQAM)  (raqam yashirin, ism ko'rinadi)
+    """
+    uname = (w.get('username') or '').lstrip('@').strip()
+    if uname:
+        return '@' + md_escape(uname)
+    ism = (w.get('ism') or '').strip() or 'G\'olib'
+    phone = (w.get('phone') or '').strip().lstrip('+')
+    if phone:
+        return f"[{md_escape(ism)}](tg://resolve?phone={phone})"
+    return md_escape(ism)
+
+
 def strip_custom_emoji(entities):
     """Kanalga yuborishda custom_emoji entity'larni olib tashlaydi.
 
@@ -527,6 +552,128 @@ def get_konkurs():
         logger.error(f'get_konkurs: {e}')
     return None
 
+
+# ═══════════════════════════════════════════════════════════════
+# KONKURS AVTOMATIK TUGASH — aniq vaqtli timer (Apps Script polling O'RNIGA)
+# Konkurs 'active' bo'lganda tugash vaqtiga aniq timer qo'yiladi. Vaqt kelganda
+# bir marta g'olib aniqlanadi. Bot restart bo'lsa — startup'da qayta tiklanadi.
+# Render doim yoqiq bo'lgani uchun ishonchli.
+# ═══════════════════════════════════════════════════════════════
+_konkurs_timer = {'task': None, 'id': None}   # joriy rejalashtirilgan timer
+
+
+def _parse_end_time(end_str):
+    """end_time matnini UTC timestamp (soniya)ga aylantiradi.
+    Format: 'YYYY-MM-DDTHH:MM' yoki 'YYYY-MM-DD HH:MM:SS' — Toshkent (UTC+5) deb qabul qilinadi."""
+    if not end_str:
+        return None
+    s = str(end_str).strip().replace('T', ' ')
+    from datetime import datetime
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
+        try:
+            dt = datetime.strptime(s[:19] if len(s) >= 19 else s, fmt)
+            # Toshkent vaqti (UTC+5) → UTC timestamp
+            import calendar
+            return calendar.timegm(dt.timetuple()) - 5 * 3600
+        except Exception:
+            continue
+    return None
+
+
+async def _konkurs_end_worker(konkurs_id, delay):
+    """delay soniyadan keyin konkursni tugatadi (Apps Script endKonkurs)."""
+    try:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        # Apps Script'da g'olibni aniqlaymiz
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, _end_konkurs_via_sheet, konkurs_id)
+        if res and res.get('ok'):
+            # G'olib/maglub/kanal xabarlari (notify_participants)
+            pics = res.get('_pics', [])
+            await loop.run_in_executor(
+                None, notify_participants,
+                konkurs_id, '', '', res.get('_prize', ''), res.get('winners', []), pics)
+            logger.info(f'Konkurs {konkurs_id} avtomatik tugadi')
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f'konkurs_end_worker: {e}')
+    finally:
+        if _konkurs_timer.get('id') == konkurs_id:
+            _konkurs_timer['task'] = None
+            _konkurs_timer['id'] = None
+
+
+def _end_konkurs_via_sheet(konkurs_id):
+    """Apps Script endKonkurs'ni chaqiradi, natijaga prize+pics qo'shadi."""
+    try:
+        r = req.get(f"{SHEET_URL}?action=endKonkurs&id={urllib.parse.quote(str(konkurs_id))}&callback=d", timeout=20)
+        text = r.text.strip()
+        res = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        if not (res and res.get('ok')):
+            return None
+        # Konkurs qatoridan prize + prizePicFileIds ni olamiz (kanal/g'olib rasmi uchun)
+        k = get_konkurs_by_id(konkurs_id)
+        if k:
+            res['_prize'] = k.get('prize', '')
+            fids = k.get('prizePicFileIds', '') or k.get('prizePics', '')
+            res['_pics'] = [p.strip() for p in str(fids).split(',') if p.strip()]
+        return res
+    except Exception as e:
+        logger.error(f'_end_konkurs_via_sheet: {e}')
+        return None
+
+
+def get_konkurs_by_id(konkurs_id):
+    """Barcha konkurslardan id bo'yicha bittasini topadi."""
+    try:
+        r = req.get(f"{SHEET_URL}?action=getAllKonkurs&callback=d", timeout=10)
+        text = r.text.strip()
+        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        arr = data if isinstance(data, list) else data.get('konkurslar', [])
+        for k in arr:
+            if str(k.get('id')) == str(konkurs_id):
+                return k
+    except Exception as e:
+        logger.error(f'get_konkurs_by_id: {e}')
+    return None
+
+
+def schedule_konkurs_end(konkurs):
+    """Aktiv konkursga tugash timerini qo'yadi (mavjudini almashtiradi)."""
+    if not konkurs or not konkurs.get('id'):
+        return
+    kid = str(konkurs['id'])
+    end_ts = _parse_end_time(konkurs.get('end_time'))
+    if not end_ts:
+        return  # muddatsiz konkurs — qo'lda tugatiladi
+    import time
+    delay = end_ts - time.time()
+    # Allaqachon shu konkurs rejalashtirilgan bo'lsa — qayta qo'ymaymiz
+    if _konkurs_timer.get('id') == kid and _konkurs_timer.get('task'):
+        return
+    # Eski timerni bekor qilamiz
+    old = _konkurs_timer.get('task')
+    if old and not old.done():
+        old.cancel()
+    task = asyncio.create_task(_konkurs_end_worker(kid, max(0, delay)))
+    _konkurs_timer['task'] = task
+    _konkurs_timer['id'] = kid
+    logger.info(f'Konkurs {kid} tugash timeri: {int(delay)}s keyin')
+
+
+async def restore_konkurs_timer():
+    """Bot ishga tushganda — aktiv konkurs bo'lsa timerni tiklaydi."""
+    try:
+        loop = asyncio.get_event_loop()
+        k = await loop.run_in_executor(None, get_konkurs)
+        if k and k.get('end_time'):
+            schedule_konkurs_end(k)
+    except Exception as e:
+        logger.error(f'restore_konkurs_timer: {e}')
+
+
 def save_participant(konkurs_id, user_id, username, phone):
     if not SHEET_URL:
         return None
@@ -663,16 +810,34 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
     if not win_map and winner_user_id:
         win_map[str(winner_user_id)] = {'place': 1, 'prize': prize}
 
-    # G'oliblar ro'yxatini matn uchun (yutqazganlarga ko'rsatamiz)
+    # G'oliblar ro'yxati matni (yutqazgan va kanalga ko'rsatiladi) — username/ism link bilan
     medals = ['🥇', '🥈', '🥉']
     win_lines = []
     for idx, w in enumerate(winners):
-        uname = w.get('username', '')
-        disp = f"@{uname}" if uname else f"ID {w.get('user_id','')}"
+        disp = winner_display(w)   # @username YOKI [Ism](tg://resolve?phone=)
         medal = medals[idx] if idx < 3 else f"{idx+1}."
         wp = w.get('prize', '')
-        win_lines.append(f"{medal} {disp}" + (f" — {wp}" if wp else ""))
-    win_text = "\n".join(win_lines) if win_lines else (f"@{winner_username}" if winner_username else "anonim")
+        win_lines.append(f"{medal} {disp}" + (f" — {md_escape(wp)}" if wp else ""))
+    win_text = "\n".join(win_lines) if win_lines else "—"
+
+    # Rasm — g'olib/maglubga bitta (birinchi), kanalga hammasi
+    pic_list = [p for p in (pics or []) if p]
+    one_pic = pic_list[0] if pic_list else None
+
+    def _send_photo_or_text(chat, caption, markup):
+        """Rasm bo'lsa rasm+caption, bo'lmasa oddiy matn (Markdown)."""
+        if one_pic:
+            r = req.post(f'{TG_API}/sendPhoto', json={
+                'chat_id': chat, 'photo': one_pic, 'caption': caption,
+                'parse_mode': 'Markdown', 'reply_markup': markup
+            }, timeout=15)
+            # Rasm yuborilmasa (file_id eskirgan) — matnga tushamiz
+            if r.status_code == 200 and r.json().get('ok'):
+                return
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat, 'text': caption,
+            'parse_mode': 'Markdown', 'reply_markup': markup
+        }, timeout=10)
 
     for p in participants:
         uid = str(p.get('user_id', ''))
@@ -680,79 +845,101 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
             continue
         try:
             if uid in win_map:
-                # G'olibga maxsus xabar (o'z o'rni va sovg'asi bilan)
+                # ── G'OLIBGA (rasm + tabrik + tugma) ──
                 info = win_map[uid]
                 place = info['place']
-                my_prize = info['prize']
+                my_prize = md_escape(info['prize'])
                 medal = medals[place-1] if place <= 3 else f"{place}."
-                req.post(f'{TG_API}/sendMessage', json={
-                    'chat_id': uid,
-                    'text': (
-                        f"🏆 *Tabriklaymiz! Siz g'olib bo'ldingiz!*\n\n"
-                        f"{medal} *{place}-o'rin* — *{my_prize}*\n\n"
-                        f"🇺🇿 Konkursda g'olib bo'ldingiz! 🎊\n"
-                        f"🇷🇺 Вы выиграли *{place} место* — *{my_prize}*! 🎊\n\n"
-                        f"🎁 Sovg'angizni olish uchun adminga yozing:\n"
-                        f"🎁 Для получения приза напишите администратору:"
-                    ),
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {"inline_keyboard": [[{
-                        "text": "📩 Adminga yozish / Написать админу",
-                        "url": f"https://t.me/{ADMIN_USERNAME}"
-                    }]]}
-                }, timeout=5)
+                cap = (
+                    f"🏆 *Tabriklaymiz! Siz g'olib bo'ldingiz!* 🎊\n\n"
+                    f"{medal} *{place}-o'rin* — *{my_prize}*\n\n"
+                    f"🎁 Sovg'angizni olish uchun adminga yozing.\n"
+                    f"🎁 Для получения приза напишите администратору."
+                )
+                _send_photo_or_text(uid, cap, {"inline_keyboard": [[{
+                    "text": "📩 Adminga yozish / Написать админу",
+                    "url": f"https://t.me/{ADMIN_USERNAME}"
+                }]]})
             else:
-                # Yutqazganlarga xabar (barcha g'oliblar ro'yxati bilan)
-                req.post(f'{TG_API}/sendMessage', json={
-                    'chat_id': uid,
-                    'text': (
-                        f"🎁 *{prize}* konkursi yakunlandi!\n\n"
-                        f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
-                        f"🎁 Ammo sizga *10$lik vaucher* sovg'a qilamiz!\n"
-                        f"istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
-                        f"❗️Vaucher faqat 1 kun davomida amal qiladi.\n\n"
-                        f"🎁 Но мы дарим вам *ваучер на 10$*!\n"
-                        f"Выберите любой смартфон и получите скидку 10$ на покупку. 🛒\n"
-                        f"❗️Ваучер действует только 1 день."
-                    ),
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {"inline_keyboard": [[{
-                        "text": "🛍 Smartfonlarni ko'rish / Смотреть смартфоны",
-                        "web_app": {"url": SAYT_URL}
-                    }]]}
-                }, timeout=5)
+                # ── MAGLUBGA (rasm + vaucher + tugma) ──
+                cap = (
+                    f"🎁 *{md_escape(prize)}* konkursi yakunlandi!\n\n"
+                    f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
+                    f"🎁 Ammo sizga *10$lik vaucher* sovg'a qilamiz!\n"
+                    f"istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
+                    f"❗️Vaucher faqat 1 kun davomida amal qiladi.\n\n"
+                    f"🎁 Но мы дарим вам *ваучер на 10$*!\n"
+                    f"Выберите любой смартфон и получите скидку 10$ на покупку. 🛒\n"
+                    f"❗️Ваучер действует только 1 день."
+                )
+                _send_photo_or_text(uid, cap, {"inline_keyboard": [[{
+                    "text": "🛍 Smartfonlarni ko'rish / Смотреть смартфоны",
+                    "web_app": {"url": SAYT_URL}
+                }]]})
         except Exception as e:
             logger.error(f'notify {uid}: {e}')
 
-    # ── #6.4: KANALGA natija posti — SOVRIN RASMLARI + g'oliblar matni + tugma ──
-    # CHANNEL env test kanaliга (@Kraken_mobile_test) o'rnatilса — o'shanga ketadi.
+    # ── KANALGA (barcha rasmlar + g'oliblar matni + tugma) ──
     try:
         ch_text = (
-            f"🎊 KONKURS YAKUNLANDI! 🎊\n"
-            f"🎁 {prize}\n\n"
-            f"🏆 G'oliblar / Победители:\n{win_text}\n\n"
+            f"🎊 *KONKURS YAKUNLANDI!* 🎊\n"
+            f"🎁 *{md_escape(prize)}*\n\n"
+            f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
             f"🇺🇿 G'oliblarni tabriklaymiz! Sovg'ani olish uchun admin bilan bog'laning.\n"
             f"🇷🇺 Поздравляем победителей! Для получения приза свяжитесь с админом.\n\n"
-            f"📅 Har oy yangi konkurslar — kuzatib boring!\n"
-            f"📅 Каждый месяц новые розыгрыши — следите за нами!"
+            f"📅 Har oy yangi konkurslar — kuzatib boring!"
         )
         markup = {"inline_keyboard": [[{
             "text": "🛍 Do'kon / Магазин",
             "url": "https://t.me/kraken_mobile_shop_bot?startapp"
         }]]}
-        # pics — file_id yoki url ro'yxati (Sheets'dan). Rasm bo'lsa — rasm+caption,
-        # bo'lmasa — oddiy matn (elon yuborish funksiyasidan foydalanamiz).
-        pic_list = [p for p in (pics or []) if p]
         if pic_list:
-            send_elon_with_photos(CHANNEL, ch_text, None, pic_list, reply_markup=markup)
+            # Kanalga BARCHA rasmlar + matn + tugma (elon logikasi, markdown caption)
+            send_konkurs_channel_post(CHANNEL, ch_text, pic_list, markup)
         else:
             req.post(f'{TG_API}/sendMessage', json={
-                'chat_id': CHANNEL,
-                'text': ch_text,
-                'reply_markup': markup
+                'chat_id': CHANNEL, 'text': ch_text,
+                'parse_mode': 'Markdown', 'reply_markup': markup
             }, timeout=8)
     except Exception as e:
         logger.error(f'channel konkurs post: {e}')
+
+
+def send_konkurs_channel_post(chat_id, text, images, reply_markup):
+    """Konkurs natijasini kanalga elon logikasi bilan yuboradi:
+    1 rasm  -> sendPhoto (caption + tugma birga)
+    ko'p rasm -> sendMediaGroup (rasmlar) + matn/tugma alohida BITTA xabar (👆 yo'q).
+    Markdown ishlatiladi (username _ escape qilingan)."""
+    imgs = [i for i in (images or []) if i][:10]
+    if not imgs:
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id, 'text': text,
+            'parse_mode': 'Markdown', 'reply_markup': reply_markup
+        }, timeout=10)
+        return
+    # Caption 1024 belgigacha sig'adimi?
+    caption_fits = len(text) <= 1000
+    if len(imgs) == 1:
+        r = req.post(f'{TG_API}/sendPhoto', json={
+            'chat_id': chat_id, 'photo': imgs[0],
+            'caption': text, 'parse_mode': 'Markdown',
+            'reply_markup': reply_markup
+        }, timeout=15)
+        if r.status_code == 200 and r.json().get('ok'):
+            return
+        # rasm yuborilmasa — matn
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id, 'text': text,
+            'parse_mode': 'Markdown', 'reply_markup': reply_markup
+        }, timeout=10)
+        return
+    # Ko'p rasm — media group (tugma qo'ymaydi), keyin matn+tugma alohida
+    media = [{'type': 'photo', 'media': u} for u in imgs]
+    req.post(f'{TG_API}/sendMediaGroup', json={'chat_id': chat_id, 'media': media}, timeout=20)
+    req.post(f'{TG_API}/sendMessage', json={
+        'chat_id': chat_id, 'text': text,
+        'parse_mode': 'Markdown', 'reply_markup': reply_markup
+    }, timeout=10)
 
 
 def tg_file_url(file_id):
@@ -1180,6 +1367,23 @@ def update_channel_elon(num):
     return True
 
 
+async def konkurs_started_endpoint(request):
+    """Sayt konkursni 'active' qilganda — bot tugash timerini o'rnatadi.
+    Kesh eskirmasin deb tozalab, yangi konkursga timer qo'yamiz."""
+    try:
+        data = await request.json()
+        _konkurs_cache['data'] = None  # keshni yangilaymiz
+        _konkurs_cache['time'] = 0
+        loop = asyncio.get_event_loop()
+        k = await loop.run_in_executor(None, get_konkurs)
+        if k and k.get('end_time'):
+            schedule_konkurs_end(k)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'konkurs_started: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def notify_endpoint(request):
     try:
         data = await request.json()
@@ -1287,6 +1491,7 @@ async def main():
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/notify', notify_endpoint)
+    app.router.add_post('/konkurs_started', konkurs_started_endpoint)
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/update_channel', update_channel_endpoint)
     app.router.add_post('/upload', upload_image)
@@ -1302,6 +1507,8 @@ async def main():
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook: {r.json()}')
     asyncio.create_task(keep_alive())
+    # Bot ishga tushganda aktiv konkurs timerini tiklaydi (restart himoyasi)
+    asyncio.create_task(restore_konkurs_timer())
     # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
     try:
         listings, _ = get_products()
