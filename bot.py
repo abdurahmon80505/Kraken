@@ -683,7 +683,7 @@ async def restore_konkurs_timer():
         logger.error(f'restore_konkurs_timer: {e}')
 
 
-def save_participant(konkurs_id, user_id, username, phone):
+def save_participant(konkurs_id, user_id, username, phone, ism=''):
     if not SHEET_URL:
         return None
     try:
@@ -691,6 +691,7 @@ def save_participant(konkurs_id, user_id, username, phone):
             'konkurs_id': str(konkurs_id),
             'user_id': str(user_id),
             'username': username or '',
+            'ism': ism or '',
             'phone': str(phone),
         }, ensure_ascii=False)
         r = req.get(
@@ -767,6 +768,11 @@ async def handle_phone(chat_id, phone, user):
     user_id = state.get('user_id', chat_id)
     konkurs_id = state.get('konkurs_id', '')
     prize = state.get('prize', '')
+    # Ism (first_name + last_name) — g'olib username'siz bo'lsa ko'rsatish uchun
+    ism = (user.get('first_name', '') or '').strip()
+    _ln = (user.get('last_name', '') or '').strip()
+    if _ln:
+        ism = (ism + ' ' + _ln).strip()
 
     # ── DARROV javob: hech qanday Google so'rovini KUTMAYMIZ ──
     # Mijoz raqam berishi bilan tasdiqlash xabarini yuboramiz.
@@ -793,7 +799,7 @@ async def handle_phone(chat_id, phone, user):
     async def _save():
         try:
             await asyncio.get_event_loop().run_in_executor(
-                None, save_participant, konkurs_id, user_id, username, phone)
+                None, save_participant, konkurs_id, user_id, username, phone, ism)
             _konkurs_cache['time'] = 0
         except Exception as e:
             logger.error(f'bg save_participant: {e}')
