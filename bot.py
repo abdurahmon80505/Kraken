@@ -225,29 +225,38 @@ def _utf16len(s):
     return len(s.encode('utf-16-le')) // 2
 
 
-def md_escape(s):
-    """Markdown maxsus belgilarini himoyalaydi (username'dagi _ buzilmasin).
-    #6 bug: @Eco_print_uz -> @Ecoprintuz bo'lib qolar edi (_ = kursiv)."""
+def html_escape(s):
+    """HTML maxsus belgilarini himoyalaydi."""
     if not s:
         return ''
-    for ch in ['_', '*', '[', ']', '`']:
-        s = s.replace(ch, '\\' + ch)
-    return s
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def md_escape(s):
+    """(eski nom — endi HTML escape ishlatamiz)"""
+    return html_escape(s)
 
 
 def winner_display(w):
-    """G'olibni ko'rsatish (Markdown):
-       username bor  -> @username  (_ escape bilan)
-       username yo'q -> [Ism](tg://resolve?phone=RAQAM)  (raqam yashirin, ism ko'rinadi)
-    """
-    uname = (w.get('username') or '').lstrip('@').strip()
+    """G'olibni ko'rsatish (HTML parse_mode):
+       username bor  -> @username
+       username yo'q -> <a href="tg://user?id=ID">Ism</a> (ism ko'rinadi, ID link)
+                        agar ID bo'lmasa telefon link.
+    HTML ishonchliroq: username'dagi _ buzilmaydi, tg link to'g'ri ishlaydi."""
+    try:
+        uname = str(w.get('username') or '').lstrip('@').strip()
+    except Exception:
+        uname = ''
     if uname:
-        return '@' + md_escape(uname)
-    ism = (w.get('ism') or '').strip() or 'G\'olib'
-    phone = (w.get('phone') or '').strip().lstrip('+')
+        return '@' + html_escape(uname)
+    ism = html_escape(str(w.get('ism') or '').strip() or 'Ishtirokchi')
+    uid = str(w.get('user_id') or '').strip()
+    phone = str(w.get('phone') or '').strip().lstrip('+')
+    if uid:
+        return f'<a href="tg://user?id={uid}">{ism}</a>'
     if phone:
-        return f"[{md_escape(ism)}](tg://resolve?phone={phone})"
-    return md_escape(ism)
+        return f'<a href="tg://resolve?phone={phone}">{ism}</a>'
+    return ism
 
 
 def strip_custom_emoji(entities):
@@ -814,10 +823,10 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
     medals = ['🥇', '🥈', '🥉']
     win_lines = []
     for idx, w in enumerate(winners):
-        disp = winner_display(w)   # @username YOKI [Ism](tg://resolve?phone=)
+        disp = winner_display(w)   # @username YOKI <a href="tg://user?id=">Ism</a>
         medal = medals[idx] if idx < 3 else f"{idx+1}."
         wp = w.get('prize', '')
-        win_lines.append(f"{medal} {disp}" + (f" — {md_escape(wp)}" if wp else ""))
+        win_lines.append(f"{medal} {disp}" + (f" — {html_escape(wp)}" if wp else ""))
     win_text = "\n".join(win_lines) if win_lines else "—"
 
     # Rasm — g'olib/maglubga bitta (birinchi), kanalga hammasi
@@ -825,19 +834,21 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
     one_pic = pic_list[0] if pic_list else None
 
     def _send_photo_or_text(chat, caption, markup):
-        """Rasm bo'lsa rasm+caption, bo'lmasa oddiy matn (Markdown)."""
-        if one_pic:
-            r = req.post(f'{TG_API}/sendPhoto', json={
-                'chat_id': chat, 'photo': one_pic, 'caption': caption,
-                'parse_mode': 'Markdown', 'reply_markup': markup
-            }, timeout=15)
-            # Rasm yuborilmasa (file_id eskirgan) — matnga tushamiz
-            if r.status_code == 200 and r.json().get('ok'):
-                return
-        req.post(f'{TG_API}/sendMessage', json={
-            'chat_id': chat, 'text': caption,
-            'parse_mode': 'Markdown', 'reply_markup': markup
-        }, timeout=10)
+        """Rasm bo'lsa rasm+caption, bo'lmasa oddiy matn (HTML). Har biri xavfsiz."""
+        try:
+            if one_pic:
+                r = req.post(f'{TG_API}/sendPhoto', json={
+                    'chat_id': chat, 'photo': one_pic, 'caption': caption,
+                    'parse_mode': 'HTML', 'reply_markup': markup
+                }, timeout=15)
+                if r.status_code == 200 and r.json().get('ok'):
+                    return
+            req.post(f'{TG_API}/sendMessage', json={
+                'chat_id': chat, 'text': caption,
+                'parse_mode': 'HTML', 'reply_markup': markup
+            }, timeout=10)
+        except Exception as e:
+            logger.error(f'send to {chat}: {e}')
 
     for p in participants:
         uid = str(p.get('user_id', ''))
@@ -848,11 +859,11 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
                 # ── G'OLIBGA (rasm + tabrik + tugma) ──
                 info = win_map[uid]
                 place = info['place']
-                my_prize = md_escape(info['prize'])
+                my_prize = html_escape(info['prize'])
                 medal = medals[place-1] if place <= 3 else f"{place}."
                 cap = (
-                    f"🏆 *Tabriklaymiz! Siz g'olib bo'ldingiz!* 🎊\n\n"
-                    f"{medal} *{place}-o'rin* — *{my_prize}*\n\n"
+                    f"🏆 <b>Tabriklaymiz! Siz g'olib bo'ldingiz!</b> 🎊\n\n"
+                    f"{medal} <b>{place}-o'rin</b> — <b>{my_prize}</b>\n\n"
                     f"🎁 Sovg'angizni olish uchun adminga yozing.\n"
                     f"🎁 Для получения приза напишите администратору."
                 )
@@ -863,12 +874,12 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
             else:
                 # ── MAGLUBGA (rasm + vaucher + tugma) ──
                 cap = (
-                    f"🎁 *{md_escape(prize)}* konkursi yakunlandi!\n\n"
-                    f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
-                    f"🎁 Ammo sizga *10$lik vaucher* sovg'a qilamiz!\n"
+                    f"🎁 <b>{html_escape(prize)}</b> konkursi yakunlandi!\n\n"
+                    f"🏆 <b>G'oliblar / Победители:</b>\n{win_text}\n\n"
+                    f"🎁 Ammo sizga <b>10$lik vaucher</b> sovg'a qilamiz!\n"
                     f"istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
                     f"❗️Vaucher faqat 1 kun davomida amal qiladi.\n\n"
-                    f"🎁 Но мы дарим вам *ваучер на 10$*!\n"
+                    f"🎁 Но мы дарим вам <b>ваучер на 10$</b>!\n"
                     f"Выберите любой смартфон и получите скидку 10$ на покупку. 🛒\n"
                     f"❗️Ваучер действует только 1 день."
                 )
@@ -882,9 +893,9 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
     # ── KANALGA (barcha rasmlar + g'oliblar matni + tugma) ──
     try:
         ch_text = (
-            f"🎊 *KONKURS YAKUNLANDI!* 🎊\n"
-            f"🎁 *{md_escape(prize)}*\n\n"
-            f"🏆 *G'oliblar / Победители:*\n{win_text}\n\n"
+            f"🎊 <b>KONKURS YAKUNLANDI!</b> 🎊\n"
+            f"🎁 <b>{html_escape(prize)}</b>\n\n"
+            f"🏆 <b>G'oliblar / Победители:</b>\n{win_text}\n\n"
             f"🇺🇿 G'oliblarni tabriklaymiz! Sovg'ani olish uchun admin bilan bog'laning.\n"
             f"🇷🇺 Поздравляем победителей! Для получения приза свяжитесь с админом.\n\n"
             f"📅 Har oy yangi konkurslar — kuzatib boring!"
@@ -894,52 +905,59 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
             "url": "https://t.me/kraken_mobile_shop_bot?startapp"
         }]]}
         if pic_list:
-            # Kanalga BARCHA rasmlar + matn + tugma (elon logikasi, markdown caption)
             send_konkurs_channel_post(CHANNEL, ch_text, pic_list, markup)
         else:
             req.post(f'{TG_API}/sendMessage', json={
                 'chat_id': CHANNEL, 'text': ch_text,
-                'parse_mode': 'Markdown', 'reply_markup': markup
+                'parse_mode': 'HTML', 'reply_markup': markup
             }, timeout=8)
     except Exception as e:
         logger.error(f'channel konkurs post: {e}')
 
 
 def send_konkurs_channel_post(chat_id, text, images, reply_markup):
-    """Konkurs natijasini kanalga elon logikasi bilan yuboradi:
+    """Konkurs natijasini kanalga yuboradi (HTML parse_mode):
     1 rasm  -> sendPhoto (caption + tugma birga)
-    ko'p rasm -> sendMediaGroup (rasmlar) + matn/tugma alohida BITTA xabar (👆 yo'q).
-    Markdown ishlatiladi (username _ escape qilingan)."""
+    ko'p rasm -> sendMediaGroup (caption 1-rasmga) + tugma alohida qisqa xabar."""
     imgs = [i for i in (images or []) if i][:10]
     if not imgs:
         req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': text,
-            'parse_mode': 'Markdown', 'reply_markup': reply_markup
+            'parse_mode': 'HTML', 'reply_markup': reply_markup
         }, timeout=10)
         return
-    # Caption 1024 belgigacha sig'adimi?
     caption_fits = len(text) <= 1000
     if len(imgs) == 1:
         r = req.post(f'{TG_API}/sendPhoto', json={
             'chat_id': chat_id, 'photo': imgs[0],
-            'caption': text, 'parse_mode': 'Markdown',
+            'caption': text, 'parse_mode': 'HTML',
             'reply_markup': reply_markup
         }, timeout=15)
         if r.status_code == 200 and r.json().get('ok'):
             return
-        # rasm yuborilmasa — matn
         req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': text,
-            'parse_mode': 'Markdown', 'reply_markup': reply_markup
+            'parse_mode': 'HTML', 'reply_markup': reply_markup
         }, timeout=10)
         return
-    # Ko'p rasm — media group (tugma qo'ymaydi), keyin matn+tugma alohida
-    media = [{'type': 'photo', 'media': u} for u in imgs]
+    # Ko'p rasm — caption 1-rasmga biriktiriladi (matn+rasm birga)
+    media = []
+    for i, u in enumerate(imgs):
+        item = {'type': 'photo', 'media': u}
+        if i == 0 and caption_fits:
+            item['caption'] = text
+            item['parse_mode'] = 'HTML'
+        media.append(item)
     req.post(f'{TG_API}/sendMediaGroup', json={'chat_id': chat_id, 'media': media}, timeout=20)
-    req.post(f'{TG_API}/sendMessage', json={
-        'chat_id': chat_id, 'text': text,
-        'parse_mode': 'Markdown', 'reply_markup': reply_markup
-    }, timeout=10)
+    if caption_fits:
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id, 'text': '🛍', 'reply_markup': reply_markup
+        }, timeout=10)
+    else:
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id, 'text': text,
+            'parse_mode': 'HTML', 'reply_markup': reply_markup
+        }, timeout=10)
 
 
 def tg_file_url(file_id):
