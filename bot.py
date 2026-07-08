@@ -573,16 +573,33 @@ _konkurs_timer = {'task': None, 'id': None}   # joriy rejalashtirilgan timer
 
 def _parse_end_time(end_str):
     """end_time matnini UTC timestamp (soniya)ga aylantiradi.
-    Format: 'YYYY-MM-DDTHH:MM' yoki 'YYYY-MM-DD HH:MM:SS' — Toshkent (UTC+5) deb qabul qilinadi."""
+    Ikki format bo'lishi mumkin:
+      1) '...Z' bilan tugagan ISO satr (masalan '2026-07-08T16:10:00.000Z')
+         — Apps Script Date->JSON konvertatsiyasi orqali keladi, bu ALLAQACHON
+         to'g'ri UTC. QAYTA -5 soat QILINMAYDI.
+      2) 'YYYY-MM-DD HH:MM[:SS]' (Z'siz, naive) — Toshkent vaqti (UTC+5) deb
+         qabul qilinadi, -5 soat qilinadi.
+    """
     if not end_str:
         return None
-    s = str(end_str).strip().replace('T', ' ')
+    s = str(end_str).strip()
     from datetime import datetime
+    import calendar
+
+    if s.endswith('Z'):
+        s2 = s[:-1]
+        for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+            try:
+                dt = datetime.strptime(s2, fmt)
+                return calendar.timegm(dt.timetuple())  # allaqachon UTC
+            except Exception:
+                continue
+        return None
+
+    s = s.replace('T', ' ')
     for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
         try:
             dt = datetime.strptime(s[:19] if len(s) >= 19 else s, fmt)
-            # Toshkent vaqti (UTC+5) → UTC timestamp
-            import calendar
             return calendar.timegm(dt.timetuple()) - 5 * 3600
         except Exception:
             continue
