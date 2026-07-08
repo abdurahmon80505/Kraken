@@ -856,13 +856,12 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
         except Exception as e:
             logger.error(f'send to {chat}: {e}')
 
-    for p in participants:
+    def _notify_one(p):
         uid = str(p.get('user_id', ''))
         if not uid:
-            continue
+            return
         try:
             if uid in win_map:
-                # ── G'OLIBGA (rasm + tabrik + tugma) ──
                 info = win_map[uid]
                 place = info['place']
                 my_prize = html_escape(info['prize'])
@@ -878,7 +877,6 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
                     "url": f"https://t.me/{ADMIN_USERNAME}"
                 }]]})
             else:
-                # ── MAGLUBGA (rasm + vaucher + tugma) ──
                 cap = (
                     f"🎁 <b>{html_escape(prize)}</b> konkursi yakunlandi!\n\n"
                     f"🏆 <b>G'oliblar / Победители:</b>\n{win_text}\n\n"
@@ -895,6 +893,11 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
                 }]]})
         except Exception as e:
             logger.error(f'notify {uid}: {e}')
+
+    # PARALLEL: hammaga bir vaqtda (4-5 kishi 2-3 sekundda, ketma-ket emas)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        list(ex.map(_notify_one, participants))
 
     # ── KANALGA (barcha rasmlar + g'oliblar matni + tugma) ──
     try:
@@ -1263,6 +1266,21 @@ async def webhook(request):
             else:
                 await start_konkurs_flow(chat_id, user)
 
+        elif text == '/konkurstimer' and chat_id == ADMIN_ID:
+            # Admin zaxira: aktiv konkurs timerini qayta o'rnatadi + holatni ko'rsatadi
+            loop = asyncio.get_event_loop()
+            _konkurs_cache['time'] = 0
+            k = await loop.run_in_executor(None, get_konkurs)
+            if k and k.get('end_time'):
+                schedule_konkurs_end(k)
+                send_msg(chat_id,
+                    f"✅ Aktiv konkurs topildi.\n"
+                    f"🎁 {k.get('prize','')}\n"
+                    f"⏰ Tugash: {k.get('end_time','')}\n"
+                    f"⏳ Timer o'rnatildi — vaqti kelganda avtomatik tugaydi.")
+            else:
+                send_msg(chat_id, "ℹ️ Hozircha aktiv konkurs yo'q (yoki tugash vaqti belgilanmagan).")
+
         elif contact and chat_id in user_states:
             await handle_phone(chat_id, contact.get('phone_number', ''), user)
 
@@ -1427,6 +1445,100 @@ async def notify_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+async def reroll_notify_endpoint(request):
+    """Reroll qilinganda: eski g'olib (A), yangi g'olib (B), kanal (C) xabarlari."""
+    try:
+        data = await request.json()
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, send_reroll_notify, data)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'reroll_notify: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
+def send_reroll_notify(data):
+    """Reroll xabarlari (rasmsiz, HTML):
+       old = {user_id, ism, username}, new = {user_id, ism, username},
+       konkurs_nomi, orin, sovga, sabab_uz, sabab_ru, kanal_username."""
+    old = data.get('old', {}) or {}
+    new = data.get('new', {}) or {}
+    kname = html_escape(data.get('konkurs_nomi', ''))
+    orin = data.get('orin', '')
+    sovga = html_escape(data.get('sovga', ''))
+    sabab_uz = html_escape(data.get('sabab_uz', ''))
+    sabab_ru = html_escape(data.get('sabab_ru', ''))
+    old_ism = html_escape(old.get('ism', '') or 'mijoz')
+
+    # ── (A) ESKI g'olibga — endi g'olib emas (kanal button) ──
+    old_uid = str(old.get('user_id', '') or '')
+    if old_uid:
+        try:
+            a_text = (
+                f"🔄 Hurmatli {old_ism}!\n"
+                f"Siz «{kname}» konkursida g'olib bo'lgan edingiz, ammo "
+                f"{sabab_uz} sababli sovrin boshqa ishtirokchiga o'tkazildi.\n"
+                f"Kelasi konkurslarda omad tilaymiz! 🍀\n"
+                f"Kanalimizga obuna bo'lib qo'ying 👇\n\n"
+                f"🔄 Уважаемый {old_ism}!\n"
+                f"Вы были победителем конкурса, но приз передан другому "
+                f"участнику по причине: {sabab_ru}.\n"
+                f"Удачи в следующих конкурсах! 🍀\n"
+                f"Подпишитесь на наш канал 👇"
+            )
+            req.post(f'{TG_API}/sendMessage', json={
+                'chat_id': old_uid, 'text': a_text, 'parse_mode': 'HTML',
+                'reply_markup': {"inline_keyboard": [[{
+                    "text": "📢 Kanal / Канал", "url": CHANNEL_LINK}]]}
+            }, timeout=8)
+        except Exception as e:
+            logger.error(f'reroll old {old_uid}: {e}')
+
+    # ── (B) YANGI g'olibga — tabrik (admin button) ──
+    new_uid = str(new.get('user_id', '') or '')
+    if new_uid:
+        try:
+            b_text = (
+                f"🎉 Tabriklaymiz! Siz «{kname}» konkursida qayta "
+                f"aniqlash natijasida g'olib bo'ldingiz!\n"
+                f"🏆 {orin}-o'rin — <b>{sovga}</b>\n"
+                f"Sovg'ani olish uchun adminga yozing 👇\n\n"
+                f"🎉 Поздравляем! Вы стали победителем по итогам "
+                f"переопределения!\n"
+                f"🏆 {orin}-место — <b>{sovga}</b>\n"
+                f"Для получения приза напишите админу 👇"
+            )
+            req.post(f'{TG_API}/sendMessage', json={
+                'chat_id': new_uid, 'text': b_text, 'parse_mode': 'HTML',
+                'reply_markup': {"inline_keyboard": [[{
+                    "text": "📩 Admin", "url": f"https://t.me/{ADMIN_USERNAME}"}]]}
+            }, timeout=8)
+        except Exception as e:
+            logger.error(f'reroll new {new_uid}: {e}')
+
+    # ── (C) KANALGA — natija o'zgardi (sayt button, rasmsiz) ──
+    try:
+        new_disp = winner_display(new)
+        c_text = (
+            f"🔄 Konkurs natijasi o'zgardi!\n"
+            f"{orin}-o'rin sovrini (<b>{sovga}</b>) egasi {sabab_uz} sababli "
+            f"g'olib qayta tanlandi.\n"
+            f"🏆 Yangi g'olib: {new_disp}\n\n"
+            f"🔄 Результат конкурса изменён!\n"
+            f"Приз за {orin}-место (<b>{sovga}</b>) переразыгран "
+            f"по причине: {sabab_ru}.\n"
+            f"🏆 Новый победитель: {new_disp}"
+        )
+        req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': CHANNEL, 'text': c_text, 'parse_mode': 'HTML',
+            'reply_markup': {"inline_keyboard": [[{
+                "text": "🛍 Do'kon / Магазин",
+                "url": "https://t.me/kraken_mobile_shop_bot?startapp"}]]}
+        }, timeout=8)
+    except Exception as e:
+        logger.error(f'reroll channel: {e}')
+
+
 async def publish_endpoint(request):
     """Sayt 'Kanalga yuborish' bosganda — bot adminга preview + tasdiqlash yuboradi."""
     try:
@@ -1516,6 +1628,7 @@ async def main():
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/notify', notify_endpoint)
     app.router.add_post('/konkurs_started', konkurs_started_endpoint)
+    app.router.add_post('/reroll_notify', reroll_notify_endpoint)
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/update_channel', update_channel_endpoint)
     app.router.add_post('/upload', upload_image)
