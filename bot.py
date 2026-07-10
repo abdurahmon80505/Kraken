@@ -1301,15 +1301,26 @@ async def webhook(request):
                         if isinstance(parsed, list):
                             items = [str(x).strip() for x in parsed if str(x).strip()]
                     except Exception:
-                        items = [s.strip() for s in str(raw).split(',') if s.strip()]
-                nums = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣']
-                lines = [f"🎁 <b>{prize}</b> konkursiga start berdik!", ""]
+                        # [ va ] qavslarni olib tashlab, vergul bo'yicha bo'lamiz
+                        cleaned = str(raw).strip().lstrip('[').rstrip(']')
+                        items = [s.strip().strip('"').strip("'") for s in cleaned.split(',') if s.strip()]
+                # 1-3 medal, 4-5 raqam
+                marks = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣']
+                # Sana: ISO (UTC) -> Toshkent (UTC+5), "25.07.2026 20:00"
+                def _fmt_end(s):
+                    try:
+                        from datetime import datetime, timedelta
+                        d = datetime.strptime(str(s)[:19], '%Y-%m-%dT%H:%M:%S') + timedelta(hours=5)
+                        return d.strftime('%d.%m.%Y %H:%M')
+                    except Exception:
+                        return str(s)
+                lines = [f"🎊 <b>{prize}</b> konkursga start berdik! 🎊", ""]
                 if items:
                     lines.append("🎁 Sovg'alar:")
                     for i, it in enumerate(items[:5]):
-                        lines.append(f"{nums[i]} {html_escape(it)}")
+                        lines.append(f"{marks[i]} {html_escape(it)}")
                     lines.append("")
-                lines.append(f"⏰ Konkurs tugashi: {html_escape(k.get('end_time', ''))}")
+                lines.append(f"⏰ Konkurs tugashi: {_fmt_end(k.get('end_time', ''))}")
                 lines.append("")
                 lines.append("Hoziroq qatnashing 👇")
                 anons = "\n".join(lines)
