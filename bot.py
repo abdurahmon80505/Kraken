@@ -1320,7 +1320,7 @@ async def webhook(request):
                     pics = [p.strip() for p in str(praw).split(',') if p.strip()]
                 markup = {"inline_keyboard": [[{
                     "text": "🎁 Konkursda qatnashish",
-                    "web_app": {"url": SAYT_URL + '?p=konkurs'}
+                    "url": "https://t.me/kraken_mobile_shop_bot?startapp=konkurs"
                 }]]}
                 await loop.run_in_executor(
                     None, send_konkurs_channel_post, CHANNEL, anons, pics, markup)
