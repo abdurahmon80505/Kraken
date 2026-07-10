@@ -1283,6 +1283,49 @@ async def webhook(request):
             else:
                 await start_konkurs_flow(chat_id, user)
 
+        elif text == '/konkursyuborish' and chat_id == ADMIN_ID:
+            # ADMIN: aktiv konkurs anonsini kanalga yuboradi.
+            loop = asyncio.get_event_loop()
+            _konkurs_cache['time'] = 0
+            k = await loop.run_in_executor(None, get_konkurs)
+            if not k or not k.get('id'):
+                send_msg(chat_id, "😕 Hozirda aktiv konkurs yo'q.")
+            else:
+                prize = html_escape(k.get('prize', 'Konkurs'))
+                # prizes: JSON array (["...","..."]) yoki vergulli matn
+                raw = k.get('prizes', '') or ''
+                items = []
+                if raw:
+                    try:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        if isinstance(parsed, list):
+                            items = [str(x).strip() for x in parsed if str(x).strip()]
+                    except Exception:
+                        items = [s.strip() for s in str(raw).split(',') if s.strip()]
+                nums = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣']
+                lines = [f"🎁 <b>{prize}</b> konkursiga start berdik!", ""]
+                if items:
+                    lines.append("🎁 Sovg'alar:")
+                    for i, it in enumerate(items[:5]):
+                        lines.append(f"{nums[i]} {html_escape(it)}")
+                    lines.append("")
+                lines.append(f"⏰ Konkurs tugashi: {html_escape(k.get('end_time', ''))}")
+                lines.append("")
+                lines.append("Hoziroq qatnashing 👇")
+                anons = "\n".join(lines)
+                # Rasmlar: yig'ilgan sovrin rasmlari
+                pics = []
+                praw = k.get('prizePics', '') or ''
+                if praw:
+                    pics = [p.strip() for p in str(praw).split(',') if p.strip()]
+                markup = {"inline_keyboard": [[{
+                    "text": "🎁 Konkursda qatnashish",
+                    "web_app": {"url": SAYT_URL + '?p=konkurs'}
+                }]]}
+                await loop.run_in_executor(
+                    None, send_konkurs_channel_post, CHANNEL, anons, pics, markup)
+                send_msg(chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
+
         elif text == '/konkurstimer' and chat_id == ADMIN_ID:
             # Admin zaxira: aktiv konkurs timerini qayta o'rnatadi + holatni ko'rsatadi
             loop = asyncio.get_event_loop()
