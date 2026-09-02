@@ -570,6 +570,52 @@ def get_konkurs():
 # ═══════════════════════════════════════════════════════════════
 _konkurs_timer = {'task': None, 'id': None}   # joriy rejalashtirilgan timer
 
+# ── QAYTA TUGATISHDAN HIMOYA ──────────────────────────────────────────────
+# Muammo: bot restart bo'lganda (Render deploy / to'lov to'xtab qayta yoqilishi)
+# tugash vaqti allaqachon o'tib ketgan konkursga delay=0 bilan timer qo'yilib,
+# endKonkurs QAYTA chaqirilardi — natijada yangi 5 ta g'olib tanlanib, barcha
+# qatnashuvchilarga takroriy xabar ketardi. Quyidagi himoya buni to'xtatadi.
+_ENDED_FILE = os.environ.get('ENDED_KONKURS_FILE', '/tmp/kraken_ended_konkurs.json')
+_ended_konkurs = set()          # tugatilgan konkurs id'lari
+_ending_now = set()             # ayni damda tugatilayotganlar
+# Tugash vaqti shuncha soniyadan ko'p o'tgan bo'lsa — avtomatik tugatilmaydi
+_END_GRACE = int(os.environ.get('KONKURS_END_GRACE', '900'))   # 15 daqiqa
+
+
+def _load_ended():
+    """Diskdagi tugatilgan konkurs id'larini o'qiydi (restartdan keyin ham eslaydi)."""
+    try:
+        with open(_ENDED_FILE) as f:
+            for kid in json.load(f):
+                _ended_konkurs.add(str(kid))
+    except Exception:
+        pass
+
+
+def _mark_ended(konkurs_id):
+    """Konkursni 'tugatilgan' deb belgilaydi va diskka yozadi."""
+    kid = str(konkurs_id)
+    _ended_konkurs.add(kid)
+    try:
+        with open(_ENDED_FILE, 'w') as f:
+            json.dump(sorted(_ended_konkurs), f)
+    except Exception as e:
+        logger.error(f'_mark_ended: {e}')
+
+
+def _konkurs_already_finished(konkurs):
+    """Konkurs allaqachon tugaganmi? (status yoki g'olib maydonlari bo'yicha)"""
+    if not konkurs:
+        return False
+    if str(konkurs.get('id', '')) in _ended_konkurs:
+        return True
+    st = str(konkurs.get('status', '')).strip().lower()
+    if st and st not in ('active', 'aktiv', 'running', 'open'):
+        return True
+    if konkurs.get('winners') or konkurs.get('winner_user_id') or konkurs.get('winner'):
+        return True
+    return False
+
 
 def _parse_end_time(end_str):
     """end_time matnini UTC timestamp (soniya)ga aylantiradi.
@@ -608,13 +654,26 @@ def _parse_end_time(end_str):
 
 async def _konkurs_end_worker(konkurs_id, delay):
     """delay soniyadan keyin konkursni tugatadi (Apps Script endKonkurs)."""
+    kid = str(konkurs_id)
     try:
         if delay > 0:
             await asyncio.sleep(delay)
-        # Apps Script'da g'olibni aniqlaymiz
+        # ── Himoya 1: bu konkurs allaqachon tugatilgan yoki tugatilyapti ──
+        if kid in _ended_konkurs or kid in _ending_now:
+            logger.warning(f'Konkurs {kid} allaqachon tugatilgan — qayta tugatilmaydi')
+            return
         loop = asyncio.get_event_loop()
+        # ── Himoya 2: uyqudan keyin sheet holatini qayta tekshiramiz ──
+        fresh = await loop.run_in_executor(None, get_konkurs_by_id, kid)
+        if _konkurs_already_finished(fresh):
+            _mark_ended(kid)
+            logger.warning(f"Konkurs {kid} sheet'da tugagan — qayta tugatilmaydi")
+            return
+        _ending_now.add(kid)
+        # Apps Script'da g'olibni aniqlaymiz
         res = await loop.run_in_executor(None, _end_konkurs_via_sheet, konkurs_id)
         if res and res.get('ok'):
+            _mark_ended(kid)
             # G'olib/maglub/kanal xabarlari (notify_participants)
             pics = res.get('_pics', [])
             await loop.run_in_executor(
@@ -626,6 +685,7 @@ async def _konkurs_end_worker(konkurs_id, delay):
     except Exception as e:
         logger.error(f'konkurs_end_worker: {e}')
     finally:
+        _ending_now.discard(kid)
         if _konkurs_timer.get('id') == konkurs_id:
             _konkurs_timer['task'] = None
             _konkurs_timer['id'] = None
@@ -671,11 +731,32 @@ def schedule_konkurs_end(konkurs):
     if not konkurs or not konkurs.get('id'):
         return
     kid = str(konkurs['id'])
+    # Tugagan konkursga timer umuman qo'yilmaydi
+    if _konkurs_already_finished(konkurs):
+        logger.info(f"Konkurs {kid} allaqachon tugagan — timer qo'yilmaydi")
+        return
     end_ts = _parse_end_time(konkurs.get('end_time'))
     if not end_ts:
         return  # muddatsiz konkurs — qo'lda tugatiladi
     import time
     delay = end_ts - time.time()
+    # ── Himoya 3: tugash vaqti ancha oldin o'tib ketgan (bot o'chiq bo'lgan) ──
+    # Avtomatik tugatmaymiz, aks holda eski konkurs qayta yakunlanib hammaga
+    # ikkinchi marta xabar ketadi. Admin qo'lda tugatadi.
+    if delay < -_END_GRACE:
+        _mark_ended(kid)
+        logger.warning(
+            f"Konkurs {kid} tugash vaqti {int(-delay)}s oldin o'tgan — "
+            f"avtomatik tugatilmaydi")
+        try:
+            if ADMIN_ID:
+                send_msg(ADMIN_ID,
+                    f"⚠️ Konkurs `{kid}` tugash vaqti bot o'chiq paytda "
+                    f"o'tib ketgan.\nQayta g'olib tanlanmadi — takroriy xabar oldi olindi.\n"
+                    f"Kerak bo'lsa saytdan qo'lda yakunlang.")
+        except Exception:
+            pass
+        return
     # Allaqachon shu konkurs rejalashtirilgan bo'lsa — qayta qo'ymaymiz
     if _konkurs_timer.get('id') == kid and _konkurs_timer.get('task'):
         return
@@ -1337,6 +1418,21 @@ async def webhook(request):
                     None, send_konkurs_channel_post, CHANNEL, anons, pics, markup)
                 send_msg(chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
 
+        elif text == '/konkursstop' and chat_id == ADMIN_ID:
+            # ZUDLIK BILAN: rejalashtirilgan avtomatik tugatishni bekor qiladi
+            t = _konkurs_timer.get('task')
+            kid = _konkurs_timer.get('id')
+            if t and not t.done():
+                t.cancel()
+            if kid:
+                _mark_ended(kid)          # qayta rejalashtirilmasin
+            _konkurs_timer['task'] = None
+            _konkurs_timer['id'] = None
+            send_msg(chat_id,
+                (f"🛑 Konkurs `{kid}` avtomatik tugatish timeri bekor qilindi.\n"
+                 f"Endi bot restart bo'lsa ham qayta g'olib tanlamaydi."
+                 if kid else "ℹ️ Aktiv timer yo'q edi."))
+
         elif text == '/konkurstimer' and chat_id == ADMIN_ID:
             # Admin zaxira: aktiv konkurs timerini qayta o'rnatadi + holatni ko'rsatadi
             loop = asyncio.get_event_loop()
@@ -1715,6 +1811,8 @@ async def main():
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook: {r.json()}')
     asyncio.create_task(keep_alive())
+    # Tugatilgan konkurslar ro'yxatini diskdan tiklaymiz (takroriy tugatish himoyasi)
+    _load_ended()
     # Bot ishga tushganda aktiv konkurs timerini tiklaydi (restart himoyasi)
     asyncio.create_task(restore_konkurs_timer())
     # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
