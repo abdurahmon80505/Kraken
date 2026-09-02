@@ -1491,46 +1491,57 @@ async def webhook(request):
             parts = text.split()
             cmd = parts[0]
 
+            # Ixtiyoriy 1-argument — nechta oxirgi xabar o'chirilsin (default 1).
+            # Konkurs 3 marta yakunlangan bo'lsa: /tozalaha 3
+            depth = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            depth = max(1, min(depth, 10))
+
             if cmd == '/tozalasinov':
-                # Faqat admin chatida sinov — 1 ta oxirgi xabar o'chadi
+                # Faqat admin chatida sinov
                 st, ids = await loop.run_in_executor(
-                    None, cleanup_chat, ADMIN_ID, 1, False, False)
+                    None, cleanup_chat, ADMIN_ID, depth, False, False)
                 send_msg(chat_id, f"🧹 Sinov: {st}\nO'chirilgan id: {ids}")
 
             elif cmd == '/tozalakanal':
-                n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
                 st, ids = await loop.run_in_executor(
-                    None, cleanup_chat, CHANNEL, n, False, False)
+                    None, cleanup_chat, CHANNEL, depth, False, False)
                 send_msg(chat_id, f"🧹 Kanal {CHANNEL}: {st}\nid: {ids}")
 
             elif cmd in ('/tozalaha', '/tozalauzr'):
                 uzr = (cmd == '/tozalauzr')
                 _konkurs_cache['time'] = 0
                 k = await loop.run_in_executor(None, get_konkurs)
-                kid = (parts[1] if len(parts) > 1 else '') or (k or {}).get('id', '')
+                # 2-argument — konkurs id (ixtiyoriy), aks holda aktiv konkurs
+                kid = (parts[2] if len(parts) > 2 else '') or (k or {}).get('id', '')
                 if not kid:
-                    send_msg(chat_id, "❌ Konkurs id topilmadi. Yozing: /tozalaha <id>")
+                    send_msg(chat_id,
+                        "❌ Konkurs id topilmadi. Yozing: /tozalaha <nechta> <id>")
                 else:
-                    send_msg(chat_id, f"🧹 Boshlandi... (konkurs {kid})")
+                    send_msg(chat_id,
+                        f"🧹 Boshlandi... (konkurs {kid}, har chatda {depth} ta xabar)")
 
                     def _prog(i, total, ok):
-                        send_msg(ADMIN_ID, f"⏳ {i}/{total} — o'chirilgan: {ok}")
+                        send_msg(ADMIN_ID, f"⏳ {i}/{total} — tozalangan: {ok}")
 
                     total, ok = await loop.run_in_executor(
-                        None, cleanup_all, kid, 1, False, uzr, _prog)
+                        None, cleanup_all, kid, depth, False, uzr, _prog)
                     send_msg(chat_id,
-                        f"✅ Tayyor. {ok}/{total} chatda xato xabar o'chirildi."
+                        f"✅ Tayyor. {ok}/{total} chatda xato xabar o'chirildi "
+                        f"(har birida {depth} tagacha)."
                         + ("\nUzr xabari qoldirildi." if uzr else ""))
 
             else:
                 send_msg(chat_id,
                     "🧹 *Xato xabarlarni tozalash*\n\n"
-                    "/tozalasinov — avval o'zingizda sinang\n"
-                    "/tozalaha — hammadan xato xabarni o'chirish\n"
-                    "/tozalauzr — o'chirish + uzr xabarini qoldirish\n"
-                    "/tozalakanal 2 — kanaldagi oxirgi 2 postni o'chirish\n\n"
-                    "⚠️ Har chatda faqat *oxirgi* xabar o'chadi. "
-                    "Avval /tozalasinov qiling.")
+                    "Har bir buyruqdan keyin raqam — nechta oxirgi xabar "
+                    "o'chirilsin (default 1). Konkurs 3 marta yuborilgan "
+                    "bo'lsa 3 yozing.\n\n"
+                    "/tozalasinov 3 — avval o'zingizda sinang\n"
+                    "/tozalaha 3 — hammadan xato xabarlarni o'chirish\n"
+                    "/tozalauzr 3 — o'chirish + uzr xabarini qoldirish\n"
+                    "/tozalakanal 3 — kanaldagi oxirgi postlarni o'chirish\n\n"
+                    "⚠️ Chatdagi *oxirgi* xabarlar o'chadi — kerakligidan "
+                    "ko'p yozmang. Avval /tozalasinov qiling.")
 
         elif text == '/konkursstop' and chat_id == ADMIN_ID:
             # ZUDLIK BILAN: rejalashtirilgan avtomatik tugatishni bekor qiladi
