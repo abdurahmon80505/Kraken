@@ -817,6 +817,73 @@ def get_participants(konkurs_id):
 
 
 
+# ═══════════════════════════════════════════════════════════════
+# XATO YUBORILGAN XABARLARNI TOZALASH (admin buyruqlari)
+# Bot yuborgan xabarlarning message_id'lari saqlanmagan. Telegram'da chatdagi
+# id'lar ketma-ket bo'lgani uchun: chatga kichik "zond" xabar yuboramiz, uning
+# id'si N bo'lsa — bot oxirgi yuborgan xabar N-1. Shuni o'chiramiz, keyin
+# zondni ham o'chiramiz.
+# ═══════════════════════════════════════════════════════════════
+_TOZALA_UZR = (
+    "❗️ Kechirasiz, texnik nosozlik tufayli konkurs natijalari xabari xato "
+    "qayta yuborildi. Uni e'tiborsiz qoldiring — haqiqiy natijalar kanalimizda.\n\n"
+    "❗️ Извините, из-за технической ошибки сообщение с итогами конкурса было "
+    "отправлено повторно. Пожалуйста, проигнорируйте его — настоящие "
+    "результаты в нашем канале."
+)
+
+
+def cleanup_chat(chat_id, depth=1, dry_run=False, uzr=False):
+    """Bitta chatdagi oxirgi `depth` ta xabarni o'chiradi.
+    Qaytaradi: (holat_matni, o'chirilgan_id_lar)"""
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id,
+            'text': _TOZALA_UZR if uzr else '🧹',
+            'disable_notification': True,
+        }, timeout=15)
+        probe = r.json()
+    except Exception as e:
+        return f'probe xato: {e}', []
+    if not probe.get('ok'):
+        return f"probe xato: {probe.get('description', '')}", []
+    mid = probe['result']['message_id']
+    targets = [mid - i for i in range(1, depth + 1)]
+
+    def _del(m):
+        try:
+            return req.post(f'{TG_API}/deleteMessage',
+                            json={'chat_id': chat_id, 'message_id': m},
+                            timeout=10).json().get('ok', False)
+        except Exception:
+            return False
+
+    if dry_run:
+        _del(mid)
+        return f"sinov — o'chiriladigan id: {targets}", []
+    deleted = [t for t in targets if _del(t)]
+    if not uzr:
+        _del(mid)
+    return f"{len(deleted)}/{depth}", deleted
+
+
+def cleanup_all(konkurs_id, depth=1, dry_run=False, uzr=False, progress=None):
+    """Konkurs qatnashuvchilarining hammasidagi xato xabarni o'chiradi."""
+    participants = get_participants(konkurs_id)
+    total = len(participants)
+    ok = 0
+    for i, p in enumerate(participants, 1):
+        uid = str(p.get('user_id', '')).strip()
+        if not uid:
+            continue
+        st, ids = cleanup_chat(uid, depth, dry_run, uzr)
+        if ids or dry_run:
+            ok += 1
+        if progress and i % 25 == 0:
+            progress(i, total, ok)
+    return total, ok
+
+
 def not_member_msg(chat_id):
     send_msg(chat_id,
         "❗ *Konkursda qatnashish uchun kanalga a'zo bo'ling!*\n"
@@ -1417,6 +1484,53 @@ async def webhook(request):
                 await loop.run_in_executor(
                     None, send_konkurs_channel_post, CHANNEL, anons, pics, markup)
                 send_msg(chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
+
+        elif (text or '').startswith('/tozala') and chat_id == ADMIN_ID:
+            # Xato yuborilgan konkurs xabarlarini o'chirish (telefondan boshqarish)
+            loop = asyncio.get_event_loop()
+            parts = text.split()
+            cmd = parts[0]
+
+            if cmd == '/tozalasinov':
+                # Faqat admin chatida sinov — 1 ta oxirgi xabar o'chadi
+                st, ids = await loop.run_in_executor(
+                    None, cleanup_chat, ADMIN_ID, 1, False, False)
+                send_msg(chat_id, f"🧹 Sinov: {st}\nO'chirilgan id: {ids}")
+
+            elif cmd == '/tozalakanal':
+                n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+                st, ids = await loop.run_in_executor(
+                    None, cleanup_chat, CHANNEL, n, False, False)
+                send_msg(chat_id, f"🧹 Kanal {CHANNEL}: {st}\nid: {ids}")
+
+            elif cmd in ('/tozalaha', '/tozalauzr'):
+                uzr = (cmd == '/tozalauzr')
+                _konkurs_cache['time'] = 0
+                k = await loop.run_in_executor(None, get_konkurs)
+                kid = (parts[1] if len(parts) > 1 else '') or (k or {}).get('id', '')
+                if not kid:
+                    send_msg(chat_id, "❌ Konkurs id topilmadi. Yozing: /tozalaha <id>")
+                else:
+                    send_msg(chat_id, f"🧹 Boshlandi... (konkurs {kid})")
+
+                    def _prog(i, total, ok):
+                        send_msg(ADMIN_ID, f"⏳ {i}/{total} — o'chirilgan: {ok}")
+
+                    total, ok = await loop.run_in_executor(
+                        None, cleanup_all, kid, 1, False, uzr, _prog)
+                    send_msg(chat_id,
+                        f"✅ Tayyor. {ok}/{total} chatda xato xabar o'chirildi."
+                        + ("\nUzr xabari qoldirildi." if uzr else ""))
+
+            else:
+                send_msg(chat_id,
+                    "🧹 *Xato xabarlarni tozalash*\n\n"
+                    "/tozalasinov — avval o'zingizda sinang\n"
+                    "/tozalaha — hammadan xato xabarni o'chirish\n"
+                    "/tozalauzr — o'chirish + uzr xabarini qoldirish\n"
+                    "/tozalakanal 2 — kanaldagi oxirgi 2 postni o'chirish\n\n"
+                    "⚠️ Har chatda faqat *oxirgi* xabar o'chadi. "
+                    "Avval /tozalasinov qiling.")
 
         elif text == '/konkursstop' and chat_id == ADMIN_ID:
             # ZUDLIK BILAN: rejalashtirilgan avtomatik tugatishni bekor qiladi
