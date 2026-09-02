@@ -867,6 +867,90 @@ def cleanup_chat(chat_id, depth=1, dry_run=False, uzr=False):
     return f"{len(deleted)}/{depth}", deleted
 
 
+# Konkurs xabarini tanib olish uchun kalit so'zlar (matn yoki caption ichida).
+# Kamida bittasi topilsa — bu botning konkurs xabari, o'chirish mumkin.
+_KONKURS_MARKERS = (
+    'konkursi yakunlandi', 'konkurs yakunlandi', 'yakunlandi',
+    "g'olib bo'ldingiz", "g'oliblar", 'победители', 'победитель',
+    'vaucher', 'ваучер', 'tabriklaymiz', 'поздравляем',
+)
+
+
+def _looks_like_konkurs_msg(msg):
+    """Forward qilingan xabar konkurs xabarimi? (matn/caption bo'yicha)"""
+    txt = (msg.get('text') or msg.get('caption') or '').lower()
+    if not txt:
+        return False
+    return any(m in txt for m in _KONKURS_MARKERS)
+
+
+def cleanup_chat_safe(chat_id, depth=1, uzr=False, check=True):
+    """Chatdagi oxirgi `depth` ta xabardan FAQAT konkurs xabarlarini o'chiradi.
+
+    check=True bo'lsa: har bir xabar avval admin chatiga forward qilinadi,
+    matni tekshiriladi va faqat konkurs xabari bo'lsa o'chiriladi (forward
+    nusxasi darhol o'chiriladi). Shu tufayli foydalanuvchining o'z yozuvlari
+    yoki boshqa xabarlar tegilmaydi.
+    Qaytaradi: (holat_matni, o'chirilgan_id_lar)"""
+    def _post(method, payload, timeout=15):
+        try:
+            return req.post(f'{TG_API}/{method}', json=payload, timeout=timeout).json()
+        except Exception as e:
+            return {'ok': False, 'description': str(e)}
+
+    probe = _post('sendMessage', {
+        'chat_id': chat_id,
+        'text': _TOZALA_UZR if uzr else '🧹',
+        'disable_notification': True,
+    })
+    if not probe.get('ok'):
+        return f"probe xato: {probe.get('description', '')}", []
+    mid = probe['result']['message_id']
+
+    deleted, skipped = [], 0
+    for i in range(1, depth + 1):
+        m = mid - i
+        if check:
+            fwd = _post('forwardMessage', {
+                'chat_id': ADMIN_ID, 'from_chat_id': chat_id,
+                'message_id': m, 'disable_notification': True,
+            })
+            if not fwd.get('ok'):
+                skipped += 1
+                continue
+            fmsg = fwd['result']
+            # Tekshiruv nusxasini adminda qoldirmaymiz
+            _post('deleteMessage', {'chat_id': ADMIN_ID,
+                                    'message_id': fmsg.get('message_id')})
+            if not _looks_like_konkurs_msg(fmsg):
+                skipped += 1
+                continue
+        if _post('deleteMessage', {'chat_id': chat_id,
+                                   'message_id': m}).get('ok'):
+            deleted.append(m)
+    if not uzr:
+        _post('deleteMessage', {'chat_id': chat_id, 'message_id': mid})
+    return f"o'chirildi {len(deleted)}, tegilmadi {skipped}", deleted
+
+
+def cleanup_all_safe(konkurs_id, depth=1, uzr=False, check=True, progress=None):
+    """Barcha qatnashuvchilarda konkurs xabarlarini tekshirib o'chiradi."""
+    participants = get_participants(konkurs_id)
+    total = len(participants)
+    chats_ok, msgs = 0, 0
+    for i, p in enumerate(participants, 1):
+        uid = str(p.get('user_id', '')).strip()
+        if not uid:
+            continue
+        _st, ids = cleanup_chat_safe(uid, depth, uzr, check)
+        if ids:
+            chats_ok += 1
+            msgs += len(ids)
+        if progress and i % 25 == 0:
+            progress(i, total, msgs)
+    return total, chats_ok, msgs
+
+
 def cleanup_all(konkurs_id, depth=1, dry_run=False, uzr=False, progress=None):
     """Konkurs qatnashuvchilarining hammasidagi xato xabarni o'chiradi."""
     participants = get_participants(konkurs_id)
@@ -1494,17 +1578,17 @@ async def webhook(request):
             # Ixtiyoriy 1-argument — nechta oxirgi xabar o'chirilsin (default 1).
             # Konkurs 3 marta yakunlangan bo'lsa: /tozalaha 3
             depth = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-            depth = max(1, min(depth, 10))
+            depth = max(1, min(depth, 50))
 
             if cmd == '/tozalasinov':
-                # Faqat admin chatida sinov
+                # Faqat admin chatida sinov (mazmun tekshiruvi bilan)
                 st, ids = await loop.run_in_executor(
-                    None, cleanup_chat, ADMIN_ID, depth, False, False)
+                    None, cleanup_chat_safe, ADMIN_ID, depth, False, True)
                 send_msg(chat_id, f"🧹 Sinov: {st}\nO'chirilgan id: {ids}")
 
             elif cmd == '/tozalakanal':
                 st, ids = await loop.run_in_executor(
-                    None, cleanup_chat, CHANNEL, depth, False, False)
+                    None, cleanup_chat_safe, CHANNEL, depth, False, True)
                 send_msg(chat_id, f"🧹 Kanal {CHANNEL}: {st}\nid: {ids}")
 
             elif cmd in ('/tozalaha', '/tozalauzr'):
@@ -1520,28 +1604,32 @@ async def webhook(request):
                     send_msg(chat_id,
                         f"🧹 Boshlandi... (konkurs {kid}, har chatda {depth} ta xabar)")
 
-                    def _prog(i, total, ok):
-                        send_msg(ADMIN_ID, f"⏳ {i}/{total} — tozalangan: {ok}")
+                    def _prog(i, total, msgs):
+                        send_msg(ADMIN_ID, f"⏳ {i}/{total} — o'chirilgan xabar: {msgs}")
 
-                    total, ok = await loop.run_in_executor(
-                        None, cleanup_all, kid, depth, False, uzr, _prog)
+                    total, chats_ok, msgs = await loop.run_in_executor(
+                        None, cleanup_all_safe, kid, depth, uzr, True, _prog)
                     send_msg(chat_id,
-                        f"✅ Tayyor. {ok}/{total} chatda xato xabar o'chirildi "
-                        f"(har birida {depth} tagacha)."
+                        f"✅ Tayyor.\n"
+                        f"👥 Chat: {total}\n"
+                        f"🧹 Tozalangan chat: {chats_ok}\n"
+                        f"🗑 O'chirilgan xabar: {msgs}\n\n"
+                        f"Faqat konkurs xabarlari o'chirildi — boshqa yozuvlarga "
+                        f"tegilmadi."
                         + ("\nUzr xabari qoldirildi." if uzr else ""))
 
             else:
                 send_msg(chat_id,
                     "🧹 *Xato xabarlarni tozalash*\n\n"
-                    "Har bir buyruqdan keyin raqam — nechta oxirgi xabar "
-                    "o'chirilsin (default 1). Konkurs 3 marta yuborilgan "
-                    "bo'lsa 3 yozing.\n\n"
-                    "/tozalasinov 3 — avval o'zingizda sinang\n"
-                    "/tozalaha 3 — hammadan xato xabarlarni o'chirish\n"
-                    "/tozalauzr 3 — o'chirish + uzr xabarini qoldirish\n"
-                    "/tozalakanal 3 — kanaldagi oxirgi postlarni o'chirish\n\n"
-                    "⚠️ Chatdagi *oxirgi* xabarlar o'chadi — kerakligidan "
-                    "ko'p yozmang. Avval /tozalasinov qiling.")
+                    "Raqam — har chatda oxirgi nechta xabar TEKSHIRILSIN "
+                    "(1-50, default 1). Ko'p yozish xavfsiz: bot faqat konkurs "
+                    "xabarini o'chiradi.\n\n"
+                    "/tozalasinov 5 — o'zingizda sinash\n"
+                    "/tozalaha 5 — hammadan konkurs xabarlarini o'chirish\n"
+                    "/tozalauzr 5 — o'chirish + uzr xabarini qoldirish\n"
+                    "/tozalakanal 5 — kanaldagi konkurs postlarini o'chirish\n\n"
+                    "✅ Bot har bir xabarni tekshiradi va FAQAT konkurs "
+                    "xabarini o'chiradi — odamlarning yozuvlariga tegmaydi.")
 
         elif text == '/konkursstop' and chat_id == ADMIN_ID:
             # ZUDLIK BILAN: rejalashtirilgan avtomatik tugatishni bekor qiladi
