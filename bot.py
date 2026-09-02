@@ -848,8 +848,18 @@ def cleanup_chat(chat_id, nechta=2):
 
 
 def cleanup_all(konkurs_id, nechta=2, progress=None):
-    """Barcha qatnashuvchilarda oxirgi `nechta` xabarni o'chiradi."""
+    """Qatnashuvchilarda oxirgi `nechta` xabarni o'chiradi.
+    konkurs_id bo'sh bo'lsa — ishtirokchilar jadvalidagi hamma odam
+    (konkurs Sheets'dan o'chirilgan bo'lsa ham ishlaydi)."""
     participants = get_participants(konkurs_id)
+    # Takror user_id'lar bo'lmasin
+    korilgan, tozalangan = set(), []
+    for p in participants:
+        uid = str(p.get('user_id', '')).strip()
+        if uid and uid not in korilgan:
+            korilgan.add(uid)
+            tozalangan.append(p)
+    participants = tozalangan
     total = len(participants)
     chats, msgs = 0, 0
     for i, p in enumerate(participants, 1):
@@ -1481,21 +1491,30 @@ async def webhook(request):
                 send_msg(chat_id, f"🧹 {uid}: {len(ids)} ta xabar o'chirildi.\nid: {ids}")
 
             elif cmd == '/tozalaha':
-                nechta = int(raqamlar[0]) if raqamlar else 2
-                _konkurs_cache['time'] = 0
-                k = await loop.run_in_executor(None, get_konkurs)
-                kid = (k or {}).get('id', '')
+                # /tozalaha [nechta] [konkurs_id]
+                # konkurs_id yozilmasa — aktiv konkurs, u ham bo'lmasa
+                # ishtirokchilar jadvalidagi hamma odam.
+                nechta = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 2
+                kid = parts[2] if len(parts) > 2 else ''
                 if not kid:
-                    send_msg(chat_id, "❌ Aktiv konkurs topilmadi.")
-                else:
+                    _konkurs_cache['time'] = 0
+                    k = await loop.run_in_executor(None, get_konkurs)
+                    kid = (k or {}).get('id', '')
+                send_msg(chat_id,
+                    f"🧹 Boshlandi — har chatda oxirgi {nechta} ta xabar.\n"
+                    f"Konkurs: {kid or 'hammasi'}")
+
+                def _prog(i, total, msgs):
+                    send_msg(ADMIN_ID, f"⏳ {i}/{total} — o'chirilgan: {msgs}")
+
+                total, chats, msgs = await loop.run_in_executor(
+                    None, cleanup_all, kid, nechta, _prog)
+                if total == 0:
                     send_msg(chat_id,
-                        f"🧹 Boshlandi — har chatda oxirgi {nechta} ta xabar.")
-
-                    def _prog(i, total, msgs):
-                        send_msg(ADMIN_ID, f"⏳ {i}/{total} — o'chirilgan: {msgs}")
-
-                    total, chats, msgs = await loop.run_in_executor(
-                        None, cleanup_all, kid, nechta, _prog)
+                        "❌ Ishtirokchi topilmadi.\n"
+                        "Sheets'dagi ishtirokchilar jadvalidan konkurs id'ni "
+                        "olib yozing: /tozalaha 3 <konkurs_id>")
+                else:
                     send_msg(chat_id,
                         f"✅ Tayyor.\n👥 Chat: {total}\n"
                         f"🗑 O'chirilgan xabar: {msgs} ({chats} ta chatda)")
@@ -1503,8 +1522,9 @@ async def webhook(request):
             else:
                 send_msg(chat_id,
                     "🧹 *Tozalash*\n\n"
-                    "/tozalabir <user\\_id> 2 — bitta odamda sinash\n"
-                    "/tozalaha 2 — hamma qatnashuvchilarda\n\n"
+                    "/tozalabir <user\\_id> 3 — bitta odamda sinash\n"
+                    "/tozalaha 3 — hamma ishtirokchilarda\n"
+                    "/tozalaha 3 <konkurs\\_id> — konkurs o'chirilgan bo'lsa\n\n"
                     "Raqam — chatdagi oxirgi nechta xabar o'chirilsin "
                     "(yozilmasa 2).")
 
