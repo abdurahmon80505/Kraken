@@ -1578,7 +1578,7 @@ async def webhook(request):
             # Ixtiyoriy 1-argument — nechta oxirgi xabar o'chirilsin (default 1).
             # Konkurs 3 marta yakunlangan bo'lsa: /tozalaha 3
             depth = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-            depth = max(1, min(depth, 10))
+            depth = max(1, min(depth, 50))
 
             if cmd == '/tozalasinov':
                 # Faqat admin chatida sinov (mazmun tekshiruvi bilan)
@@ -1621,9 +1621,9 @@ async def webhook(request):
             else:
                 send_msg(chat_id,
                     "🧹 *Xato xabarlarni tozalash*\n\n"
-                    "Raqam — har chatda oxirgi nechta xabar tekshirilsin "
-                    "(default 1). Konkurs 3 marta yuborilgan bo'lsa 5 yozsangiz "
-                    "ham xavfsiz.\n\n"
+                    "Raqam — har chatda oxirgi nechta xabar TEKSHIRILSIN "
+                    "(1-50, default 1). Ko'p yozish xavfsiz: bot faqat konkurs "
+                    "xabarini o'chiradi.\n\n"
                     "/tozalasinov 5 — o'zingizda sinash\n"
                     "/tozalaha 5 — hammadan konkurs xabarlarini o'chirish\n"
                     "/tozalauzr 5 — o'chirish + uzr xabarini qoldirish\n"
