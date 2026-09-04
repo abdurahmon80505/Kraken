@@ -570,52 +570,6 @@ def get_konkurs():
 # ═══════════════════════════════════════════════════════════════
 _konkurs_timer = {'task': None, 'id': None}   # joriy rejalashtirilgan timer
 
-# ── QAYTA TUGATISHDAN HIMOYA ──────────────────────────────────────────────
-# Muammo: bot restart bo'lganda (Render deploy / to'lov to'xtab qayta yoqilishi)
-# tugash vaqti allaqachon o'tib ketgan konkursga delay=0 bilan timer qo'yilib,
-# endKonkurs QAYTA chaqirilardi — natijada yangi 5 ta g'olib tanlanib, barcha
-# qatnashuvchilarga takroriy xabar ketardi. Quyidagi himoya buni to'xtatadi.
-_ENDED_FILE = os.environ.get('ENDED_KONKURS_FILE', '/tmp/kraken_ended_konkurs.json')
-_ended_konkurs = set()          # tugatilgan konkurs id'lari
-_ending_now = set()             # ayni damda tugatilayotganlar
-# Tugash vaqti shuncha soniyadan ko'p o'tgan bo'lsa — avtomatik tugatilmaydi
-_END_GRACE = int(os.environ.get('KONKURS_END_GRACE', '900'))   # 15 daqiqa
-
-
-def _load_ended():
-    """Diskdagi tugatilgan konkurs id'larini o'qiydi (restartdan keyin ham eslaydi)."""
-    try:
-        with open(_ENDED_FILE) as f:
-            for kid in json.load(f):
-                _ended_konkurs.add(str(kid))
-    except Exception:
-        pass
-
-
-def _mark_ended(konkurs_id):
-    """Konkursni 'tugatilgan' deb belgilaydi va diskka yozadi."""
-    kid = str(konkurs_id)
-    _ended_konkurs.add(kid)
-    try:
-        with open(_ENDED_FILE, 'w') as f:
-            json.dump(sorted(_ended_konkurs), f)
-    except Exception as e:
-        logger.error(f'_mark_ended: {e}')
-
-
-def _konkurs_already_finished(konkurs):
-    """Konkurs allaqachon tugaganmi? (status yoki g'olib maydonlari bo'yicha)"""
-    if not konkurs:
-        return False
-    if str(konkurs.get('id', '')) in _ended_konkurs:
-        return True
-    st = str(konkurs.get('status', '')).strip().lower()
-    if st and st not in ('active', 'aktiv', 'running', 'open'):
-        return True
-    if konkurs.get('winners') or konkurs.get('winner_user_id') or konkurs.get('winner'):
-        return True
-    return False
-
 
 def _parse_end_time(end_str):
     """end_time matnini UTC timestamp (soniya)ga aylantiradi.
@@ -654,26 +608,13 @@ def _parse_end_time(end_str):
 
 async def _konkurs_end_worker(konkurs_id, delay):
     """delay soniyadan keyin konkursni tugatadi (Apps Script endKonkurs)."""
-    kid = str(konkurs_id)
     try:
         if delay > 0:
             await asyncio.sleep(delay)
-        # ── Himoya 1: bu konkurs allaqachon tugatilgan yoki tugatilyapti ──
-        if kid in _ended_konkurs or kid in _ending_now:
-            logger.warning(f'Konkurs {kid} allaqachon tugatilgan — qayta tugatilmaydi')
-            return
-        loop = asyncio.get_event_loop()
-        # ── Himoya 2: uyqudan keyin sheet holatini qayta tekshiramiz ──
-        fresh = await loop.run_in_executor(None, get_konkurs_by_id, kid)
-        if _konkurs_already_finished(fresh):
-            _mark_ended(kid)
-            logger.warning(f"Konkurs {kid} sheet'da tugagan — qayta tugatilmaydi")
-            return
-        _ending_now.add(kid)
         # Apps Script'da g'olibni aniqlaymiz
+        loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, _end_konkurs_via_sheet, konkurs_id)
         if res and res.get('ok'):
-            _mark_ended(kid)
             # G'olib/maglub/kanal xabarlari (notify_participants)
             pics = res.get('_pics', [])
             await loop.run_in_executor(
@@ -685,7 +626,6 @@ async def _konkurs_end_worker(konkurs_id, delay):
     except Exception as e:
         logger.error(f'konkurs_end_worker: {e}')
     finally:
-        _ending_now.discard(kid)
         if _konkurs_timer.get('id') == konkurs_id:
             _konkurs_timer['task'] = None
             _konkurs_timer['id'] = None
@@ -731,32 +671,11 @@ def schedule_konkurs_end(konkurs):
     if not konkurs or not konkurs.get('id'):
         return
     kid = str(konkurs['id'])
-    # Tugagan konkursga timer umuman qo'yilmaydi
-    if _konkurs_already_finished(konkurs):
-        logger.info(f"Konkurs {kid} allaqachon tugagan — timer qo'yilmaydi")
-        return
     end_ts = _parse_end_time(konkurs.get('end_time'))
     if not end_ts:
         return  # muddatsiz konkurs — qo'lda tugatiladi
     import time
     delay = end_ts - time.time()
-    # ── Himoya 3: tugash vaqti ancha oldin o'tib ketgan (bot o'chiq bo'lgan) ──
-    # Avtomatik tugatmaymiz, aks holda eski konkurs qayta yakunlanib hammaga
-    # ikkinchi marta xabar ketadi. Admin qo'lda tugatadi.
-    if delay < -_END_GRACE:
-        _mark_ended(kid)
-        logger.warning(
-            f"Konkurs {kid} tugash vaqti {int(-delay)}s oldin o'tgan — "
-            f"avtomatik tugatilmaydi")
-        try:
-            if ADMIN_ID:
-                send_msg(ADMIN_ID,
-                    f"⚠️ Konkurs `{kid}` tugash vaqti bot o'chiq paytda "
-                    f"o'tib ketgan.\nQayta g'olib tanlanmadi — takroriy xabar oldi olindi.\n"
-                    f"Kerak bo'lsa saytdan qo'lda yakunlang.")
-        except Exception:
-            pass
-        return
     # Allaqachon shu konkurs rejalashtirilgan bo'lsa — qayta qo'ymaymiz
     if _konkurs_timer.get('id') == kid and _konkurs_timer.get('task'):
         return
@@ -815,64 +734,6 @@ def get_participants(konkurs_id):
         logger.error(f'get_participants: {e}')
         return []
 
-
-
-# ═══════════════════════════════════════════════════════════════
-# XATO YUBORILGAN XABARLARNI TOZALASH
-# Konkurs xato qayta yakunlanib, qatnashuvchilarga takroriy xabar ketgan.
-# message_id'lar saqlanmagan, lekin Telegram'da chatdagi id'lar ketma-ket:
-# chatga bitta zond xabar yuboramiz, id'si N bo'lsa — bot oxirgi yuborgan
-# xabarlar N-1, N-2 ... Shularni o'chiramiz, so'ng zondni ham o'chiramiz.
-# ═══════════════════════════════════════════════════════════════
-def cleanup_chat(chat_id, nechta=2):
-    """Chatdagi oxirgi `nechta` xabarni o'chiradi.
-    Qaytaradi: o'chirilgan message_id'lar ro'yxati."""
-    def _post(method, payload, timeout=15):
-        try:
-            return req.post(f'{TG_API}/{method}', json=payload, timeout=timeout).json()
-        except Exception:
-            return {'ok': False}
-
-    probe = _post('sendMessage', {'chat_id': chat_id, 'text': '🧹',
-                                  'disable_notification': True})
-    if not probe.get('ok'):
-        return []
-    mid = probe['result']['message_id']
-    deleted = []
-    for i in range(1, nechta + 1):
-        if _post('deleteMessage', {'chat_id': chat_id,
-                                   'message_id': mid - i}).get('ok'):
-            deleted.append(mid - i)
-    _post('deleteMessage', {'chat_id': chat_id, 'message_id': mid})
-    return deleted
-
-
-def cleanup_all(konkurs_id, nechta=2, progress=None):
-    """Qatnashuvchilarda oxirgi `nechta` xabarni o'chiradi.
-    konkurs_id bo'sh bo'lsa — ishtirokchilar jadvalidagi hamma odam
-    (konkurs Sheets'dan o'chirilgan bo'lsa ham ishlaydi)."""
-    participants = get_participants(konkurs_id)
-    # Takror user_id'lar bo'lmasin
-    korilgan, tozalangan = set(), []
-    for p in participants:
-        uid = str(p.get('user_id', '')).strip()
-        if uid and uid not in korilgan:
-            korilgan.add(uid)
-            tozalangan.append(p)
-    participants = tozalangan
-    total = len(participants)
-    chats, msgs = 0, 0
-    for i, p in enumerate(participants, 1):
-        uid = str(p.get('user_id', '')).strip()
-        if not uid:
-            continue
-        ids = cleanup_chat(uid, nechta)
-        if ids:
-            chats += 1
-            msgs += len(ids)
-        if progress and i % 25 == 0:
-            progress(i, total, msgs)
-    return total, chats, msgs
 
 
 def not_member_msg(chat_id):
@@ -1476,73 +1337,6 @@ async def webhook(request):
                     None, send_konkurs_channel_post, CHANNEL, anons, pics, markup)
                 send_msg(chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
 
-        elif (text or '').startswith('/tozala') and chat_id == ADMIN_ID:
-            # /tozalabir <user_id> [nechta]  — bitta odamda sinash
-            # /tozalaha [nechta]             — barcha qatnashuvchilarda
-            loop = asyncio.get_event_loop()
-            parts = text.split()
-            cmd = parts[0]
-            raqamlar = [p for p in parts[1:] if p.isdigit()]
-
-            if cmd == '/tozalabir' and len(parts) > 1:
-                uid = parts[1]
-                nechta = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 2
-                ids = await loop.run_in_executor(None, cleanup_chat, uid, nechta)
-                send_msg(chat_id, f"🧹 {uid}: {len(ids)} ta xabar o'chirildi.\nid: {ids}")
-
-            elif cmd == '/tozalaha':
-                # /tozalaha [nechta] [konkurs_id]
-                # konkurs_id yozilmasa — aktiv konkurs, u ham bo'lmasa
-                # ishtirokchilar jadvalidagi hamma odam.
-                nechta = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 2
-                kid = parts[2] if len(parts) > 2 else ''
-                if not kid:
-                    _konkurs_cache['time'] = 0
-                    k = await loop.run_in_executor(None, get_konkurs)
-                    kid = (k or {}).get('id', '')
-                send_msg(chat_id,
-                    f"🧹 Boshlandi — har chatda oxirgi {nechta} ta xabar.\n"
-                    f"Konkurs: {kid or 'hammasi'}")
-
-                def _prog(i, total, msgs):
-                    send_msg(ADMIN_ID, f"⏳ {i}/{total} — o'chirilgan: {msgs}")
-
-                total, chats, msgs = await loop.run_in_executor(
-                    None, cleanup_all, kid, nechta, _prog)
-                if total == 0:
-                    send_msg(chat_id,
-                        "❌ Ishtirokchi topilmadi.\n"
-                        "Sheets'dagi ishtirokchilar jadvalidan konkurs id'ni "
-                        "olib yozing: /tozalaha 3 <konkurs_id>")
-                else:
-                    send_msg(chat_id,
-                        f"✅ Tayyor.\n👥 Chat: {total}\n"
-                        f"🗑 O'chirilgan xabar: {msgs} ({chats} ta chatda)")
-
-            else:
-                send_msg(chat_id,
-                    "🧹 *Tozalash*\n\n"
-                    "/tozalabir <user\\_id> 3 — bitta odamda sinash\n"
-                    "/tozalaha 3 — hamma ishtirokchilarda\n"
-                    "/tozalaha 3 <konkurs\\_id> — konkurs o'chirilgan bo'lsa\n\n"
-                    "Raqam — chatdagi oxirgi nechta xabar o'chirilsin "
-                    "(yozilmasa 2).")
-
-        elif text == '/konkursstop' and chat_id == ADMIN_ID:
-            # ZUDLIK BILAN: rejalashtirilgan avtomatik tugatishni bekor qiladi
-            t = _konkurs_timer.get('task')
-            kid = _konkurs_timer.get('id')
-            if t and not t.done():
-                t.cancel()
-            if kid:
-                _mark_ended(kid)          # qayta rejalashtirilmasin
-            _konkurs_timer['task'] = None
-            _konkurs_timer['id'] = None
-            send_msg(chat_id,
-                (f"🛑 Konkurs `{kid}` avtomatik tugatish timeri bekor qilindi.\n"
-                 f"Endi bot restart bo'lsa ham qayta g'olib tanlamaydi."
-                 if kid else "ℹ️ Aktiv timer yo'q edi."))
-
         elif text == '/konkurstimer' and chat_id == ADMIN_ID:
             # Admin zaxira: aktiv konkurs timerini qayta o'rnatadi + holatni ko'rsatadi
             loop = asyncio.get_event_loop()
@@ -1921,8 +1715,6 @@ async def main():
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook: {r.json()}')
     asyncio.create_task(keep_alive())
-    # Tugatilgan konkurslar ro'yxatini diskdan tiklaymiz (takroriy tugatish himoyasi)
-    _load_ended()
     # Bot ishga tushganda aktiv konkurs timerini tiklaydi (restart himoyasi)
     asyncio.create_task(restore_konkurs_timer())
     # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
