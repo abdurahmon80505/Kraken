@@ -1715,6 +1715,65 @@ async def update_channel_endpoint(request):
     return web.json_response({'ok': True, 'skipped': 'auto-channel disabled'})
 
 
+def check_init_data(init_data, max_age=86400):
+    """Telegram Mini App initData imzosini tekshiradi (HMAC-SHA256).
+    To'g'ri bo'lsa foydalanuvchi id'sini, aks holda None qaytaradi."""
+    import hmac, hashlib, time as _t
+    try:
+        got = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+        h = got.pop('hash', '')
+        if not h:
+            return None
+        check = '\n'.join(f'{k}={v}' for k, v in sorted(got.items()))
+        secret = hmac.new(b'WebAppData', BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc, h):
+            return None
+        if _t.time() - int(got.get('auth_date', 0) or 0) > max_age:
+            return None   # eskirgan
+        return int(json.loads(got.get('user', '{}')).get('id', 0)) or None
+    except Exception as e:
+        logger.error(f'check_init_data: {e}')
+        return None
+
+
+def send_label_doc(chat_id, raw, name):
+    """Yorliqni HUJJAT qilib yuboradi. sendPhoto EMAS — Telegram rasmni siqadi,
+    qora-oq nozik grafika siqilsa chop etishda iflos chiqadi."""
+    try:
+        r = req.post(f'{TG_API}/sendDocument',
+                     data={'chat_id': str(chat_id)},
+                     files={'document': (name, raw, 'image/png')}, timeout=30)
+        return bool(r.json().get('ok'))
+    except Exception as e:
+        logger.error(f'sendDocument: {e}')
+        return False
+
+
+async def label_endpoint(request):
+    """Mini App yorliq PNG'ini yuboradi -> admin botda hujjat bo'lib oladi."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        if uid != ADMIN_ID:
+            return web.json_response({'error': 'Ruxsat yoq'}, status=403)
+        b64 = data.get('png_base64', '')
+        if not b64:
+            return web.json_response({'error': 'Rasm yoq'}, status=400)
+        raw = base64.b64decode(b64)
+        name = str(data.get('file_name') or 'yorliq.png')
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(None, send_label_doc, uid, raw, name)
+        if not ok:
+            return web.json_response({'error': 'Telegram yubormadi'}, status=502)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'label: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def upload_image(request):
     try:
         data = await request.json()
@@ -1785,6 +1844,7 @@ async def main():
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/update_channel', update_channel_endpoint)
     app.router.add_post('/upload', upload_image)
+    app.router.add_post('/label', label_endpoint)
     app.router.add_get('/image', get_image_url)
     app.router.add_get('/health', health)
     app.router.add_route('OPTIONS', '/{path_info:.*}', lambda r: web.Response())
