@@ -569,6 +569,7 @@ def get_konkurs():
 # Render doim yoqiq bo'lgani uchun ishonchli.
 # ═══════════════════════════════════════════════════════════════
 _konkurs_timer = {'task': None, 'id': None}   # joriy rejalashtirilgan timer
+_ended_konkurslar = set()                     # shu ishga tushishda yakunlangan id'lar
 
 
 def _parse_end_time(end_str):
@@ -611,9 +612,15 @@ async def _konkurs_end_worker(konkurs_id, delay):
     try:
         if delay > 0:
             await asyncio.sleep(delay)
+        # Bitta konkurs FAQAT BIR MARTA yakunlanadi
+        if konkurs_id in _ended_konkurslar:
+            return
+        _ended_konkurslar.add(konkurs_id)
         # Apps Script'da g'olibni aniqlaymiz
         loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, _end_konkurs_via_sheet, konkurs_id)
+        if not (res and res.get('ok')):
+            _ended_konkurslar.discard(konkurs_id)
         if res and res.get('ok'):
             # G'olib/maglub/kanal xabarlari (notify_participants)
             pics = res.get('_pics', [])
@@ -671,11 +678,20 @@ def schedule_konkurs_end(konkurs):
     if not konkurs or not konkurs.get('id'):
         return
     kid = str(konkurs['id'])
+    # Allaqachon yakunlangan konkursga timer qo'yilmaydi.
+    # getKonkurs aktiv yo'q bo'lsa OXIRGI TUGAGAN konkursni qaytaradi — himoya shu yerda.
+    if str(konkurs.get('status', '')).lower() == 'ended' or kid in _ended_konkurslar:
+        return
     end_ts = _parse_end_time(konkurs.get('end_time'))
     if not end_ts:
         return  # muddatsiz konkurs — qo'lda tugatiladi
     import time
     delay = end_ts - time.time()
+    # Tugash vaqti 1 soatdan ko'p oldin o'tgan (masalan Render o'chib qolgan) —
+    # avtomatik yakunlamaymiz, aks holda eski konkurs qayta yakunlanadi
+    if delay < -3600:
+        logger.info(f'Konkurs {kid} muddati ancha oldin o\'tgan — avtomatik yakunlanmadi')
+        return
     # Allaqachon shu konkurs rejalashtirilgan bo'lsa — qayta qo'ymaymiz
     if _konkurs_timer.get('id') == kid and _konkurs_timer.get('task'):
         return
@@ -734,6 +750,67 @@ def get_participants(konkurs_id):
         logger.error(f'get_participants: {e}')
         return []
 
+
+def purge_chat(user_id, count):
+    """Chatga belgi xabar yuborib, undan OLDINGI `count` ta xabarni o'chiradi.
+    Shaxsiy chatda message_id lar ketma-ket bo'lgani uchun ishlaydi.
+    Belgi xabarning o'zi ham o'chiriladi. O'chirilgan eski xabarlar sonini qaytaradi."""
+    try:
+        r = req.post(f'{TG_API}/sendMessage',
+                     json={'chat_id': user_id, 'text': '✨'}, timeout=10)
+        mid = r.json().get('result', {}).get('message_id')
+    except Exception as e:
+        logger.error(f'purge send {user_id}: {e}')
+        return 0
+    if not mid:
+        return 0
+    n = 0
+    for i in range(1, count + 1):
+        try:
+            d = req.post(f'{TG_API}/deleteMessage',
+                         json={'chat_id': user_id, 'message_id': mid - i}, timeout=10)
+            if d.json().get('ok'):
+                n += 1
+        except Exception:
+            pass
+    try:
+        req.post(f'{TG_API}/deleteMessage',
+                 json={'chat_id': user_id, 'message_id': mid}, timeout=10)
+    except Exception:
+        pass
+    return n
+
+
+async def handle_tozala(chat_id, text):
+    """/tozala_test <user_id> <n> — bitta odamda sinash
+       /tozala <n> [konkurs_id]   — barcha ishtirokchida (id'siz = hammasi)"""
+    parts = text.split()
+    loop = asyncio.get_event_loop()
+    try:
+        if parts[0] == '/tozala_test':
+            uid, cnt = parts[1], int(parts[2])
+            n = await loop.run_in_executor(None, purge_chat, uid, cnt)
+            send_msg(chat_id, f"{uid}: {n} ta xabar o'chirildi.")
+            return
+        cnt = int(parts[1])
+        kid = parts[2] if len(parts) > 2 else ''
+    except (IndexError, ValueError):
+        send_msg(chat_id, "Format: `/tozala_test 123456789 3` yoki `/tozala 3`")
+        return
+
+    ps = await loop.run_in_executor(None, get_participants, kid)
+    uids, seen = [], set()
+    for p in ps:
+        u = str(p.get('user_id', '')).strip()
+        if u and u not in seen:
+            seen.add(u)
+            uids.append(u)
+    send_msg(chat_id, f"{len(uids)} ta ishtirokchi — boshlandi...")
+    total = 0
+    for u in uids:
+        total += await loop.run_in_executor(None, purge_chat, u, cnt)
+        await asyncio.sleep(0.4)
+    send_msg(chat_id, f"Tugadi: {total} ta xabar o'chirildi.")
 
 
 def not_member_msg(chat_id):
@@ -1251,6 +1328,11 @@ async def webhook(request):
             if chat_id != ADMIN_ID:
                 return web.json_response({'ok': True})
             await send_new_elons(chat_id, text)
+            return web.json_response({'ok': True})
+
+        if text.startswith('/tozala') and chat_id == ADMIN_ID:
+            # Fonda ishlaydi — Telegram javobni kutmasin (aks holda buyruqni qayta yuboradi)
+            asyncio.create_task(handle_tozala(chat_id, text))
             return web.json_response({'ok': True})
 
         if text.startswith('/start'):
