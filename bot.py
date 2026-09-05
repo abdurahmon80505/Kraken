@@ -1980,8 +1980,27 @@ async def label_endpoint(request):
 async def health(request):
     return web.json_response({'status': 'ok'})
 
-# (keep_alive olib tashlandi — E6: Render pullik tarifda doim yoniq turadi,
-#  har 10 daqiqada o'zini «uyg'otish» keraksiz so'rov edi.)
+async def keep_alive():
+    """Har 10 daqiqada botning O'ZIGA `/health` so'rovi — servis uxlab qolmasin.
+
+    🔴 2026-09-04: bu funksiya bir marta O'CHIRILGAN edi — «Render pullik
+    tarifda doim yoniq» degan taxminga tayanib. Taxmin NOTO'G'RI edi va
+    foydalanuvchidan so'ralmagan ham. Qaytarildi.
+    🔴 BOSHQA HECH QACHON O'CHIRILMAYDI — avval foydalanuvchidan so'raladi.
+
+    `RENDER_URL` env qo'yilmagan bo'lsa funksiya hech narsa qilmaydi.
+    """
+    render_url = os.environ.get('RENDER_URL', '')
+    if not render_url:
+        logger.warning('keep_alive: RENDER_URL yoq — bot uxlab qolishi mumkin')
+        return
+    while True:
+        await asyncio.sleep(600)
+        try:
+            # blok() bilan: so'rov alohida ipda ketadi va event loop'ni to'xtatmaydi (T1)
+            await blok(req.get, f'{render_url}/health', timeout=10)
+        except Exception as e:
+            logger.error(f'keep_alive: {e}')
 
 @web.middleware
 async def cors_middleware(request, handler):
@@ -2013,6 +2032,8 @@ async def main():
     if render_url:
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook: {r.json()}')
+    # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
+    asyncio.create_task(keep_alive())
     # Bot ishga tushganda aktiv konkurs timerini tiklaydi (restart himoyasi)
     asyncio.create_task(restore_konkurs_timer())
     # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
