@@ -1,10 +1,11 @@
 import os
+import re
 import logging
 import asyncio
 import base64
+import functools
 import json
 import urllib.parse
-from io import BytesIO
 from aiohttp import web
 import requests as req
 
@@ -22,8 +23,14 @@ CHANNEL = os.environ.get('CHANNEL_ID', '@Kraken_mobile')
 CHANNEL_USERNAME = CHANNEL.lstrip('@')
 CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
+BOT_USERNAME = 'kraken_mobile_shop_bot'
 SHEET_URL = os.environ.get('SHEET_URL', '')
 ADMIN_USERNAME = 'Krakens_admin'
+
+# Apps Script maxfiy kaliti. Mijoz telefon raqamlari (getParticipants) endi faqat
+# shu kalit bilan beriladi — brauzerdan (saytdan) so'ralsa bo'sh qaytadi.
+# Qiymat Render env'da va Apps Script Script Properties'da BIR XIL bo'lishi shart.
+API_KEY = os.environ.get('API_KEY', '')
 
 # ── ImageKit (saytdagi bilan bir xil — barqaror rasm hosting) ──
 IK_PRIVATE_KEY = os.environ.get('IK_PRIVATE_KEY', 'private_uRjC2/psPBQPc5fAhmshbRw9K1o=')
@@ -35,7 +42,7 @@ user_states = {}
 # Admin rasm yuborganda albom (media group)ni yig'ish uchun bufer
 # {media_group_id: {'file_ids': [...], 'task': asyncio_handle}}
 _photo_groups = {}
-_single_photo_lock = {'last': 0}
+# (_single_photo_lock olib tashlandi — E7: hech qayerda o'qilmasdi)
 
 # ── ELON YUBORISH ─────────────────────────────────────────
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
@@ -55,6 +62,50 @@ CONDITION_TXT = {
     'openbox': ("Openbox (Ochilgan)", "Openbox (Вскрыт)"),
     'used':    ("Ishlatilgan", "Б.у"),
 }
+
+
+async def blok(fn, *args, **kwargs):
+    """Bloklaydigan (sinxron `requests`) funksiyani ALOHIDA IPDA bajaradi (E1).
+
+    🔴 Nega kerak: bu funksiyalar async `webhook` ichidan to'g'ridan-to'g'ri
+    chaqirilardi. Har `requests` so'rovi (a'zolik tekshiruvi, Sheets, Telegram)
+    butun event loop'ni to'xtatardi — bir vaqtda 20 mijoz raqam bersa navbat
+    hosil bo'lardi, Telegram javobni kutmay xabarni QAYTA yuborardi va ish ikki
+    marta bajarilardi (QOIDALAR T1).
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+
+
+def elon_status(item):
+    """E'lon holati — sayt bilan AYNAN bir xil qoida (sayt: 02-yordamchi.js elonStatus).
+
+    'status' ustuni: waited | active | sold | deleted.
+    Ustun bo'sh bo'lsa (eski e'lonlar) — orqaga moslik:
+      narx aniq 0  -> sold
+      specId yo'q  -> waited (bot yaratgan chala e'lon)
+      aks holda    -> active
+    Ilgari bot faqat "narx=0" ni bilardi: sayt e'lonni 'sold' deb belgilasa ham
+    kanalga narxi bilan chiqib ketardi (REJA B5).
+    """
+    if not item:
+        return 'active'
+    s = str(item.get('status', '') or '').strip().lower()
+    if s:
+        return s
+    try:
+        p = float(str(item.get('price', '')).strip())
+    except (ValueError, TypeError):
+        p = None
+    if p == 0:
+        return 'sold'
+    if not str(item.get('specId', '') or '').strip():
+        return 'waited'
+    return 'active'
+
+
+def is_sold(item):
+    return elon_status(item) == 'sold'
 
 
 def clean_color(color):
@@ -77,13 +128,51 @@ def holati_matni(cond, cycle):
     return (f"Ishlatilgan{sikl_uz}", f"Б.у{sikl_ru}", "🔸")
 
 def send_msg(chat_id, text, keyboard=None):
-    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'}
+    """Oddiy xabar. parse_mode = HTML (E5).
+
+    Ilgari Markdown edi: sovg'a nomida yoki username'da `_` yoki `*` bo'lsa
+    Telegram butun xabarni RAD ETARDI va mijozga hech narsa kelmasdi.
+    HTML'da faqat `<`, `>`, `&` xavfli — ular html_escape bilan yopiladi.
+    """
+    payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
     if keyboard:
         payload['reply_markup'] = keyboard
     try:
         req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
     except Exception as e:
         logger.error(f'sendMessage: {e}')
+
+
+# /start javobi. E7: animatsiya file_id kodga qotirilgan — u o'chib ketsa
+# (yoki boshqa botga ko'chirilsa) mijoz HECH NARSA olmasdi. Endi xato bo'lsa
+# oddiy matn + tugma ketadi: mijoz baribir saytga kira oladi.
+START_CAPTION = (
+    "🇺🇿 <b>Barcha aktual smartfonlarimiz saytimizga joylandi</b>\n"
+    "🇷🇺 <b>Все актуальные смартфоны уже на нашем сайте</b>\n\n"
+    "Kirish uchun bosing / Нажмите, чтобы перейти 👇"
+)
+START_ANIM = 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA'
+START_KB = {"inline_keyboard": [[{
+    "text": "🛍 Saytga kirish / Перейти на сайт",
+    "web_app": {"url": SAYT_URL}
+}]]}
+
+
+def send_start(chat_id):
+    try:
+        r = req.post(f'{TG_API}/sendAnimation', json={
+            'chat_id': chat_id,
+            'animation': START_ANIM,
+            'caption': START_CAPTION,
+            'parse_mode': 'HTML',
+            'reply_markup': START_KB,
+        }, timeout=10)
+        if r.status_code == 200 and r.json().get('ok'):
+            return
+        logger.error(f'sendAnimation: {r.text[:200]}')
+    except Exception as e:
+        logger.error(f'sendAnimation: {e}')
+    send_msg(chat_id, START_CAPTION, START_KB)   # zaxira: animatsiyasiz
 
 def get_products():
     """Sheets'dan barcha elon va modellarni oladi (action'siz so'rov)."""
@@ -99,18 +188,107 @@ def get_products():
         return None, None
 
 
+def get_stat(days=1):
+    """F1: Apps Script'dan do'kon hisobotini oladi.
+
+    Hisob SHEETS TOMONIDA qilinadi (AppScript.gs: getStat) — Korishlar varag'ida
+    minglab qator bo'lishi mumkin, ularni Render'ga tashish bekorga.
+    Savdo ma'lumoti bo'lgani uchun so'rov API_KEY bilan yuboriladi.
+    """
+    if not SHEET_URL:
+        return None
+    if not API_KEY:
+        return {'ok': False, 'msg': 'key_yoq'}
+    try:
+        url = f"{SHEET_URL}?action=stat&days={int(days)}&key={urllib.parse.quote(API_KEY)}"
+        r = req.get(url, timeout=25)
+        return r.json()
+    except Exception as e:
+        logger.error(f'get_stat: {e}')
+        return None
+
+
+def build_stat_text(s):
+    """Hisobotni admin o'qiydigan xabarga aylantiradi (HTML)."""
+    kun = s.get('days', 1)
+    davr = 'Oxirgi 24 soat' if kun == 1 else f'Oxirgi {kun} kun'
+    q = []
+    q.append(f"📊 <b>{davr}</b>")
+    q.append('')
+    q.append(f"👥 Yangi mijoz: <b>{s.get('yangiMijoz', 0)}</b>")
+    q.append(f"🚪 Saytga kirish: <b>{s.get('kirish', 0)}</b>  (turli odam: {s.get('unikalMijoz', 0)})")
+    q.append(f"👁 E'lon ochilgan: <b>{s.get('korish', 0)}</b>")
+    q.append(f"🛒 Savatga qo'shilgan: <b>{s.get('savat', 0)}</b>")
+    q.append(f"💬 Aloqa bosilgan: <b>{s.get('aloqa', 0)}</b>")
+    q.append(f"🔗 Ulashilgan: <b>{s.get('ulashish', 0)}</b>")
+
+    top = s.get('topElon') or []
+    if top:
+        q.append('')
+        q.append('🔥 <b>Eng ko\'p ochilgan</b>')
+        for it in top:
+            q.append(f"   {html_escape(it.get('nom', ''))} — {it.get('soni', 0)}")
+
+    qid = s.get('topQidiruv') or []
+    if qid:
+        q.append('')
+        q.append('🔍 <b>Eng ko\'p qidirilgan</b>')
+        for it in qid:
+            q.append(f"   {html_escape(it.get('nom', ''))} — {it.get('soni', 0)}")
+
+    q.append('')
+    q.append('📦 <b>Hozirgi holat</b>')
+    q.append(f"   Sotuvda: <b>{s.get('faolElon', 0)}</b>   ·   Sotilgan: {s.get('sotilgan', 0)}")
+    if s.get('chala', 0):
+        q.append(f"   To'ldirilmagan (chala): <b>{s.get('chala', 0)}</b>")
+    q.append(f"   Davrda qo'shilgan: {s.get('yangiElon', 0)}")
+    q.append(f"   Jami mijoz: {s.get('jamiMijoz', 0)}")
+    return '\n'.join(q)
+
+
+async def handle_stat(chat_id, text):
+    """/stat  yoki  /stat 7 — do'kon hisoboti (faqat admin).
+
+    🔴 Fonda bajariladi (QOIDALAR T1): Sheets hisobi bir necha soniya olishi
+    mumkin, webhook esa Telegram'ga DARROV 200 qaytarishi shart. Aks holda
+    Telegram buyruqni qayta yuboradi va hisobot ikki marta keladi.
+    """
+    parts = text.split()
+    try:
+        days = int(parts[1]) if len(parts) > 1 else 1
+    except ValueError:
+        days = 1
+    if days < 1:
+        days = 1
+
+    s = await blok(get_stat, days)
+    if not s:
+        await blok(send_msg, chat_id, "❌ Sheets'dan hisobot olib bo'lmadi. SHEET_URL'ni tekshiring.")
+        return
+    if not s.get('ok'):
+        if s.get('msg') == 'key_yoq':
+            await blok(send_msg, chat_id,
+                       "❌ API_KEY qo'yilmagan. Render → Environment → API_KEY, "
+                       "va Apps Script → Project Settings → Script Properties → API_KEY. "
+                       "Ikkalasi BIR XIL bo'lishi kerak.")
+        else:
+            await blok(send_msg, chat_id,
+                       "❌ Apps Script kalitni qabul qilmadi. Render'dagi API_KEY bilan "
+                       "Script Properties'dagi API_KEY bir xilmi?")
+        return
+    await blok(send_msg, chat_id, build_stat_text(s))
+
+
 def build_elon(item, models_by_id):
     """Bitta elon uchun (matn, entities) qaytaradi. entities premium emoji uchun."""
     num = int(float(item.get('num', 0) or 0))
     name_uz = item.get('nameUz', '') or item.get('name', '')
-    name_ru = item.get('nameRu', '') or name_uz
     storage = item.get('storage', '')
     price = str(item.get('price', '')).replace('.0', '')
     old = str(item.get('oldPrice', '')).replace('.0', '')
     cond = item.get('condition', 'new')
     cycle = str(item.get('cycle', '') or '').replace('.0', '')
     color_uz = item.get('color', '')
-    color_ru = item.get('colorRu', '') or color_uz
     spec_id = item.get('specId', '')
 
     model = models_by_id.get(spec_id, {})
@@ -119,10 +297,8 @@ def build_elon(item, models_by_id):
 
     cond_uz, cond_ru, cond_emoji = holati_matni(cond, cycle)
 
-    # Sarlavha: G logo + nom + xotira
-    g_base = PREMIUM['google'][0]
-    k_base = PREMIUM['k'][0]
-    m_base = PREMIUM['money'][0]
+    # (g_base/k_base/m_base o'zgaruvchilari olib tashlandi — add_prem() emoji'ni
+    #  PREMIUM dan o'zi oladi, ular hech qayerda ishlatilmasdi)
 
     # Matnni qism-qism yig'amiz, premium pozitsiyalarini belgilaymiz
     parts = []
@@ -170,19 +346,17 @@ def build_elon(item, models_by_id):
     add(f"{cond_emoji} • Состояние: {cond_ru}\n\n")
 
     # ── Narx: eski (strikethrough) + yangi (bold), yoki SOTILDI ──
-    # Sotildi = price bo'sh/0 (oldPrice'da asl narx turadi)
-    price_num = 0.0
-    try:
-        price_num = float(price) if price else 0.0
-    except Exception:
-        price_num = 0.0
-    is_sold = (price_num == 0) and bool(old)
+    # B5: sotilganini `status` ustuni aytadi. Sayt endi narxni 0 QILMAYDI —
+    # sotilgan e'londa ham asl narx turadi, shuning uchun uni chizib ko'rsatamiz.
+    sold = is_sold(item)
 
     add_prem('money'); add(" Цена/Narxi: ")
-    if is_sold:
+    if sold:
         # ~~400$~~ ❗️SOTILDI❗️
-        add_fmt(f"{old}$", 'strikethrough')
-        add(" ")
+        narx = price if price and price != '0' else old
+        if narx:
+            add_fmt(f"{narx}$", 'strikethrough')
+            add(" ")
         add_fmt("❗️SOTILDI❗️", 'bold')
         add("\n\n")
     elif old and old != price:
@@ -232,9 +406,8 @@ def html_escape(s):
     return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
-def md_escape(s):
-    """(eski nom — endi HTML escape ishlatamiz)"""
-    return html_escape(s)
+# (md_escape olib tashlandi — E7: html_escape ning eski nomi edi, hech qayerda
+#  ishlatilmasdi)
 
 
 def winner_display(w):
@@ -259,18 +432,8 @@ def winner_display(w):
     return ism
 
 
-def strip_custom_emoji(entities):
-    """Kanalga yuborishda custom_emoji entity'larni olib tashlaydi.
-
-    Telegram cheklovi: bot custom emoji'ni faqat private/guruh/supergruhga
-    yubora oladi (bot egasida Premium bo'lsa). KANALGA custom emoji umuman
-    o'tmaydi — shu sabab lichkada premium chiqadi, kanalda oddiy emoji.
-    Entity'ni qoldirib yuborsak, Telegram ba'zida g'alati bo'shliq qoldiradi.
-    Shuning uchun kanal uchun custom_emoji'ni tashlaymiz — oddiy emoji (📱💰💡)
-    baribir matnda turibdi, u toza ko'rinadi. Bold/strikethrough/quote qoladi."""
-    if not entities:
-        return entities
-    return [e for e in entities if e.get('type') != 'custom_emoji']
+# (strip_custom_emoji olib tashlandi — D2: kanalga avto-yuborish qaytarilmadi,
+#  uni faqat o'sha yo'l ishlatardi)
 
 
 def build_olx_text(item, models_by_id):
@@ -314,15 +477,10 @@ def build_olx_text(item, models_by_id):
     lines.append(f"• Holati: {cond_uz}")
     lines.append(f"• Состояние: {cond_ru}")
     lines.append("")
-    # ── Narx ──
-    price_num = 0.0
-    try:
-        price_num = float(price) if price else 0.0
-    except Exception:
-        price_num = 0.0
-    is_sold = (price_num == 0) and bool(old)
-    if is_sold:
-        lines.append(f"Цена/Narxi: {old}$ — SOTILDI ❗️")
+    # ── Narx (B5: sotilganini `status` ustuni aytadi) ──
+    if is_sold(item):
+        narx = price if price and price != '0' else old
+        lines.append(f"Цена/Narxi: {narx}$ — SOTILDI ❗️" if narx else "Цена/Narxi: SOTILDI ❗️")
     elif old and old != price:
         lines.append(f"Цена/Narxi: ~~{old}$~~ {price}$")
     else:
@@ -450,40 +608,15 @@ def send_elon_with_photos(chat_id, text, entities, images, reply_markup=None):
         return None
 
 
-def edit_channel_post(channel, message_id, text, entities, is_media_group=False, text_message_id=None):
-    """Kanaldagi postni yangilaydi. Media group bo'lsa — caption yoki alohida matnni edit qiladi."""
-    target_mid = text_message_id or message_id
-    try:
-        if is_media_group and text_message_id and text_message_id != message_id:
-            # Alohida matn xabari bор — uni edit qilamiz
-            payload = {'chat_id': channel, 'message_id': text_message_id, 'text': text}
-            if entities:
-                payload['entities'] = entities
-            r = req.post(f'{TG_API}/editMessageText', json=payload, timeout=10).json()
-            return r
-        else:
-            # Caption edit (rasm + caption)
-            payload = {'chat_id': channel, 'message_id': target_mid, 'caption': text}
-            if entities:
-                payload['caption_entities'] = entities
-            r = req.post(f'{TG_API}/editMessageCaption', json=payload, timeout=10).json()
-            # Agar caption emas, oddiy matn bo'lsa — editMessageText sinaymiz
-            if not r.get('ok'):
-                payload2 = {'chat_id': channel, 'message_id': target_mid, 'text': text}
-                if entities:
-                    payload2['entities'] = entities
-                r = req.post(f'{TG_API}/editMessageText', json=payload2, timeout=10).json()
-            return r
-    except Exception as e:
-        logger.error(f'edit_channel_post: {e}')
-        return None
+# (edit_channel_post olib tashlandi — D2: kanal postini bot tahrirlamaydi,
+#  admin qo'lda boshqaradi)
 
 
 async def send_new_elons(chat_id, text):
     parts = text.split()
-    listings, models = get_products()
+    listings, models = await blok(get_products)   # E1
     if listings is None:
-        send_msg(chat_id, "❌ Sheets'dan ma'lumot olib bo'lmadi. SHEET_URL'ni tekshiring.")
+        await blok(send_msg, chat_id, "❌ Sheets'dan ma'lumot olib bo'lmadi. SHEET_URL'ni tekshiring.")
         return
 
     models_by_id = {m.get('id'): m for m in (models or [])}
@@ -491,37 +624,34 @@ async def send_new_elons(chat_id, text):
     # /elon 199  yoki  /elon 199 200 205  -> aniq raqamlar
     nums = [int(p) for p in parts[1:] if p.isdigit()]
 
-    def _is_sold(it):
-        try:
-            return float(it.get('price', '') or -1) == 0
-        except (ValueError, TypeError):
-            return False
+    # B5/B6: o'chirilgan va chala e'lonlar HECH QACHON yuborilmaydi
+    listings = [it for it in listings if elon_status(it) not in ('deleted', 'waited')]
 
     if nums:
         targets = [it for it in listings if int(float(it.get('num', 0) or 0)) in nums]
         targets.sort(key=lambda x: int(float(x.get('num', 0) or 0)))
         # Aniq raqamlar ichida sotilgani bo'lsa ogohlantiramiz (lekin yuboramiz — admin qarori)
-        sold_nums = [int(float(it.get('num', 0) or 0)) for it in targets if _is_sold(it)]
+        sold_nums = [int(float(it.get('num', 0) or 0)) for it in targets if is_sold(it)]
         if sold_nums:
-            send_msg(chat_id, "⚠️ Sotilgan: " + ", ".join('#' + str(n) for n in sold_nums))
+            await blok(send_msg, chat_id, "⚠️ Sotilgan: " + ", ".join('#' + str(n) for n in sold_nums))
     else:
         # /yubor  ->  oxirgi yuborilgandan keyingi yangilar (sotilganlarni chiqarib tashlaymiz)
         last = _last_sent['num']
         targets = [it for it in listings
-                   if int(float(it.get('num', 0) or 0)) > last and not _is_sold(it)]
+                   if int(float(it.get('num', 0) or 0)) > last and not is_sold(it)]
         targets.sort(key=lambda x: int(float(x.get('num', 0) or 0)))
 
     if not targets:
-        send_msg(chat_id,
+        await blok(send_msg, chat_id,
             f"ℹ️ Yangi elon yo'q. Oxirgi: #{_last_sent['num']}\n"
-            f"Aniq raqam: `/elon 199`")
+            f"Aniq raqam: <code>/elon 199</code>")
         return
 
     sent = 0
     max_num = _last_sent['num']
     for it in targets:
         num, etext, entities = build_elon(it, models_by_id)
-        res = send_elon(chat_id, etext, entities)
+        res = await blok(send_elon, chat_id, etext, entities)
         if res and res.get('ok'):
             sent += 1
             if num > max_num:
@@ -737,14 +867,23 @@ def save_participant(konkurs_id, user_id, username, phone, ism=''):
         return None
 
 def get_participants(konkurs_id):
+    """Konkurs ishtirokchilari (telefon raqami bilan) — FAQAT API_KEY bilan.
+    Kalit bo'lmasa Apps Script bo'sh ro'yxat qaytaradi (mijoz raqamlari yopiq)."""
     if not SHEET_URL:
+        return []
+    if not API_KEY:
+        logger.error('get_participants: API_KEY yo\'q (Render env) — ro\'yxat olinmadi')
         return []
     try:
         r = req.get(
-            f"{SHEET_URL}?action=getParticipants&callback=d&id={urllib.parse.quote(str(konkurs_id))}",
+            f"{SHEET_URL}?action=getParticipants&callback=d"
+            f"&id={urllib.parse.quote(str(konkurs_id))}"
+            f"&key={urllib.parse.quote(API_KEY)}",
             timeout=15)
         text = r.text.strip()
         data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        if not data.get('ok'):
+            logger.error(f"get_participants rad etildi: {data.get('msg')}")
         return data.get('participants', [])
     except Exception as e:
         logger.error(f'get_participants: {e}')
@@ -785,51 +924,51 @@ async def handle_tozala(chat_id, text):
     """/tozala_test <user_id> <n> — bitta odamda sinash
        /tozala <n> [konkurs_id]   — barcha ishtirokchida (id'siz = hammasi)"""
     parts = text.split()
-    loop = asyncio.get_event_loop()
     try:
         if parts[0] == '/tozala_test':
             uid, cnt = parts[1], int(parts[2])
-            n = await loop.run_in_executor(None, purge_chat, uid, cnt)
-            send_msg(chat_id, f"{uid}: {n} ta xabar o'chirildi.")
+            n = await blok(purge_chat, uid, cnt)
+            await blok(send_msg, chat_id, f"{uid}: {n} ta xabar o'chirildi.")
             return
         cnt = int(parts[1])
         kid = parts[2] if len(parts) > 2 else ''
     except (IndexError, ValueError):
-        send_msg(chat_id, "Format: `/tozala_test 123456789 3` yoki `/tozala 3`")
+        await blok(send_msg, chat_id, "Format: <code>/tozala_test 123456789 3</code> yoki <code>/tozala 3</code>")
         return
 
-    ps = await loop.run_in_executor(None, get_participants, kid)
+    ps = await blok(get_participants, kid)
     uids, seen = [], set()
     for p in ps:
         u = str(p.get('user_id', '')).strip()
         if u and u not in seen:
             seen.add(u)
             uids.append(u)
-    send_msg(chat_id, f"{len(uids)} ta ishtirokchi — boshlandi...")
+    await blok(send_msg, chat_id, f"{len(uids)} ta ishtirokchi — boshlandi...")
     total = 0
     for u in uids:
-        total += await loop.run_in_executor(None, purge_chat, u, cnt)
+        total += await blok(purge_chat, u, cnt)
         await asyncio.sleep(0.4)
-    send_msg(chat_id, f"Tugadi: {total} ta xabar o'chirildi.")
+    await blok(send_msg, chat_id, f"Tugadi: {total} ta xabar o'chirildi.")
 
 
 def not_member_msg(chat_id):
     send_msg(chat_id,
-        "❗ *Konkursda qatnashish uchun kanalga a'zo bo'ling!*\n"
-        "❗ *Для участия подпишитесь на канал!*",
+        "❗ <b>Konkursda qatnashish uchun kanalga a'zo bo'ling!</b>\n"
+        "❗ <b>Для участия подпишитесь на канал!</b>",
         keyboard={"inline_keyboard": [
             [{"text": f"📢 {CHANNEL} ga a'zo bo'lish", "url": CHANNEL_LINK}],
             [{"text": "✅ A'zo bo'ldim — qatnashish", "callback_data": "check_member"}]
         ]})
 
 async def start_konkurs_flow(chat_id, user):
-    k = get_konkurs()
+    # E1: Sheets va Telegram so'rovlari alohida ipda — event loop to'xtamaydi
+    k = await blok(get_konkurs)
     if not k:
-        send_msg(chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
+        await blok(send_msg, chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
         return
 
-    if not is_member(chat_id):
-        not_member_msg(chat_id)
+    if not await blok(is_member, chat_id):
+        await blok(not_member_msg, chat_id)
         return
 
     user_states[chat_id] = {
@@ -840,28 +979,41 @@ async def start_konkurs_flow(chat_id, user):
         'username': user.get('username', ''),
     }
 
-    send_msg(chat_id,
-        f"🎁 *{k.get('prize','Sovrin')}*\n\n"
+    await blok(send_msg, chat_id,
+        f"🎁 <b>{html_escape(k.get('prize','Sovrin'))}</b>\n\n"
         f"🇺🇿 Konkursda qatnashish uchun telefon raqamingizni ulashing 👇\n"
         f"🇷🇺 Чтобы участвовать в розыгрыше, поделитесь номером телефона 👇",
-        keyboard={
+        {
             "keyboard": [[{"text": "📱 Raqamni ulashish / Поделиться номером", "request_contact": True}]],
             "resize_keyboard": True, "one_time_keyboard": True
         })
 
 async def handle_phone(chat_id, phone, user):
+    # E2: matn telefon raqamiga o'xshamasa — QABUL QILMAYMIZ va holatni
+    # saqlab qolamiz (mijoz qayta urinsin). Ilgari «salom» ham raqam bo'lib
+    # Sheets'ga tushardi.
+    if not _phone_ok(phone):
+        await blok(send_msg, chat_id,
+            "📱 Bu telefon raqamiga o'xshamadi.\n"
+            "Pastdagi <b>«Raqamni ulashish»</b> tugmasini bosing yoki raqamni "
+            "<code>+998901234567</code> ko'rinishida yozing.\n\n"
+            "📱 Это не похоже на номер телефона.\n"
+            "Нажмите кнопку <b>«Поделиться номером»</b> ниже или напишите номер "
+            "в виде <code>+998901234567</code>.")
+        return
+
     state = user_states.pop(chat_id, {})
     if not state:
         return
 
-    if not is_member(chat_id):
-        not_member_msg(chat_id)
+    if not await blok(is_member, chat_id):
+        user_states[chat_id] = state          # a'zo bo'lgach qaytadan so'ramaymiz
+        await blok(not_member_msg, chat_id)
         return
 
     username = state.get('username') or user.get('username', '')
     user_id = state.get('user_id', chat_id)
     konkurs_id = state.get('konkurs_id', '')
-    prize = state.get('prize', '')
     # Ism (first_name + last_name) — g'olib username'siz bo'lsa ko'rsatish uchun
     ism = (user.get('first_name', '') or '').strip()
     _ln = (user.get('last_name', '') or '').strip()
@@ -870,16 +1022,16 @@ async def handle_phone(chat_id, phone, user):
 
     # ── DARROV javob: hech qanday Google so'rovini KUTMAYMIZ ──
     # Mijoz raqam berishi bilan tasdiqlash xabarini yuboramiz.
-    req.post(f'{TG_API}/sendMessage', json={
+    await blok(req.post, f'{TG_API}/sendMessage', json={
         'chat_id': chat_id,
         'text': (
-            "📲 *Deyarli tayyor! / Почти готово!*\n\n"
+            "📲 <b>Deyarli tayyor! / Почти готово!</b>\n\n"
             "🇺🇿 Qatnashishni yakunlash uchun pastdagi tugmani bosing "
             "va saytda \"✅ Tasdiqlash\"ni bosing 👇\n"
             "🇷🇺 Чтобы завершить участие, нажмите кнопку ниже "
             "и нажмите \"✅ Подтвердить\" на сайте 👇"
         ),
-        'parse_mode': 'Markdown',
+        'parse_mode': 'HTML',
         'reply_markup': {
             "inline_keyboard": [[{
                 "text": "✅ Saytda tasdiqlash / Подтвердить",
@@ -1136,7 +1288,7 @@ def finalize_photo_group(mgid, chat_id):
         num = res.get('num', '?')
         cnt = res.get('images', len(file_ids))
         send_msg(chat_id,
-            f"✅ Yangi elon yaratildi: *№{num}*\n"
+            f"✅ Yangi elon yaratildi: <b>№{num}</b>\n"
             f"📸 {cnt} ta rasm saqlandi.\n\n"
             f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
             keyboard={"inline_keyboard": [[{
@@ -1163,8 +1315,10 @@ async def handle_konkurs_photo(chat_id, file_id, media_group_id=None):
         if old:
             old.cancel()
         loop = asyncio.get_event_loop()
+        # E1: call_later EVENT LOOP ipida ishlaydi. Ichida ImageKit va Sheets
+        # so'rovlari bor — shuning uchun ish alohida ipga uzatiladi.
         grp['timer'] = loop.call_later(
-            2.0, finalize_konkurs_photos, key, chat_id)
+            2.0, lambda: loop.run_in_executor(None, finalize_konkurs_photos, key, chat_id))
     else:
         # Bitta rasm — darrov
         loop = asyncio.get_event_loop()
@@ -1213,7 +1367,7 @@ def _save_konkurs_photos(chat_id, file_ids):
     user_states.pop(chat_id, None)
     if ok:
         send_msg(chat_id,
-            f"✅ *{len(urls)} ta sovrin rasmi qabul qilindi!*\n\n"
+            f"✅ <b>{len(urls)} ta sovrin rasmi qabul qilindi!</b>\n\n"
             f"Admin panelda konkursni to'ldiring 👇",
             keyboard={"inline_keyboard": [[{
                 "text": "⚙️ Admin panelni ochish",
@@ -1238,8 +1392,9 @@ async def handle_admin_photo(chat_id, file_id, media_group_id):
         if old:
             old.cancel()
         loop = asyncio.get_event_loop()
+        # E1: ish alohida ipda (ichida ImageKit + Sheets so'rovlari bor)
         grp['timer'] = loop.call_later(
-            2.0, finalize_photo_group, media_group_id, chat_id)
+            2.0, lambda: loop.run_in_executor(None, finalize_photo_group, media_group_id, chat_id))
     else:
         # Bitta rasm — darrov elon
         loop = asyncio.get_event_loop()
@@ -1251,7 +1406,7 @@ def _single_photo_elon(chat_id, file_id):
     if res:
         num = res.get('num', '?')
         send_msg(chat_id,
-            f"✅ Yangi elon yaratildi: *№{num}*\n"
+            f"✅ Yangi elon yaratildi: <b>№{num}</b>\n"
             f"📸 1 ta rasm saqlandi.\n\n"
             f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
             keyboard={"inline_keyboard": [[{
@@ -1263,8 +1418,23 @@ def _single_photo_elon(chat_id, file_id):
 
 
 async def webhook(request):
+    """🔴 QOIDALAR T1: Telegram'ga DARROV 200 qaytariladi.
+
+    Butun ish fonda (`asyncio.create_task`) bajariladi. Ilgari ish tugamaguncha
+    javob berilmasdi: Sheets sekin bo'lsa Telegram javobni kutmay xabarni qayta
+    yuborardi va ish ikki marta bajarilardi.
+    """
     try:
         data = await request.json()
+    except Exception as e:
+        logger.error(f'webhook json: {e}')
+        return web.json_response({'ok': True})
+    asyncio.create_task(handle_update(data))
+    return web.json_response({'ok': True})
+
+
+async def handle_update(data):
+    try:
         message = data.get('message', {})
         text = message.get('text', '')
         chat_id = message.get('chat', {}).get('id')
@@ -1277,37 +1447,24 @@ async def webhook(request):
             cq_user = cq.get('from', {})
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
-            req.post(f'{TG_API}/answerCallbackQuery',
-                json={'callback_query_id': cq_id}, timeout=5)
+            await blok(req.post, f'{TG_API}/answerCallbackQuery',
+                       json={'callback_query_id': cq_id}, timeout=5)
             if cq_data == 'check_member' and cq_chat:
-                if is_member(cq_chat):
+                if await blok(is_member, cq_chat):
                     await start_konkurs_flow(cq_chat, cq_user)
                 else:
-                    send_msg(cq_chat,
+                    await blok(send_msg, cq_chat,
                         "❌ Hali a'zo emassiz! Avval kanalga a'zo bo'ling.",
-                        keyboard={"inline_keyboard": [
+                        {"inline_keyboard": [
                             [{"text": "📢 Kanalga a'zo bo'lish", "url": CHANNEL_LINK}],
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
-            elif cq_data.startswith('pub_') and cq_user.get('id') == ADMIN_ID:
-                # (VAQTINCHA REJIMDA ishlatilmaydi — tugma yuborilmaydi.
-                #  Avtomatik tizim qaytarilганда yana faollashadi.)
-                num = cq_data[4:]
-                cq_msg_id = cq.get('message', {}).get('message_id')
-                await publish_elon_to_channel(num, cq_chat, cq_msg_id)
-            elif cq_data.startswith('cancel_') and cq_user.get('id') == ADMIN_ID:
-                # (VAQTINCHA REJIMDA ishlatilmaydi.)
-                cq_msg_id = cq.get('message', {}).get('message_id')
-                if cq_msg_id:
-                    req.post(f'{TG_API}/editMessageReplyMarkup', json={
-                        'chat_id': cq_chat, 'message_id': cq_msg_id,
-                        'reply_markup': {'inline_keyboard': []}
-                    }, timeout=5)
-                send_msg(cq_chat, "❌ Bekor qilindi. Kanalga yuborilmadi.")
-            return web.json_response({'ok': True})
+            # (pub_ / cancel_ callback'lari olib tashlandi — D2 qarori: kanalga
+            #  avto-yuborish qaytarilmadi, tugmalar hech qachon yuborilmaydi.)
+            return
 
         if not chat_id:
-            return web.json_response({'ok': True})
+            return
 
         # ── ADMIN rasm yuborsa ──
         photo = message.get('photo')
@@ -1319,21 +1476,26 @@ async def webhook(request):
             st = user_states.get(chat_id, {})
             if st.get('step') == 'konkurs_photo':
                 await handle_konkurs_photo(chat_id, file_id, mgid)
-                return web.json_response({'ok': True})
+                return
             # Aks holda — eski logika: chala elon yaratamiz
             await handle_admin_photo(chat_id, file_id, mgid)
-            return web.json_response({'ok': True})
+            return
 
         if text.startswith('/yubor') or text.startswith('/elon'):
             if chat_id != ADMIN_ID:
-                return web.json_response({'ok': True})
+                return
             await send_new_elons(chat_id, text)
-            return web.json_response({'ok': True})
+            return
+
+        # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
+        if text.startswith('/stat') and chat_id == ADMIN_ID:
+            asyncio.create_task(handle_stat(chat_id, text))
+            return
 
         if text.startswith('/tozala') and chat_id == ADMIN_ID:
             # Fonda ishlaydi — Telegram javobni kutmasin (aks holda buyruqni qayta yuboradi)
             asyncio.create_task(handle_tozala(chat_id, text))
-            return web.json_response({'ok': True})
+            return
 
         if text.startswith('/start'):
             parts = text.split(' ', 1)
@@ -1341,20 +1503,7 @@ async def webhook(request):
             if deep == 'konkurs':
                 await start_konkurs_flow(chat_id, user)
             else:
-                req.post(f'{TG_API}/sendAnimation', json={
-                    'chat_id': chat_id,
-                    'animation': 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA',
-                    'caption': (
-                        "🇺🇿 *Barcha aktual smartfonlarimiz saytimizga joylandi*\n"
-                        "🇷🇺 *Все актуальные смартфоны уже на нашем сайте*\n\n"
-                        "Kirish uchun bosing / Нажмите, чтобы перейти 👇"
-                    ),
-                    'parse_mode': 'Markdown',
-                    'reply_markup': {"inline_keyboard": [[{
-                        "text": "🛍 Saytga kirish / Перейти на сайт",
-                        "web_app": {"url": SAYT_URL}
-                    }]]}
-                }, timeout=10)
+                await blok(send_start, chat_id)
 
         elif text == '/konkurs':
             # ADMIN: sovrin rasmi yig'ish rejimi (hech narsa demay rasm kutadi).
@@ -1367,11 +1516,10 @@ async def webhook(request):
 
         elif text == '/konkursyuborish' and chat_id == ADMIN_ID:
             # ADMIN: aktiv konkurs anonsini kanalga yuboradi.
-            loop = asyncio.get_event_loop()
             _konkurs_cache['time'] = 0
-            k = await loop.run_in_executor(None, get_konkurs)
+            k = await blok(get_konkurs)
             if not k or not k.get('id'):
-                send_msg(chat_id, "😕 Hozirda aktiv konkurs yo'q.")
+                await blok(send_msg, chat_id, "😕 Hozirda aktiv konkurs yo'q.")
             else:
                 prize = html_escape(k.get('prize', 'Konkurs'))
                 # prizes: JSON array (["...","..."]) yoki vergulli matn
@@ -1413,38 +1561,102 @@ async def webhook(request):
                     pics = [p.strip() for p in str(praw).split(',') if p.strip()]
                 markup = {"inline_keyboard": [[{
                     "text": "🎁 Konkursda qatnashish",
-                    "url": "https://t.me/kraken_mobile_shop_bot?startapp=konkurs"
+                    "url": f"https://t.me/{BOT_USERNAME}?startapp=konkurs"
                 }]]}
-                await loop.run_in_executor(
-                    None, send_konkurs_channel_post, CHANNEL, anons, pics, markup)
-                send_msg(chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
+                await blok(send_konkurs_channel_post, CHANNEL, anons, pics, markup)
+                await blok(send_msg, chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
 
         elif text == '/konkurstimer' and chat_id == ADMIN_ID:
             # Admin zaxira: aktiv konkurs timerini qayta o'rnatadi + holatni ko'rsatadi
-            loop = asyncio.get_event_loop()
             _konkurs_cache['time'] = 0
-            k = await loop.run_in_executor(None, get_konkurs)
+            k = await blok(get_konkurs)
             if k and k.get('end_time'):
                 schedule_konkurs_end(k)
-                send_msg(chat_id,
+                await blok(send_msg, chat_id,
                     f"✅ Aktiv konkurs topildi.\n"
                     f"🎁 {k.get('prize','')}\n"
                     f"⏰ Tugash: {k.get('end_time','')}\n"
                     f"⏳ Timer o'rnatildi — vaqti kelganda avtomatik tugaydi.")
             else:
-                send_msg(chat_id, "ℹ️ Hozircha aktiv konkurs yo'q (yoki tugash vaqti belgilanmagan).")
+                await blok(send_msg, chat_id, "ℹ️ Hozircha aktiv konkurs yo'q (yoki tugash vaqti belgilanmagan).")
 
-        elif contact and chat_id in user_states:
+        elif contact:
+            # E3: bot qayta yonganda `user_states` yo'qoladi. Ilgari mijoz raqam
+            # ulashsa bot JIM qolardi. Endi holat aktiv konkursdan tiklanadi.
+            if chat_id not in user_states and not await tiklash_holati(chat_id, user):
+                await blok(send_msg, chat_id,
+                    "😕 Hozirda aktiv konkurs yo'q.\n"
+                    "😕 Сейчас нет активного розыгрыша.")
+                return
             await handle_phone(chat_id, contact.get('phone_number', ''), user)
 
         elif text and chat_id in user_states and user_states[chat_id].get('step') != 'konkurs_photo':
             # Admin konkurs rasm rejimida matn yozsa — telefon deb qabul qilmaymiz
             await handle_phone(chat_id, text, user)
 
-        return web.json_response({'ok': True})
+        elif text and not text.startswith('/'):
+            # F5: «№199» / «199» — e'lon kartasi
+            elon_num = _elon_num_from_text(text)
+            if elon_num:
+                await blok(send_elon_card, chat_id, elon_num)
+            elif _phone_ok(text) and await tiklash_holati(chat_id, user):
+                # E3: mijoz raqamni QO'LDA yozgan (tugmasiz) va aktiv konkurs bor
+                await handle_phone(chat_id, text, user)
+            else:
+                # E4: noma'lum xabar — ilgari bot umuman javob bermasdi
+                await blok(send_msg, chat_id, NOMALUM_XABAR, START_KB)
     except Exception as e:
-        logger.error(f'Webhook: {e}')
-        return web.json_response({'ok': False})
+        logger.error(f'handle_update: {e}')
+
+
+# E4: noma'lum xabarga javob. Mijoz botga yozsa hech narsa kelmasligi — eng
+# yomon taassurot: «bot ishlamayapti» degani.
+NOMALUM_XABAR = (
+    "🇺🇿 Tushunmadim 🙂 Smartfonlarni ko'rish uchun pastdagi tugmani bosing.\n"
+    "E'lon raqamini yozsangiz (masalan <b>199</b>) — o'sha e'lonni ko'rsataman.\n"
+    "Konkurs uchun: /konkurs\n\n"
+    "🇷🇺 Не понял 🙂 Нажмите кнопку ниже, чтобы посмотреть смартфоны.\n"
+    "Напишите номер объявления (например <b>199</b>) — покажу его.\n"
+    "Розыгрыш: /konkurs"
+)
+
+
+def _phone_ok(s):
+    """Matn telefon raqamiga o'xshaydimi (E2).
+
+    Ilgari `handle_phone` ISTALGAN matnni raqam deb qabul qilardi: «salom» ham
+    Sheets'ga ishtirokchi telefoni bo'lib tushardi va g'olib aniqlashda o'sha
+    qator chiqardi.
+    """
+    t = str(s or '').strip()
+    if not t or len(t) > 25:
+        return False
+    if not re.fullmatch(r'\+?[\d\s\-()]{9,25}', t):
+        return False
+    return len(re.sub(r'\D', '', t)) >= 9
+
+
+def _elon_num_from_text(s):
+    """«199», «№199», «#199» → 199. Aks holda None (F5)."""
+    m = re.fullmatch(r'\s*[№#]?\s*(\d{1,6})\s*', str(s or ''))
+    return m.group(1) if m else None
+
+
+async def tiklash_holati(chat_id, user):
+    """E3: aktiv konkursdan `user_states` ni tiklaydi. Konkurs yo'q — False."""
+    if chat_id in user_states:
+        return True
+    k = await blok(get_konkurs)
+    if not k or not k.get('id'):
+        return False
+    user_states[chat_id] = {
+        'step': 'phone',
+        'konkurs_id': k['id'],
+        'prize': k.get('prize', ''),
+        'user_id': user.get('id', chat_id),
+        'username': user.get('username', ''),
+    }
+    return True
 
 def fetch_elon_by_num(num):
     """Sheets'dan bitta elon + modellar ma'lumotini oladi."""
@@ -1457,14 +1669,19 @@ def fetch_elon_by_num(num):
     return None, {}
 
 
-async def preview_elon_to_admin(num, admin_chat):
-    """VAQTINCHA REJIM: avtomatik kanal tizimi o'chirilgan.
-    'Kanalga yuborish' bosilganda bot elonni FAQAT adminga (lichkaga) yuboradi:
-      1) Kanal eloni — rasm(lar) + premium emoji bilan (copy qilib kanalga qo'yish uchun)
-      2) OLX matni — alohida xabar (#5)
-    Kanalga hech narsa yuborilmaydi, tasdiqlash tugmasi yo'q.
-    (publish_elon_to_channel / update_channel_elon funksiyalari kodda qoladi —
-     kelajakda avtomatik tizimni qaytarish uchun.)"""
+def preview_elon_to_admin(num, admin_chat):
+    """«Menga yuborish»: bot e'lonni FAQAT adminga (lichkaga) yuboradi:
+      1) OLX matni — nusxalab OLX'ga joylash uchun
+      2) Kanal eloni — rasm(lar) + premium emoji bilan (kanalga qo'lda joylash uchun)
+
+    Kanalga hech narsa yuborilmaydi. D2 qarori (2026-09-04): avtomatik kanal
+    tizimi QAYTARILMADI — kanalni admin qo'lda boshqaradi, chunki bot edit
+    qilganda kanaldagi premium emoji yo'qoladi. Shu sabab
+    publish_elon_to_channel / update_channel_elon / save_channel_msg_id
+    funksiyalari butunlay olib tashlandi (o'lik kod qoldirilmaydi).
+
+    Funksiya SINXRON — `blok()` orqali alohida ipda chaqiriladi (E1).
+    """
     elon, models = fetch_elon_by_num(num)
     if not elon:
         send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
@@ -1492,81 +1709,70 @@ async def preview_elon_to_admin(num, admin_chat):
         logger.error(f'OLX send: {e}')
 
     # ── 2) KANAL ELONI (keyin — premium emoji bilan, forward/joylash uchun) ──
-    send_msg(admin_chat, "📋 *KANAL ELONI* — Kanalga joylashingiz mumkin 👇")
+    send_msg(admin_chat, "📋 <b>KANAL ELONI</b> — Kanalga joylashingiz mumkin 👇")
     res = send_elon_with_photos(admin_chat, text, entities, images)
     if not res:
         send_msg(admin_chat, "❌ Kanal elonini yuborishda xatolik.")
 
 
-async def publish_elon_to_channel(num, admin_chat, preview_msg_id=None):
-    """Elonни kanalга yuboради va channel_message_id'ни Sheets'ga saqlaydi."""
+# F5: mijoz «199» yoki «№199» deb yozsa — o'sha e'lonning kartasi + tugma.
+# Kanaldan kelgan mijoz uchun eng qisqa yo'l: raqamni ko'rdi → botga yozdi →
+# rasm, narx va «Saytda ochish» tugmasi keldi.
+def send_elon_card(chat_id, num):
     elon, models = fetch_elon_by_num(num)
-    if not elon:
-        send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
+    holat = elon_status(elon) if elon else 'deleted'
+    if not elon or holat in ('deleted', 'waited'):
+        send_msg(chat_id,
+            f"🔍 №{num} e'lon topilmadi.\n"
+            f"🔍 Объявление №{num} не найдено.",
+            START_KB)
         return
-    _, text, entities = build_elon(elon, models)
-    # Kanalga custom emoji o'tmaydi (Telegram cheklovi) — tashlab yuboramiz,
-    # oddiy emoji toza ko'rinadi. Bold/strikethrough/quote qoladi.
-    entities = strip_custom_emoji(entities)
+    model = models.get(str(elon.get('specId', '')), {}) if isinstance(models, dict) else {}
+    nom = html_escape(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '')
+    xotira = html_escape(str(elon.get('storage', '') or ''))
+    rang = html_escape(clean_color(elon.get('color', '')))
+    narx = str(elon.get('price', '') or '').replace('.0', '')
+    cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used'),
+                                                str(elon.get('cycle', '') or '').replace('.0', ''))
+    qatorlar = [f"📱 <b>{nom}</b>" + (f" ({xotira})" if xotira else '') + (f" {rang}" if rang else ''),
+                f"№{num}",
+                '']
+    qatorlar.append(f"{cond_emoji} {cond_uz} / {cond_ru}")
+    if holat == 'sold':
+        qatorlar.append("❗️ <b>SOTILDI / ПРОДАНО</b>")
+    else:
+        qatorlar.append(f"💰 <b>{narx}$</b>")
+    matn = "\n".join(qatorlar)
+
     images = elon.get('images', [])
     if isinstance(images, str):
         try:
             images = json.loads(images)
         except Exception:
             images = [images] if images else []
-
-    res = send_elon_with_photos(CHANNEL, text, entities, images)
-    if not res or not res.get('message_id'):
-        send_msg(admin_chat, "❌ Kanalga yuborishda xatolik.")
-        return
-
-    # channel_message_id'ni Sheets'ga saqlaymiz
-    save_channel_msg_id(num, res.get('message_id'), res.get('is_media_group', False), res.get('text_message_id'))
-
-    # Preview tugmalarini o'chiramiz
-    if preview_msg_id:
-        req.post(f'{TG_API}/editMessageReplyMarkup', json={
-            'chat_id': admin_chat, 'message_id': preview_msg_id,
-            'reply_markup': {'inline_keyboard': []}
-        }, timeout=5)
-    send_msg(admin_chat, f"✅ №{num} kanalga yuborildi!")
-
-
-def save_channel_msg_id(num, msg_id, is_media_group, text_msg_id):
-    """channel_message_id va qo'shimcha ma'lumotni Sheets'ga yozadi."""
-    try:
-        payload = urllib.parse.quote(json.dumps({
-            'num': num,
-            'channel_message_id': msg_id,
-            'is_media_group': is_media_group,
-            'text_message_id': text_msg_id or msg_id
-        }))
-        req.get(f'{SHEET_URL}?action=saveChannelMsgId&data={payload}', timeout=15)
-    except Exception as e:
-        logger.error(f'save_channel_msg_id: {e}')
-
-
-def update_channel_elon(num):
-    """Tahrir/sotildi bo'lganda kanaldagi postni yangilaydi (avtomatik, tasdiqsiz)."""
-    elon, models = fetch_elon_by_num(num)
-    if not elon:
-        return False
-    ch_mid = elon.get('channel_message_id', '')
-    if not ch_mid:
-        return False  # kanalga hali yuborilmagan
-    _, text, entities = build_elon(elon, models)
-    entities = strip_custom_emoji(entities)   # kanalda custom emoji yo'q (#4)
-    is_mg = str(elon.get('is_media_group', '')).lower() in ('true', '1', 'yes')
-    text_mid = elon.get('text_message_id', '') or ch_mid
-    edit_channel_post(CHANNEL, ch_mid, text, entities, is_media_group=is_mg, text_message_id=text_mid)
-    return True
+    kb = {"inline_keyboard": [[{
+        "text": "🛍 Saytda ochish / Открыть на сайте",
+        "url": f"https://t.me/{BOT_USERNAME}?startapp=elon_{num}"
+    }]]}
+    rasm = images[0] if images else ''
+    if rasm:
+        try:
+            r = req.post(f'{TG_API}/sendPhoto', json={
+                'chat_id': chat_id, 'photo': rasm, 'caption': matn,
+                'parse_mode': 'HTML', 'reply_markup': kb
+            }, timeout=15)
+            if r.status_code == 200 and r.json().get('ok'):
+                return
+        except Exception as e:
+            logger.error(f'send_elon_card photo: {e}')
+    send_msg(chat_id, matn, kb)
 
 
 async def konkurs_started_endpoint(request):
     """Sayt konkursni 'active' qilganda — bot tugash timerini o'rnatadi.
     Kesh eskirmasin deb tozalab, yangi konkursga timer qo'yamiz."""
     try:
-        data = await request.json()
+        await request.json()          # tanasi kerak emas — signal yetarli
         _konkurs_cache['data'] = None  # keshni yangilaymiz
         _konkurs_cache['time'] = 0
         loop = asyncio.get_event_loop()
@@ -1693,26 +1899,23 @@ def send_reroll_notify(data):
 
 
 async def publish_endpoint(request):
-    """Sayt 'Kanalga yuborish' bosganda — bot adminга preview + tasdiqlash yuboradi."""
+    """Sayt «Menga yuborish» bosganda — bot adminga OLX matni + kanal elonini yuboradi.
+    E1: ish fonda ketadi, sayt javobni kutib turmaydi."""
     try:
         data = await request.json()
         num = str(data.get('num', ''))
         if not num:
             return web.json_response({'error': 'No num'}, status=400)
-        await preview_elon_to_admin(num, ADMIN_ID)
+        asyncio.get_event_loop().run_in_executor(
+            None, preview_elon_to_admin, num, ADMIN_ID)
         return web.json_response({'ok': True})
     except Exception as e:
         logger.error(f'publish_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
 
-
-async def update_channel_endpoint(request):
-    """VAQTINCHA O'CHIRILGAN: sayt tahrir/sotildi qilganda kanalni AVTOMATIK
-    tahrirlamaydi. Sabab: bot edit qilganda kanaldagi premium emoji yo'qoladi.
-    Endi kanalni admin qo'lda boshqaradi. (update_channel_elon kodi qoladi —
-    avtomatik tizim qaytarilганda shu endpoint ichini yana yoqamiz.)"""
-    # Hech narsa qilmaymiz — 'ok' qaytaramiz (sayt xato bermasin).
-    return web.json_response({'ok': True, 'skipped': 'auto-channel disabled'})
+# (update_channel_endpoint olib tashlandi — D2 qarori: kanalga avto-yuborish
+#  qaytarilmadi. Endpoint faqat 'skipped' qaytarardi, sayt esa uni endi
+#  umuman chaqirmaydi.)
 
 
 def check_init_data(init_data, max_age=86400):
@@ -1774,54 +1977,11 @@ async def label_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
-async def upload_image(request):
-    try:
-        data = await request.json()
-        image_b64 = data.get('image', '')
-        listing_num = data.get('num', 0)
-        if not image_b64:
-            return web.json_response({'error': 'No image'}, status=400)
-        if ',' in image_b64:
-            image_b64 = image_b64.split(',')[1]
-        image_bytes = base64.b64decode(image_b64)
-        r = req.post(
-            f'{TG_API}/sendPhoto',
-            data={'chat_id': CHANNEL, 'caption': f'📸 Elon №{listing_num}'},
-            files={'photo': ('photo.jpg', BytesIO(image_bytes), 'image/jpeg')},
-            timeout=30)
-        result = r.json()
-        if not result.get('ok'):
-            return web.json_response({'error': result}, status=500)
-        file_id = result['result']['photo'][-1]['file_id']
-        fi = req.get(f'{TG_API}/getFile?file_id={file_id}').json()
-        file_path = fi['result']['file_path']
-        url = f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'
-        return web.json_response({'success': True, 'file_id': file_id, 'url': url})
-    except Exception as e:
-        return web.json_response({'error': str(e)}, status=500)
-
-async def get_image_url(request):
-    try:
-        file_id = request.query.get('file_id', '')
-        fi = req.get(f'{TG_API}/getFile?file_id={file_id}').json()
-        file_path = fi['result']['file_path']
-        return web.json_response({'url': f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'})
-    except Exception as e:
-        return web.json_response({'error': str(e)}, status=500)
-
 async def health(request):
     return web.json_response({'status': 'ok'})
 
-async def keep_alive():
-    render_url = os.environ.get('RENDER_URL', '')
-    if not render_url:
-        return
-    while True:
-        await asyncio.sleep(600)
-        try:
-            req.get(f'{render_url}/health', timeout=10)
-        except:
-            pass
+# (keep_alive olib tashlandi — E6: Render pullik tarifda doim yoniq turadi,
+#  har 10 daqiqada o'zini «uyg'otish» keraksiz so'rov edi.)
 
 @web.middleware
 async def cors_middleware(request, handler):
@@ -1842,10 +2002,7 @@ async def main():
     app.router.add_post('/konkurs_started', konkurs_started_endpoint)
     app.router.add_post('/reroll_notify', reroll_notify_endpoint)
     app.router.add_post('/publish', publish_endpoint)
-    app.router.add_post('/update_channel', update_channel_endpoint)
-    app.router.add_post('/upload', upload_image)
     app.router.add_post('/label', label_endpoint)
-    app.router.add_get('/image', get_image_url)
     app.router.add_get('/health', health)
     app.router.add_route('OPTIONS', '/{path_info:.*}', lambda r: web.Response())
     runner = web.AppRunner(app)
@@ -1856,7 +2013,6 @@ async def main():
     if render_url:
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
         logger.info(f'Webhook: {r.json()}')
-    asyncio.create_task(keep_alive())
     # Bot ishga tushganda aktiv konkurs timerini tiklaydi (restart himoyasi)
     asyncio.create_task(restore_konkurs_timer())
     # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
