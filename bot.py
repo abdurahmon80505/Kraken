@@ -1977,6 +1977,125 @@ async def label_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  G9.1 — ULASHISH: Mini App'dan tayyor RASMLI xabar
+#
+#  Muammo: sayt «Ulashish» bosilganda oddiy HAVOLA yuborardi. Do'stga quruq
+#  havola (yoki butun ekranni egallagan katta preview) borardi va e'lonni
+#  ochish UCH qadam edi: havola → sayt sahifasi → t.me sahifasi → ilova.
+#
+#  Yechim: Telegram'ning o'z yo'li — savePreparedInlineMessage. Bot xabarni
+#  OLDINDAN tayyorlab qo'yadi, sayt esa Telegram.WebApp.shareMessage(id) bilan
+#  «Kimga yuborish» oynasini ochadi. Do'stga ODDIY RASM keladi, ostida nom va
+#  narx, tagida tugma — tugma e'lonni BIR qadamda Mini App'da ochadi.
+# ══════════════════════════════════════════════════════════════════════════
+
+def _share_result(num, elon, model):
+    """Ulashish uchun tayyor inline natija (rasm + qisqa matn + tugma).
+
+    build_elon ATAYLAB ishlatilmaydi: u kanal uchun uzun matn va PREMIUM emoji
+    yasaydi. Premium emoji oddiy mijozning chatida ko'rinmaydi — do'stga
+    buzilgan belgilar borardi. Shu sabab bu yerda qisqa, sof HTML matn.
+    """
+    images = elon.get('images')
+    if isinstance(images, str):
+        try:
+            images = json.loads(images)
+        except Exception:
+            images = [images] if images else []
+    if not isinstance(images, list):
+        images = []
+    rasm = str(images[0]).strip() if images else ''
+    if not rasm:
+        return None       # type=photo uchun rasm SHART; rasmsiz e'lon ulashilmaydi
+
+    # Telegram rasmni o'zi yuklab oladi — kichigi tezroq va ishonchliroq
+    if 'ik.imagekit.io' in rasm and 'tr=' not in rasm:
+        rasm += ('&' if '?' in rasm else '?') + 'tr=w-800,q-80'
+
+    nom = str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip()
+    xotira = str(elon.get('storage') or '').strip()
+    rang = clean_color(elon.get('color') or '')
+    narx = str(elon.get('price', '')).replace('.0', '')
+    cycle = str(elon.get('cycle', '') or '').replace('.0', '')
+    cond_uz, _cond_ru, _emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
+
+    sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
+    narx_qatori = 'Sotildi' if elon_status(elon) == 'sold' else f'{narx}$'
+
+    caption = (f'<b>{html_escape(sarlavha)}</b>\n'
+               f'{html_escape(narx_qatori)} · {html_escape(cond_uz)}\n'
+               f"E'lon №{num} · @{BOT_USERNAME}")
+
+    return {
+        'type': 'photo',
+        'id': f'elon{num}',
+        'photo_url': rasm,
+        'thumbnail_url': rasm,
+        'caption': caption,
+        'parse_mode': 'HTML',
+        'reply_markup': {'inline_keyboard': [[{
+            'text': "Ko'rish / Открыть",
+            'url': f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}',
+        }]]},
+    }
+
+
+def save_prepared_share(uid, num):
+    """Telegram'da tayyor xabarni saqlaydi. (id, '') yoki (None, sabab) qaytaradi."""
+    elon, models = fetch_elon_by_num(num)
+    if not elon:
+        return None, 'topilmadi'
+    if elon_status(elon) in ('deleted', 'waited'):
+        return None, 'yopiq'
+    natija = _share_result(num, elon, models.get(str(elon.get('specId', '') or ''), {}))
+    if not natija:
+        return None, 'rasmsiz'
+    try:
+        r = req.post(f'{TG_API}/savePreparedInlineMessage', json={
+            'user_id': uid,
+            'result': natija,
+            'allow_user_chats': True,
+            'allow_group_chats': True,
+            'allow_channel_chats': True,
+        }, timeout=20).json()
+    except Exception as e:
+        logger.error(f'savePreparedInlineMessage tarmoq: {e}')
+        return None, 'tarmoq'
+    if not r.get('ok'):
+        # Eng ehtimolli sabab: BotFather'da inline rejim yoqilmagan
+        logger.error(f"savePreparedInlineMessage: {r.get('description')}")
+        return None, str(r.get('description') or 'telegram')
+    return (r.get('result') or {}).get('id'), ''
+
+
+async def share_endpoint(request):
+    """Mini App «Ulashish» tugmasi shu yerga so'rov yuboradi.
+
+    Bu yo'l ADMIN uchun emas, HAMMA mijoz uchun — shuning uchun label_endpoint
+    dagi ADMIN_ID tekshiruvi bu yerda YO'Q. Himoya ikkita:
+      1) initData imzosi — so'rov haqiqatan Mini App ichidan kelganini isbotlaydi
+      2) num faqat raqam — begona qiymat Sheets so'roviga tushmaydi
+    Xato bo'lsa sayt eski usulga (havola ulashish) o'zi tushadi.
+    """
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        num = str(data.get('num', '') or '').strip()
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        loop = asyncio.get_event_loop()
+        mid, sabab = await loop.run_in_executor(None, save_prepared_share, uid, num)
+        if not mid:
+            return web.json_response({'error': sabab}, status=502)
+        return web.json_response({'ok': True, 'id': mid})
+    except Exception as e:
+        logger.error(f'share_endpoint: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def health(request):
     return web.json_response({'status': 'ok'})
 
@@ -2022,6 +2141,7 @@ async def main():
     app.router.add_post('/reroll_notify', reroll_notify_endpoint)
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/label', label_endpoint)
+    app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
     app.router.add_get('/health', health)
     app.router.add_route('OPTIONS', '/{path_info:.*}', lambda r: web.Response())
     runner = web.AppRunner(app)
