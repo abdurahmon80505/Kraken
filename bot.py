@@ -564,22 +564,33 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
     else:
         narx = f'<b>{html_escape(price)}$</b>'
 
+    # v4: uz va ru jadvallari orasida chiziq (<hr/>) va sarlavha — foydalanuvchi:
+    #     «o'zbekcha tugashi bilan ruscha boshlangan, 6-bo'limdek bo'lib ketgan»
     spec = ''
     spec_uz = _rich_table(model.get('specUz'))
     spec_ru = _rich_table(model.get('specRu'))
     if spec_uz or spec_ru:
-        spec = ('<details><summary>📋 Texnik xarakteristika / Характеристики</summary>'
-                + spec_uz + spec_ru + '</details>')
+        ichki = ''
+        if spec_uz:
+            ichki += '<p><b>🇺🇿 Texnik xarakteristika</b></p>' + spec_uz
+        if spec_uz and spec_ru:
+            ichki += '<hr/>'
+        if spec_ru:
+            ichki += '<p><b>🇷🇺 Характеристики</b></p>' + spec_ru
+        spec = '<details><summary>📋 Texnik xarakteristika / Характеристики</summary>' + ichki + '</details>'
 
     # v2: <h3> emas — oddiy qalin qator (katta sarlavha «maqola»dek ko'rinardi);
     #     tugmalar align'siz — butun eniga (align="center" kichik qilib qo'ygan edi)
+    # v4: RASM TEPADA, matn pastda — kanaldagi eski postga yaqin (foydalanuvchi so'radi);
+    #     holati ikki tilda IKKI qator (bitta qatorga qo'shilgani «xunuk» edi)
     kanal = CHANNEL.lstrip('@')
     return (
-        f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
-        + media
+        media
+        + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
         + spec
-        + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b> / {html_escape(cond_ru)}<br/>'
-          f'{e("money")} Narxi / Цена: {narx}</p>'
+        + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
+          f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
+        + f'<p>{e("money")} Narxi / Цена: {narx}</p>'
         + '<tg-button-row>'
           # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
           #     to'liq ko'rib bo'lgan odamga shu e'lonni saytda ko'rishdan naf yo'q — boshqa
