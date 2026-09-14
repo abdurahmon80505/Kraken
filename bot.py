@@ -520,15 +520,21 @@ def _rich_table(*spec_texts):
     chiziq o'ngroqqa surilardi). Oradagi <hr/> ham olib tashlandi (foydalanuvchi: «kerakmas»)."""
     rows = []
     for spec_text in spec_texts:
+        guruh = []
         for line in str(spec_text or '').split('\n'):
             line = line.strip().lstrip('•').strip()
             if not line:
                 continue
             k, sep, v = line.partition(':')
             if sep and v.strip():
-                rows.append(f'<tr><td><b>{html_escape(k.strip())}</b></td><td>{html_escape(v.strip())}</td></tr>')
+                guruh.append(f'<tr><td><b>{html_escape(k.strip())}</b></td><td>{html_escape(v.strip())}</td></tr>')
             else:
-                rows.append(f'<tr><td colspan="2">{html_escape(line)}</td></tr>')
+                guruh.append(f'<tr><td colspan="2">{html_escape(line)}</td></tr>')
+        if guruh and rows:
+            # v8: uz va ru orasida BO'SH QATOR (chiziq emas) — bitta jadvalda ustunlar
+            #     bir xil qoladi, lekin tillar aralashib ketmaydi (foydalanuvchi: «aralashib ketdi»)
+            rows.append('<tr><td colspan="2">\u00a0</td></tr>')
+        rows.extend(guruh)
     return f'<table bordered compact>{"".join(rows)}</table>' if rows else ''
 
 
