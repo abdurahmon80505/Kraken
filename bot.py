@@ -581,7 +581,10 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b> / {html_escape(cond_ru)}<br/>'
           f'{e("money")} Narxi / Цена: {narx}</p>'
         + '<tg-button-row>'
-          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=elon_{num}">🛍 Saytda ochish / Открыть на сайте</tg-button>'
+          # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
+          #     to'liq ko'rib bo'lgan odamga shu e'lonni saytda ko'rishdan naf yo'q — boshqa
+          #     e'lonlarni ko'rgani yaxshi»
+          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Saytni ochish / Открыть сайт</tg-button>'
           '</tg-button-row>'
         + '<tg-button-row>'
           '<tg-button type="url" url="https://t.me/Krakens_admin">✉️ Admin</tg-button>'
