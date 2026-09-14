@@ -513,14 +513,20 @@ def _rich_emoji(key):
     return f'<tg-emoji emoji-id="{eid}">{base}</tg-emoji>'
 
 
-def _rich_list(spec_text):
-    """'• Ekran: …\n• Protsessor: …' → <ul><li>…</li></ul> (rich HTML ro'yxat)."""
-    items = []
+def _rich_table(spec_text):
+    """'• Ekran: 6.3 dyum…\n• Protsessor: …' → <table compact> (nom | qiymat).
+    v2 (2026-09-14): ro'yxat o'rniga jadval — chess botdagidek ixcham ko'rinish."""
+    rows = []
     for line in str(spec_text or '').split('\n'):
         line = line.strip().lstrip('•').strip()
-        if line:
-            items.append(f'<li>{html_escape(line)}</li>')
-    return f'<ul>{"".join(items)}</ul>' if items else ''
+        if not line:
+            continue
+        k, sep, v = line.partition(':')
+        if sep and v.strip():
+            rows.append(f'<tr><td><b>{html_escape(k.strip())}</b></td><td>{html_escape(v.strip())}</td></tr>')
+        else:
+            rows.append(f'<tr><td colspan="2">{html_escape(line)}</td></tr>')
+    return f'<table compact>{"".join(rows)}</table>' if rows else ''
 
 
 def build_rich_html(elon, models_by_id, format_='collage', premium=True):
@@ -536,9 +542,19 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
     cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
 
-    tag = 'tg-collage' if format_ == 'collage' else 'tg-slideshow'
-    imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in images_of(elon)[:10])
-    media = f'<{tag}>{imgs}</{tag}>' if imgs else ''
+    # v2: collage — faqat 4 rasm (2×2, bir ekran; 8 tasi 2 ekran bo'lib ketgan edi),
+    #     slideshow — hammasi + «suring» eslatmasi (mijoz ko'p rasm borini sezsin)
+    rasmlar = images_of(elon)[:10]
+    if format_ == 'collage':
+        imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar[:4])
+        media = f'<tg-collage>{imgs}</tg-collage>' if imgs else ''
+        if len(rasmlar) > 4:
+            media += f'<p>📷 {len(rasmlar)} ta rasm — hammasi saytda</p>'
+    else:
+        imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar)
+        media = f'<tg-slideshow>{imgs}</tg-slideshow>' if imgs else ''
+        if len(rasmlar) > 1:
+            media += f'<p>📷 {len(rasmlar)} ta rasm — suring ⟶</p>'
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
     if elon_status(elon) == 'sold':
@@ -549,23 +565,27 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
         narx = f'<b>{html_escape(price)}$</b>'
 
     spec = ''
-    spec_uz = _rich_list(model.get('specUz'))
-    spec_ru = _rich_list(model.get('specRu'))
+    spec_uz = _rich_table(model.get('specUz'))
+    spec_ru = _rich_table(model.get('specRu'))
     if spec_uz or spec_ru:
-        spec = ('<details><summary>Texnik xarakteristika / Характеристики</summary>'
+        spec = ('<details><summary>📋 Texnik xarakteristika / Характеристики</summary>'
                 + spec_uz + spec_ru + '</details>')
 
+    # v2: <h3> emas — oddiy qalin qator (katta sarlavha «maqola»dek ko'rinardi);
+    #     tugmalar align'siz — butun eniga (align="center" kichik qilib qo'ygan edi)
+    kanal = CHANNEL.lstrip('@')
     return (
-        f'<h3>{e("google")} {title}</h3>'
-        f'<p>#phone #{num}</p>'
+        f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
         + media
         + spec
-        + f'<p>{html_escape(cond_emoji)} Holati: {html_escape(cond_uz)}<br/>'
-          f'{html_escape(cond_emoji)} Состояние: {html_escape(cond_ru)}</p>'
-        + f'<p>{e("money")} Narxi / Цена: {narx}</p>'
-        + f'<p>📩 @Krakens_admin · 📞 +998997638595<br/>{e("k")} @Kraken_Mobile · {e("k")} @Kraken_Mobile_shop_bot</p>'
-        + '<tg-button-row align="center">'
-          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=elon_{num}">🛍 Saytda ochish / Открыть</tg-button>'
+        + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b> / {html_escape(cond_ru)}<br/>'
+          f'{e("money")} Narxi / Цена: {narx}</p>'
+        + '<tg-button-row>'
+          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=elon_{num}">🛍 Saytda ochish / Открыть на сайте</tg-button>'
+          '</tg-button-row>'
+        + '<tg-button-row>'
+          '<tg-button type="url" url="https://t.me/Krakens_admin">✉️ Admin</tg-button>'
+          f'<tg-button type="url" url="https://t.me/{kanal}">{e("k")} Kanal</tg-button>'
           '</tg-button-row>'
     )
 
