@@ -21,6 +21,10 @@ TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
 # Test paytida:  CHANNEL_ID=@Kraken_mobile_test  (Render dashboard'ga qo'shasan)
 # Testdan keyin: env'ni o'chirasan yoki @Kraken_mobile qilasan → asosiy kanalga qaytadi.
 CHANNEL = os.environ.get('CHANNEL_ID', '@Kraken_mobile')
+# G11.0: SINOV kanali — /richtest faqat shu yerga va admin lichkasiga yuboradi.
+# ASOSIY KANALGA (CHANNEL) sinov xabari HECH QACHON KETMAYDI (foydalanuvchi:
+# «hozir rasvo qiladi-ku… faqat lichkamga… test kanaliga yuborsin»).
+TEST_CHANNEL = os.environ.get('TEST_CHANNEL_ID', '@Kraken_mobile_test')
 # CHANNEL'dan username va link (a'zolik tugmalari uchun — test kanalga ham mos)
 CHANNEL_USERNAME = CHANNEL.lstrip('@')
 CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
@@ -474,6 +478,138 @@ def build_elon(item, models_by_id):
 def _utf16len(s):
     """Telegram entities UTF-16 birlikda hisoblaydi."""
     return len(s.encode('utf-16-le')) // 2
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  G11.0 — RICH MESSAGE SINOVI (/richtest <num>, faqat admin)
+#
+#  Bot API 10.1 (2026-iyun) — sendRichMessage: BITTA xabarda sarlavha, rasmlar
+#  (<tg-collage> = to'r, hammasi ko'rinadi; <tg-slideshow> = varaqlanadigan),
+#  yopiladigan <details> blok, <tg-emoji> (premium emoji), <tg-button> tugma.
+#  Keyin editMessageText(rich_message=...) bilan TAHRIRLANADI — narx o'zgarsa
+#  post o'zgaradi, sotilsa «Sotildi» bo'ladi (KANAL_REJA.md G11.2).
+#
+#  Asosiy savol: KANALDA premium emoji chiqadimi? Oddiy xabarda faqat Fragment
+#  username bilan chiqadi (Bot API «Formatting options»). Rich bo'limida bu
+#  cheklov YOZILMAGAN — faqat jonli sinov aytadi. Shu sabab bu buyruq e'lonni
+#  2 ko'rinishda (collage, slideshow) admin lichkasiga VA test kanaliga yuboradi.
+# ══════════════════════════════════════════════════════════════════════════
+
+def images_of(elon):
+    """E'lon rasmlari — Sheets'da JSON matn, xotirada ro'yxat bo'lishi mumkin."""
+    images = elon.get('images')
+    if isinstance(images, str):
+        try:
+            images = json.loads(images)
+        except Exception:
+            images = [images] if images else []
+    if not isinstance(images, list):
+        images = []
+    return [str(u).strip() for u in images if str(u or '').strip()]
+
+
+def _rich_emoji(key):
+    base, eid = PREMIUM[key]
+    return f'<tg-emoji emoji-id="{eid}">{base}</tg-emoji>'
+
+
+def _rich_list(spec_text):
+    """'• Ekran: …\n• Protsessor: …' → <ul><li>…</li></ul> (rich HTML ro'yxat)."""
+    items = []
+    for line in str(spec_text or '').split('\n'):
+        line = line.strip().lstrip('•').strip()
+        if line:
+            items.append(f'<li>{html_escape(line)}</li>')
+    return f'<ul>{"".join(items)}</ul>' if items else ''
+
+
+def build_rich_html(elon, models_by_id, format_='collage', premium=True):
+    """E'lon uchun Rich HTML. format_: 'collage' | 'slideshow'. premium=False — <tg-emoji>siz."""
+    num = int(float(elon.get('num', 0) or 0))
+    model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    name = html_escape(str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip())
+    storage = html_escape(str(elon.get('storage') or '').strip())
+    color = html_escape(clean_color(elon.get('color') or ''))
+    price = str(elon.get('price', '') or '').replace('.0', '')
+    old = str(elon.get('oldPrice', '') or '').replace('.0', '')
+    cycle = str(elon.get('cycle', '') or '').replace('.0', '')
+    cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
+    e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
+
+    tag = 'tg-collage' if format_ == 'collage' else 'tg-slideshow'
+    imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in images_of(elon)[:10])
+    media = f'<{tag}>{imgs}</{tag}>' if imgs else ''
+
+    title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
+    if elon_status(elon) == 'sold':
+        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + '<b>❗️SOTILDI❗️</b>'
+    elif old and old != price:
+        narx = f'<s>{html_escape(old)}$</s> <b>{html_escape(price)}$</b>'
+    else:
+        narx = f'<b>{html_escape(price)}$</b>'
+
+    spec = ''
+    spec_uz = _rich_list(model.get('specUz'))
+    spec_ru = _rich_list(model.get('specRu'))
+    if spec_uz or spec_ru:
+        spec = ('<details><summary>Texnik xarakteristika / Характеристики</summary>'
+                + spec_uz + spec_ru + '</details>')
+
+    return (
+        f'<h3>{e("google")} {title}</h3>'
+        f'<p>#phone #{num}</p>'
+        + media
+        + spec
+        + f'<p>{html_escape(cond_emoji)} Holati: {html_escape(cond_uz)}<br/>'
+          f'{html_escape(cond_emoji)} Состояние: {html_escape(cond_ru)}</p>'
+        + f'<p>{e("money")} Narxi / Цена: {narx}</p>'
+        + f'<p>📩 @Krakens_admin · 📞 +998997638595<br/>{e("k")} @Kraken_Mobile · {e("k")} @Kraken_Mobile_shop_bot</p>'
+        + '<tg-button-row align="center">'
+          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=elon_{num}">🛍 Saytda ochish / Открыть</tg-button>'
+          '</tg-button-row>'
+    )
+
+
+def send_rich(chat_id, html, disable_notification=False):
+    """sendRichMessage. (message_id, '') yoki (None, xato matni)."""
+    try:
+        r = req.post(f'{TG_API}/sendRichMessage', json={
+            'chat_id': chat_id,
+            'rich_message': {'html': html},
+            'disable_notification': disable_notification,
+        }, timeout=30).json()
+    except Exception as ex:
+        return None, f'tarmoq: {ex}'
+    if not r.get('ok'):
+        return None, str(r.get('description') or r)
+    return (r.get('result') or {}).get('message_id'), ''
+
+
+def richtest(admin_chat, num):
+    """/richtest <num>: 2 ko'rinish × 2 manzil (lichka, TEST kanal). Natijani adminga yozadi."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        send_msg(admin_chat, f"❌ №{num} e'lon topilmadi.")
+        return
+    hisobot = [f"🧪 <b>Rich sinov №{num}</b> — test kanali: {TEST_CHANNEL}"]
+    for fmt in ('collage', 'slideshow'):
+        html = build_rich_html(elon, models, fmt, premium=True)
+        for nom, chat in (('lichka', admin_chat), ('test kanal', TEST_CHANNEL)):
+            mid, xato = send_rich(chat, html)
+            if mid:
+                hisobot.append(f"✅ {fmt} → {nom}: yuborildi (id {mid})")
+                continue
+            # Premium emoji rad etilgan bo'lishi mumkin — o'sha xabarni emoji'siz qayta yuboramiz,
+            # shunda hech bo'lmasa ko'rinish sinaladi va xato matni ham ko'rinadi
+            mid2, xato2 = send_rich(chat, build_rich_html(elon, models, fmt, premium=False))
+            if mid2:
+                hisobot.append(f"⚠️ {fmt} → {nom}: premium emoji BILAN xato: <code>{html_escape(xato)}</code>\n"
+                               f"   emoji'siz yuborildi (id {mid2})")
+            else:
+                hisobot.append(f"❌ {fmt} → {nom}: <code>{html_escape(xato)}</code> / emoji'siz ham: <code>{html_escape(xato2)}</code>")
+    hisobot.append("\nKo'ring: kanalda premium emoji chiqdimi? collage (to'r) yoki slideshow (varaqlanadigan) yaxshimi? "
+                   "Eski Telegram'da qanday ko'rinadi? Sinov postlarini keyin o'chiramiz.")
+    send_msg(admin_chat, '\n'.join(hisobot))
 
 
 def html_escape(s):
@@ -1562,6 +1698,15 @@ async def handle_update(data):
             if chat_id != ADMIN_ID:
                 return
             await send_new_elons(chat_id, text)
+            return
+
+        # G11.0: Rich Message sinovi — faqat admin, faqat lichka + TEST kanal. Fonda (T1).
+        if text.startswith('/richtest') and chat_id == ADMIN_ID:
+            m_num = re.search(r'\d{1,6}', text)
+            if not m_num:
+                await blok(send_msg, chat_id, "Foydalanish: /richtest 248")
+                return
+            asyncio.create_task(blok(richtest, chat_id, m_num.group(0)))
             return
 
         # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
