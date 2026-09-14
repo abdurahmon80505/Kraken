@@ -529,8 +529,9 @@ def _rich_table(spec_text):
     return f'<table bordered compact>{"".join(rows)}</table>' if rows else ''   # v5: bordered
 
 
-def build_rich_html(elon, models_by_id, format_='collage', premium=True):
-    """E'lon uchun Rich HTML. format_: 'collage' | 'slideshow'. premium=False — <tg-emoji>siz."""
+def build_rich_html(elon, models_by_id, premium=True):
+    """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
+    v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow."""
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     name = html_escape(str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip())
@@ -542,19 +543,12 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
     cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
 
-    # v2: collage — faqat 4 rasm (2×2, bir ekran; 8 tasi 2 ekran bo'lib ketgan edi),
-    #     slideshow — hammasi + «suring» eslatmasi (mijoz ko'p rasm borini sezsin)
+    # v6: slideshow — hammasi; «N ta rasm — suring» slideshow'ning O'Z izohi (figcaption),
+    #     rasm tagiga yopishib turadi (alohida paragraf sarlavha bilan qo'shilib ketgan edi)
     rasmlar = images_of(elon)[:10]
-    if format_ == 'collage':
-        imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar[:4])
-        media = f'<tg-collage>{imgs}</tg-collage>' if imgs else ''
-        if len(rasmlar) > 4:
-            media += f'<p>📷 {len(rasmlar)} ta rasm — hammasi saytda</p>'
-    else:
-        imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar)
-        media = f'<tg-slideshow>{imgs}</tg-slideshow>' if imgs else ''
-        if len(rasmlar) > 1:
-            media += f'<p>📷 {len(rasmlar)} ta rasm — suring ⟶</p>'
+    imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar)
+    izoh = f'<figcaption>📷 {len(rasmlar)} ta rasm — suring ⟶</figcaption>' if len(rasmlar) > 1 else ''
+    media = f'<tg-slideshow>{imgs}{izoh}</tg-slideshow>' if imgs else ''
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
     if elon_status(elon) == 'sold':
@@ -583,15 +577,18 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
     # v5: bloklar orasida BO'SH JOY (Telegram rich'da paragraflar orasiga margin qo'ymaydi —
     #     bo'sh paragraf \u00a0 bilan). Holati + narx BITTA blok. Foydalanuvchi ko'rsatdi:
     #     xarakteristika / bo'sh / holati·holati·narx / bo'sh / tugma
+    # v6: spec TEPASIDA ham bo'sh joy (details'ga Telegram faqat pastdan chiziq chizadi —
+    #     sarlavhaga yopishib ketardi); holati va narx ALOHIDA paragraflar (bo'sh qatorsiz,
+    #     lekin <br/> bilan yopishgan emas)
     BOSH = '<p>\u00a0</p>'
     return (
         media
         + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
-        + spec
+        + (BOSH + spec if spec else '')
         + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
-          f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b><br/>'
-          f'{e("money")} Narxi / Цена: {narx}</p>'
+          f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
+        + f'<p>{e("money")} Narxi / Цена: {narx}</p>'
         + BOSH
         + '<tg-button-row>'
           # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
@@ -628,23 +625,15 @@ def richtest(admin_chat, num):
         send_msg(admin_chat, f"❌ №{num} e'lon topilmadi.")
         return
     hisobot = [f"🧪 <b>Rich sinov №{num}</b> — test kanali: {TEST_CHANNEL}"]
-    for fmt in ('collage', 'slideshow'):
-        html = build_rich_html(elon, models, fmt, premium=True)
-        for nom, chat in (('lichka', admin_chat), ('test kanal', TEST_CHANNEL)):
-            mid, xato = send_rich(chat, html)
-            if mid:
-                hisobot.append(f"✅ {fmt} → {nom}: yuborildi (id {mid})")
-                continue
-            # Premium emoji rad etilgan bo'lishi mumkin — o'sha xabarni emoji'siz qayta yuboramiz,
-            # shunda hech bo'lmasa ko'rinish sinaladi va xato matni ham ko'rinadi
-            mid2, xato2 = send_rich(chat, build_rich_html(elon, models, fmt, premium=False))
-            if mid2:
-                hisobot.append(f"⚠️ {fmt} → {nom}: premium emoji BILAN xato: <code>{html_escape(xato)}</code>\n"
-                               f"   emoji'siz yuborildi (id {mid2})")
-            else:
-                hisobot.append(f"❌ {fmt} → {nom}: <code>{html_escape(xato)}</code> / emoji'siz ham: <code>{html_escape(xato2)}</code>")
-    hisobot.append("\nKo'ring: kanalda premium emoji chiqdimi? collage (to'r) yoki slideshow (varaqlanadigan) yaxshimi? "
-                   "Eski Telegram'da qanday ko'rinadi? Sinov postlarini keyin o'chiramiz.")
+    # v6: premium emoji kanalda chiqmasligi tasdiqlangan (2026-09-14 sinovi) — to'g'ridan-to'g'ri emoji'siz
+    html = build_rich_html(elon, models, premium=False)
+    for nom, chat in (('lichka', admin_chat), ('test kanal', TEST_CHANNEL)):
+        mid, xato = send_rich(chat, html)
+        if mid:
+            hisobot.append(f"✅ {nom}: yuborildi (id {mid})")
+        else:
+            hisobot.append(f"❌ {nom}: <code>{html_escape(xato)}</code>")
+    hisobot.append("\nSinov postlarini keyin o'chiramiz.")
     send_msg(admin_chat, '\n'.join(hisobot))
 
 
