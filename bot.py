@@ -526,7 +526,7 @@ def _rich_table(spec_text):
             rows.append(f'<tr><td><b>{html_escape(k.strip())}</b></td><td>{html_escape(v.strip())}</td></tr>')
         else:
             rows.append(f'<tr><td colspan="2">{html_escape(line)}</td></tr>')
-    return f'<table compact>{"".join(rows)}</table>' if rows else ''
+    return f'<table bordered compact>{"".join(rows)}</table>' if rows else ''   # v5: bordered
 
 
 def build_rich_html(elon, models_by_id, format_='collage', premium=True):
@@ -570,13 +570,9 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
     spec_uz = _rich_table(model.get('specUz'))
     spec_ru = _rich_table(model.get('specRu'))
     if spec_uz or spec_ru:
-        ichki = ''
-        if spec_uz:
-            ichki += '<p><b>🇺🇿 Texnik xarakteristika</b></p>' + spec_uz
-        if spec_uz and spec_ru:
-            ichki += '<hr/>'
-        if spec_ru:
-            ichki += '<p><b>🇷🇺 Характеристики</b></p>' + spec_ru
+        # v5: ichki sarlavhalar (bayroq + matn) olib tashlandi — summary'da nom bor, jadvalning o'zi yetadi;
+        #     uz va ru orasida faqat chiziq
+        ichki = spec_uz + ('<hr/>' if (spec_uz and spec_ru) else '') + spec_ru
         spec = '<details><summary>📋 Texnik xarakteristika / Характеристики</summary>' + ichki + '</details>'
 
     # v2: <h3> emas — oddiy qalin qator (katta sarlavha «maqola»dek ko'rinardi);
@@ -584,13 +580,19 @@ def build_rich_html(elon, models_by_id, format_='collage', premium=True):
     # v4: RASM TEPADA, matn pastda — kanaldagi eski postga yaqin (foydalanuvchi so'radi);
     #     holati ikki tilda IKKI qator (bitta qatorga qo'shilgani «xunuk» edi)
     kanal = CHANNEL.lstrip('@')
+    # v5: bloklar orasida BO'SH JOY (Telegram rich'da paragraflar orasiga margin qo'ymaydi —
+    #     bo'sh paragraf \u00a0 bilan). Holati + narx BITTA blok. Foydalanuvchi ko'rsatdi:
+    #     xarakteristika / bo'sh / holati·holati·narx / bo'sh / tugma
+    BOSH = '<p>\u00a0</p>'
     return (
         media
         + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
         + spec
+        + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
-          f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
-        + f'<p>{e("money")} Narxi / Цена: {narx}</p>'
+          f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b><br/>'
+          f'{e("money")} Narxi / Цена: {narx}</p>'
+        + BOSH
         + '<tg-button-row>'
           # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
           #     to'liq ko'rib bo'lgan odamga shu e'lonni saytda ko'rishdan naf yo'q — boshqa
