@@ -6,6 +6,8 @@ import base64
 import functools
 import json
 import urllib.parse
+import time
+import threading
 from aiohttp import web
 import requests as req
 
@@ -56,6 +58,20 @@ PREMIUM = {
 
 # Bot oxirgi yuborgan elon raqami (RAM'da; restartda Sheets'dan tiklanadi)
 _last_sent = {'num': 0}
+
+# ── G10.3 (2026-09-14): E'LON XOTIRASI — ulashish tez bo'lsin ──
+# Muammo: har «Ulashish»da bot Sheets'dan e'lonni so'rardi. Apps Script 3–5 s,
+# ba'zan 30–90 s (o'lchandi) → mijoz kutar, bot 15 s da taslim bo'lib eski
+# havolali usulga tushardi.
+# Yechim: bot ishga tushganda butun ro'yxatni BIR MARTA oladi; sayt (admin)
+# har saqlashda o'zgargan e'lonni /elon_changed ga yuboradi; kuniga bir marta
+# ehtiyot uchun qayta yuklanadi. Xotirada yo'q e'lon (yangi, hali kelmagan) —
+# eski yo'l bilan Sheets'dan olinib xotiraga qo'shiladi.
+# Foydalanuvchi: «har 10 daqiqada yangilash kerak emas, saqlash bosganda botga
+# so'rov boraqolsin» — shunday qilindi.
+_ELON_CACHE = {'by_num': {}, 'models': {}, 'time': 0.0, 'last_try': 0.0}
+ELON_CACHE_MAX_AGE = 24 * 3600
+_elon_cache_lock = threading.Lock()
 
 CONDITION_TXT = {
     'new':     ("Yangi (Karobka)", "Новый (Коробка)"),
@@ -186,6 +202,67 @@ def get_products():
     except Exception as e:
         logger.error(f'get_products: {e}')
         return None, None
+
+
+def elon_cache_load():
+    """Sheets'dan butun ro'yxatni olib xotiraga yozadi. True — muvaffaqiyat."""
+    _ELON_CACHE['last_try'] = time.time()
+    listings, models = get_products()
+    if listings is None:
+        return False
+    by_num = {}
+    for it in listings:
+        try:
+            by_num[str(int(float(it.get('num', 0) or 0)))] = it
+        except Exception:
+            pass
+    md = {}
+    for m in (models or []):
+        if isinstance(m, dict) and m.get('id'):
+            md[str(m['id'])] = m
+    with _elon_cache_lock:
+        _ELON_CACHE['by_num'] = by_num
+        _ELON_CACHE['models'] = md
+        _ELON_CACHE['time'] = time.time()
+    logger.info(f'elon_cache: {len(by_num)} elon, {len(md)} model')
+    return True
+
+
+def elon_cache_get(num):
+    """(elon, models_by_id) — avval xotiradan; yo'q bo'lsa Sheets'dan olib xotiraga qo'shadi."""
+    c = _ELON_CACHE
+    # Hali umuman yuklanmagan (ishga tushganda Sheets javob bermagan) — bir urinish,
+    # lekin ketma-ket emas: 60 s da bir marta
+    if not c['time'] and time.time() - c['last_try'] > 60:
+        elon_cache_load()
+    with _elon_cache_lock:
+        e = c['by_num'].get(str(num))
+        models = c['models']
+    if e is not None and models:
+        return e, models
+    elon, md = fetch_elon_by_num(num)          # sekin yo'l — faqat xotirada yo'q bo'lsa
+    if elon:
+        with _elon_cache_lock:
+            c['by_num'][str(num)] = elon
+            if md and not c['models']:
+                c['models'] = dict(md)
+    return elon, (models or md or {})
+
+
+def elon_cache_put(elon):
+    """Sayt (admin) saqlagan e'lon — xotiradagi nusxa almashtiriladi."""
+    with _elon_cache_lock:
+        _ELON_CACHE['by_num'][str(elon['num'])] = elon
+
+
+async def elon_cache_loop():
+    """Kuniga bir marta ehtiyot uchun qayta yuklash (sayt xabari yetib kelmagan bo'lsa)."""
+    while True:
+        await asyncio.sleep(ELON_CACHE_MAX_AGE)
+        try:
+            await blok(elon_cache_load)
+        except Exception as e:
+            logger.error(f'elon_cache_loop: {e}')
 
 
 def get_stat(days=1):
@@ -2043,7 +2120,7 @@ def _share_result(num, elon, model):
 
 def save_prepared_share(uid, num):
     """Telegram'da tayyor xabarni saqlaydi. (id, '') yoki (None, sabab) qaytaradi."""
-    elon, models = fetch_elon_by_num(num)
+    elon, models = elon_cache_get(num)         # G10.3: xotiradan (tez), yo'q bo'lsa Sheets
     if not elon:
         return None, 'topilmadi'
     if elon_status(elon) in ('deleted', 'waited'):
@@ -2096,6 +2173,33 @@ async def share_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+async def elon_changed_endpoint(request):
+    """G10.3: sayt (admin) e'lonni saqlaganda shu yerga yuboradi — bot xotirasi yangilanadi.
+
+    Himoya: initData imzosi + FAQAT ADMIN_ID. Oddiy mijoz bu yo'lga kira olmaydi
+    (aks holda begona odam xotiradagi narxni buzib, ulashish xabarini o'zgartirardi).
+    Kelgan e'lon Sheets'ga yozilgan payload'ning o'zi (sayt elonPayload) —
+    images JSON matn, price/cycle matn; _share_result ikkalasini ham tushunadi.
+    """
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        elon = data.get('elon')
+        if not isinstance(elon, dict):
+            return web.json_response({'error': 'Elon yoq'}, status=400)
+        num = str(elon.get('num', '') or '').strip()
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        elon['num'] = int(num)
+        elon_cache_put(elon)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'elon_changed: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def health(request):
     return web.json_response({'status': 'ok'})
 
@@ -2142,6 +2246,7 @@ async def main():
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/label', label_endpoint)
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
+    app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi
     app.router.add_get('/health', health)
     app.router.add_route('OPTIONS', '/{path_info:.*}', lambda r: web.Response())
     runner = web.AppRunner(app)
@@ -2156,14 +2261,14 @@ async def main():
     asyncio.create_task(keep_alive())
     # Bot ishga tushganda aktiv konkurs timerini tiklaydi (restart himoyasi)
     asyncio.create_task(restore_konkurs_timer())
-    # Bot ishga tushganda oxirgi elon raqamini eslab qoladi
+    # Bot ishga tushganda: e'lon xotirasi (G10.3) + oxirgi elon raqami — BITTA yuklashdan
     try:
-        listings, _ = get_products()
-        if listings:
-            _last_sent['num'] = max(int(float(it.get('num', 0) or 0)) for it in listings)
+        if elon_cache_load() and _ELON_CACHE['by_num']:
+            _last_sent['num'] = max(int(k) for k in _ELON_CACHE['by_num'].keys())
             logger.info(f"Last elon num: {_last_sent['num']}")
     except Exception as e:
-        logger.error(f'init last_sent: {e}')
+        logger.error(f'init elon_cache: {e}')
+    asyncio.create_task(elon_cache_loop())   # kuniga bir marta ehtiyot yuklash
     logger.info(f'Started on port {PORT}')
     while True:
         await asyncio.sleep(3600)
