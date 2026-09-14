@@ -513,20 +513,23 @@ def _rich_emoji(key):
     return f'<tg-emoji emoji-id="{eid}">{base}</tg-emoji>'
 
 
-def _rich_table(spec_text):
-    """'• Ekran: 6.3 dyum…\n• Protsessor: …' → <table compact> (nom | qiymat).
-    v2 (2026-09-14): ro'yxat o'rniga jadval — chess botdagidek ixcham ko'rinish."""
+def _rich_table(*spec_texts):
+    """'• Ekran: 6.3 dyum…\n• Protsessor: …' matnlar(i) → BITTA <table bordered compact> (nom | qiymat).
+    v7 (2026-09-14): uz va ru qatorlari bitta jadvalda — ustun kengligi bir marta hisoblanadi,
+    ajratuvchi chiziq hamma qatorda bir xil joyda (ikki jadvalda ruscha nomlar uzunroq bo'lib
+    chiziq o'ngroqqa surilardi). Oradagi <hr/> ham olib tashlandi (foydalanuvchi: «kerakmas»)."""
     rows = []
-    for line in str(spec_text or '').split('\n'):
-        line = line.strip().lstrip('•').strip()
-        if not line:
-            continue
-        k, sep, v = line.partition(':')
-        if sep and v.strip():
-            rows.append(f'<tr><td><b>{html_escape(k.strip())}</b></td><td>{html_escape(v.strip())}</td></tr>')
-        else:
-            rows.append(f'<tr><td colspan="2">{html_escape(line)}</td></tr>')
-    return f'<table bordered compact>{"".join(rows)}</table>' if rows else ''   # v5: bordered
+    for spec_text in spec_texts:
+        for line in str(spec_text or '').split('\n'):
+            line = line.strip().lstrip('•').strip()
+            if not line:
+                continue
+            k, sep, v = line.partition(':')
+            if sep and v.strip():
+                rows.append(f'<tr><td><b>{html_escape(k.strip())}</b></td><td>{html_escape(v.strip())}</td></tr>')
+            else:
+                rows.append(f'<tr><td colspan="2">{html_escape(line)}</td></tr>')
+    return f'<table bordered compact>{"".join(rows)}</table>' if rows else ''
 
 
 def build_rich_html(elon, models_by_id, premium=True):
@@ -561,13 +564,9 @@ def build_rich_html(elon, models_by_id, premium=True):
     # v4: uz va ru jadvallari orasida chiziq (<hr/>) va sarlavha — foydalanuvchi:
     #     «o'zbekcha tugashi bilan ruscha boshlangan, 6-bo'limdek bo'lib ketgan»
     spec = ''
-    spec_uz = _rich_table(model.get('specUz'))
-    spec_ru = _rich_table(model.get('specRu'))
-    if spec_uz or spec_ru:
-        # v5: ichki sarlavhalar (bayroq + matn) olib tashlandi — summary'da nom bor, jadvalning o'zi yetadi;
-        #     uz va ru orasida faqat chiziq
-        ichki = spec_uz + ('<hr/>' if (spec_uz and spec_ru) else '') + spec_ru
-        spec = '<details><summary>📋 Texnik xarakteristika / Характеристики</summary>' + ichki + '</details>'
+    jadval = _rich_table(model.get('specUz'), model.get('specRu'))   # v7: bitta jadval, chiziqsiz
+    if jadval:
+        spec = '<details><summary>📋 Texnik xarakteristika / Характеристики</summary>' + jadval + '</details>'
 
     # v2: <h3> emas — oddiy qalin qator (katta sarlavha «maqola»dek ko'rinardi);
     #     tugmalar align'siz — butun eniga (align="center" kichik qilib qo'ygan edi)
@@ -580,11 +579,14 @@ def build_rich_html(elon, models_by_id, premium=True):
     # v6: spec TEPASIDA ham bo'sh joy (details'ga Telegram faqat pastdan chiziq chizadi —
     #     sarlavhaga yopishib ketardi); holati va narx ALOHIDA paragraflar (bo'sh qatorsiz,
     #     lekin <br/> bilan yopishgan emas)
+    # v7: bo'sh joy rasm izohi («suring») bilan sarlavha ORASIDA (yopishib qolgan edi);
+    #     spec tepasidagi bo'sh joy olib tashlandi («juda katta bo'lib ketdi»)
     BOSH = '<p>\u00a0</p>'
     return (
         media
+        + (BOSH if media else '')
         + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
-        + (BOSH + spec if spec else '')
+        + spec
         + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
