@@ -668,7 +668,7 @@ def build_elon(item, models_by_id):
         if narx:
             add_fmt(f"{narx}$", 'strikethrough')
             add(" ")
-        add_fmt("❗️SOTILDI❗️", 'bold')
+        add_fmt("❗️QOLMADI❗️" if kop_donali(item) else "❗️SOTILDI❗️", 'bold')   # B13: ko'p donali tugasa
         add("\n\n")
     elif old and old != price:
         add_fmt(f"{old}$", 'strikethrough')
@@ -2586,9 +2586,11 @@ def send_elon_card(chat_id, num):
                 '']
     qatorlar.append(f"{cond_emoji} {cond_uz} / {cond_ru}")
     if holat == 'sold':
-        qatorlar.append("❗️ <b>SOTILDI / ПРОДАНО</b>")
+        qatorlar.append("❗️ <b>QOLMADI / НЕТ В НАЛИЧИИ</b>" if kop_donali(elon) else "❗️ <b>SOTILDI / ПРОДАНО</b>")
     else:
         qatorlar.append(f"💰 <b>{narx}$</b>")
+        if soni_qatori(elon):
+            qatorlar.append(soni_qatori(elon))   # B13: «📦 5 dona bor / 5 шт.»
     matn = "\n".join(qatorlar)
 
     images = elon.get('images', [])
