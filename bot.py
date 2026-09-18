@@ -73,7 +73,7 @@ _last_sent = {'num': 0}
 # eski yo'l bilan Sheets'dan olinib xotiraga qo'shiladi.
 # Foydalanuvchi: «har 10 daqiqada yangilash kerak emas, saqlash bosganda botga
 # so'rov boraqolsin» — shunday qilindi.
-_ELON_CACHE = {'by_num': {}, 'models': {}, 'time': 0.0, 'last_try': 0.0}
+_ELON_CACHE = {'by_num': {}, 'models': {}, 'series': [], 'turkumlar': [], 'time': 0.0, 'last_try': 0.0}
 ELON_CACHE_MAX_AGE = 24 * 3600
 _elon_cache_lock = threading.Lock()
 
@@ -202,6 +202,11 @@ def get_products():
         r = req.get(f"{SHEET_URL}?callback=d", timeout=15)
         text = r.text.strip()
         data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        # G12: seriyalar ham keshda — `mos` kodlarini (p9s, phone) nomga aylantirish uchun
+        if isinstance(data.get('series'), list):
+            _ELON_CACHE['series'] = data['series']
+        if isinstance(data.get('turkumlar'), list):      # G12 daraxt: turkum → bo'lim
+            _ELON_CACHE['turkumlar'] = data['turkumlar']
         return data.get('listings', []), data.get('models', [])
     except Exception as e:
         logger.error(f'get_products: {e}')
@@ -360,6 +365,220 @@ async def handle_stat(chat_id, text):
     await blok(send_msg, chat_id, build_stat_text(s))
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  G12 — BREND va MOS QURILMA (sayt: 02-yordamchi.js bilan bir xil qoida)
+#  Modellar varag'ida `brand` va `mos` ustunlari. `mos` — vergul bilan kodlar:
+#  p10 (model) · p10s (seriya) · phone (bo'lim, kelajakdagilar ham). Sayt va bot
+#  bir xil o'qishi shart — aks holda saytda «mos», postda «mos emas» chiqadi.
+# ══════════════════════════════════════════════════════════════════════
+MOS_TYPES = ('phone', 'accessory', 'case', 'part', 'camera')
+
+
+def _type_norm(t):
+    t = str(t or '').strip().lower()
+    if t in ('smartfon', 'phone', 'telefon'):
+        return 'phone'
+    if t in ('camera', 'kamera'):
+        return 'camera'
+    if t in ('aksessuar', 'accessory', 'charger', 'anker', 'google'):
+        return 'accessory'
+    if t in ('gilof', "g'ilof", 'case', 'chexol', 'чехол'):
+        return 'case'
+    if t in ('zapchast', 'part', 'batareyka', 'battery', 'запчасть'):
+        return 'part'
+    return ''
+
+
+def ser_type(ser):
+    """Seriya turi — G12 daraxt: avval `turkum` (Turkumlar varag'i → type), bo'lmasa Sheets `type`
+    ustuni (sayt serType ning qisqasi)."""
+    tk = str((ser or {}).get('turkum', '') or '').strip().lower()
+    if tk:
+        for t in _ELON_CACHE.get('turkumlar') or []:
+            if str(t.get('key', '')).strip().lower() == tk:
+                tt = _type_norm(t.get('type'))
+                if tt:
+                    return tt
+                break
+    t = str((ser or {}).get('type', '') or '').strip().lower()
+    if t in ('smartfon', 'phone', 'telefon'):
+        return 'phone'
+    if t in ('aksessuar', 'accessory', 'charger', 'anker', 'google'):
+        return 'accessory'
+    if t in ('gilof', "g'ilof", 'case', 'chexol', 'чехол'):
+        return 'case'
+    if t in ('zapchast', 'part', 'batareyka', 'battery', 'запчасть'):
+        return 'part'
+    if t in ('camera', 'kamera'):
+        return 'camera'
+    return 'phone'
+
+
+def parse_mos(v):
+    """`mos` katagi → kodlar ro'yxati (vergul/nuqtali vergul yoki JSON)."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    s = str(v if v is not None else '').strip()
+    if not s:
+        return []
+    if s.startswith('['):
+        try:
+            a = json.loads(s)
+            if isinstance(a, list):
+                return [str(x).strip() for x in a if str(x).strip()]
+        except Exception:
+            pass
+    return [x.strip() for x in re.split(r'[,;]+', s) if x.strip()]
+
+
+def _mos_kind(k, models_by_id, series):
+    if k.lower() in MOS_TYPES:
+        return 'type'
+    if any(str(x.get('key')) == k for x in series):
+        return 'series'
+    if k in models_by_id:
+        return 'model'
+    return '?'
+
+
+def mos_expand(keys, models_by_id, series=None):
+    """Kodlar → mos model id'lari to'plami (sayt mosExpand bilan bir xil)."""
+    series = _ELON_CACHE['series'] if series is None else series
+    out = set()
+    for k in parse_mos(keys):
+        kind = _mos_kind(k, models_by_id, series)
+        if kind == 'type':
+            for mid, m in models_by_id.items():
+                ser = next((x for x in series if str(x.get('key')) == str(m.get('series'))), None)
+                if ser and ser_type(ser) == k.lower():
+                    out.add(str(mid))
+        elif kind == 'series':
+            for mid, m in models_by_id.items():
+                if str(m.get('series')) == k:
+                    out.add(str(mid))
+        elif kind == 'model':
+            out.add(k)
+    return out
+
+
+def _mos_short_names(names):
+    """«Google Pixel 10», «Google Pixel 10 Pro» → «Pixel 10 / 10 Pro» (sayt _mosShortNames)."""
+    words = [str(n or '').split() for n in names]
+    words = [w for w in words if w]
+    if not words:
+        return ''
+    if len(words) == 1:
+        w = words[0]
+        return ' '.join(w[1:] if len(w) > 2 else w)
+    common = 0
+    while all(len(w) > common + 1 and w[common].lower() == words[0][common].lower() for w in words):
+        common += 1
+    first = ' '.join(words[0][1:] if common > 1 else words[0])
+    rest = [' '.join(w[common:]) for w in words[1:]]
+    return ' / '.join([first] + [r for r in rest if r])
+
+
+def mos_label(keys, models_by_id, series=None, lang='uz'):
+    """Odam o'qiydigan matn: «Barcha telefonlar», «Pixel 9 Seriyasi», «Pixel 10 / 10 Pro»."""
+    series = _ELON_CACHE['series'] if series is None else series
+    TYPE_LBL = {
+        'phone': ('Barcha telefonlar', 'Все телефоны'),
+        'camera': ('Barcha kameralar', 'Все камеры'),
+        'accessory': ('Barcha aksessuarlar', 'Все аксессуары'),
+        'case': ("Barcha g'iloflar", 'Все чехлы'),
+        'part': ('Barcha zapchastlar', 'Все запчасти'),
+    }
+    parts, model_names, ser_labels = [], [], []
+    for k in parse_mos(keys):
+        kind = _mos_kind(k, models_by_id, series)
+        if kind == 'type':
+            parts.append(TYPE_LBL[k.lower()][0 if lang == 'uz' else 1])
+        elif kind == 'series':
+            ser = next(x for x in series if str(x.get('key')) == k)
+            ser_labels.append(str((ser.get('labelUz') if lang == 'uz' else (ser.get('labelRu') or ser.get('labelUz'))) or k))
+        elif kind == 'model':
+            m = models_by_id[k]
+            model_names.append(str((m.get('nameUz') if lang == 'uz' else (m.get('nameRu') or m.get('nameUz'))) or k))
+    if ser_labels:
+        parts.append(_mos_series_range(ser_labels, lang))
+    if model_names:
+        parts.append(_mos_short_names(model_names))
+    return ', '.join(parts)
+
+
+def _mos_series_range(labels, lang='uz'):
+    """«Pixel 6 Seriyasi … Pixel 9 Seriyasi» → «Pixel 6–9 seriyalari» (ketma-ket), aks holda
+    «Pixel 6, 7, 9 seriyalari». Raqam yoki umumiy nom topilmasa — oddiy ro'yxat. Sayt _mosSeriesRange bilan bir xil."""
+    if len(labels) == 1:
+        return labels[0]
+    parsed = []
+    for lbl in labels:
+        m = re.match(r'^\s*(?:seriya|серия|series)?\s*(.*?)\s*(\d+)\s*(?:seriyasi|seriya|серия|series)?\s*$', str(lbl), re.I)
+        parsed.append((m.group(1).strip(), int(m.group(2))) if m else None)
+    if any(p is None for p in parsed) or len({p[0].lower() for p in parsed}) != 1:
+        return ', '.join(labels)
+    nums = sorted({p[1] for p in parsed})
+    consecutive = all(i == 0 or n == nums[i - 1] + 1 for i, n in enumerate(nums))
+    raqam = f'{nums[0]}–{nums[-1]}' if (consecutive and len(nums) > 2) else ', '.join(str(n) for n in nums)
+    pre = parsed[0][0]
+    return f'{pre} {raqam} seriyalari' if lang == 'uz' else f'{pre} {raqam} серии'
+
+
+def brendsizmi(b):
+    """«NoName» brendi nomga qo'shilmaydi (sayt brendsizmi)."""
+    return str(b or '').strip().lower() in ('noname', 'no name', 'no-name', 'brendsiz', 'без бренда', '-')
+
+
+def model_brand(model):
+    """G12 daraxt: brend modelda bo'lmasa — lineykasidan (Seriyalar `brand`)."""
+    b = str((model or {}).get('brand') or '').strip()
+    if b or not model:
+        return b
+    for s in _ELON_CACHE.get('series') or []:
+        if str(s.get('key', '')) == str(model.get('series', '')):
+            return str(s.get('brand') or '').strip()
+    return ''
+
+
+def model_display_name(model, lang='uz'):
+    """Model nomi brend bilan; nom brenddan boshlansa ikki marta chiqmaydi (sayt modelDisplayName)."""
+    if not model:
+        return ''
+    name = str((model.get('nameUz') if lang == 'uz' else (model.get('nameRu') or model.get('nameUz'))) or model.get('name') or '').strip()
+    brand = model_brand(model)
+    if brand and not brendsizmi(brand) and not name.lower().startswith(brand.lower()):
+        return f'{brand} {name}'
+    return name
+
+
+def elon_nomi(elon, model, lang='uz'):
+    """G12 (2026-09-15): e'lonning O'Z nomi (Elonlar nameUz/nameRu) bo'lsa shu — admin
+    «Pixel 8 (GrapheneOS)» deb o'zgartira oladi; bo'sh bo'lsa model nomi. Brend prefiksi
+    model_display_name qoidasi bilan. Sayt: elonNomi."""
+    e = elon or {}
+    own = str((e.get('nameUz') if lang == 'uz' else (e.get('nameRu') or e.get('nameUz'))) or e.get('name') or '').strip()
+    if not own:
+        return model_display_name(model, lang)
+    brand = model_brand(model)
+    if brand and not brendsizmi(brand) and not own.lower().startswith(brand.lower()):
+        return f'{brand} {own}'
+    return own
+
+
+def mos_line(model, models_by_id, lang='uz'):
+    """«Mos: …» qatori — faqat modelda `mos` bo'lsa (aksessuar/g'ilof/zapchast)."""
+    if not model or not parse_mos(model.get('mos')):
+        return ''
+    return ('Mos: ' if lang == 'uz' else 'Подходит: ') + mos_label(model.get('mos'), models_by_id, None, lang)
+
+
+def izoh_matni(item, lang='uz'):
+    """G12 K2: e'lon izohi («ekran singan», «MagSafe, stand») — ru bo'sh bo'lsa uz (sayt elonIzoh bilan bir xil)."""
+    uz = str((item or {}).get('izoh') or '').strip()
+    ru = str((item or {}).get('izohRu') or '').strip()
+    return ru if (lang == 'ru' and ru) else uz
+
+
 def build_elon(item, models_by_id):
     """Bitta elon uchun (matn, entities) qaytaradi. entities premium emoji uchun."""
     num = int(float(item.get('num', 0) or 0))
@@ -375,6 +594,12 @@ def build_elon(item, models_by_id):
     model = models_by_id.get(spec_id, {})
     spec_uz = model.get('specUz', '') or ''
     spec_ru = model.get('specRu', '') or ''
+    # G12: nom brend bilan (modeldan); e'londagi nom bo'lsa — o'sha, brend oldiga
+    brand = str(model.get('brand') or '').strip()
+    if brand and not str(name_uz).lower().startswith(brand.lower()):
+        name_uz = f'{brand} {name_uz}'.strip()
+    mos_txt = mos_line(model, models_by_id, 'uz')
+    izoh_txt = izoh_matni(item, 'uz')   # G12 K2
 
     cond_uz, cond_ru, cond_emoji = holati_matni(cond, cycle)
 
@@ -409,7 +634,12 @@ def build_elon(item, models_by_id):
     if color_clean:
         add(f" {color_clean}")
     add("\n")
-    add(f"#phone #{num}\n\n")
+    add(f"#phone #{num}\n")
+    if mos_txt:
+        add(f"🔗 {mos_txt}\n")
+    if izoh_txt:
+        add(f"📝 {izoh_txt}\n")
+    add("\n")
 
     # ── Texnik xarakteristika (collapsed blockquote) ──
     q_start = _utf16len(''.join(parts))
@@ -438,7 +668,7 @@ def build_elon(item, models_by_id):
         if narx:
             add_fmt(f"{narx}$", 'strikethrough')
             add(" ")
-        add_fmt("❗️SOTILDI❗️", 'bold')
+        add_fmt("❗️QOLMADI❗️" if kop_donali(item) else "❗️SOTILDI❗️", 'bold')   # B13: ko'p donali tugasa
         add("\n\n")
     elif old and old != price:
         add_fmt(f"{old}$", 'strikethrough')
@@ -543,7 +773,9 @@ def build_rich_html(elon, models_by_id, premium=True):
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow."""
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
-    name = html_escape(str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip())
+    name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), brend bilan
+    mos_txt = html_escape(mos_line(model, models_by_id, 'uz'))
+    izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
     storage = html_escape(str(elon.get('storage') or '').strip())
     color = html_escape(clean_color(elon.get('color') or ''))
     price = str(elon.get('price', '') or '').replace('.0', '')
@@ -552,16 +784,15 @@ def build_rich_html(elon, models_by_id, premium=True):
     cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
 
-    # v6: slideshow — hammasi; «N ta rasm — suring» slideshow'ning O'Z izohi (figcaption),
-    #     rasm tagiga yopishib turadi (alohida paragraf sarlavha bilan qo'shilib ketgan edi)
+    # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     rasmlar = images_of(elon)[:10]
     imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar)
-    izoh = f'<figcaption>📷 {len(rasmlar)} ta rasm — suring ⟶</figcaption>' if len(rasmlar) > 1 else ''
-    media = f'<tg-slideshow>{imgs}{izoh}</tg-slideshow>' if imgs else ''
+    media = f'<tg-slideshow>{imgs}</tg-slideshow>' if imgs else ''
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
     if elon_status(elon) == 'sold':
-        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + '<b>❗️SOTILDI❗️</b>'
+        # B13 soni: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi)
+        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + ('<b>❗️QOLMADI❗️</b>' if kop_donali(elon) else '<b>❗️SOTILDI❗️</b>')
     elif old and old != price:
         narx = f'<s>{html_escape(old)}$</s> <b>{html_escape(price)}$</b>'
     else:
@@ -591,12 +822,12 @@ def build_rich_html(elon, models_by_id, premium=True):
     return (
         media
         + (BOSH if media else '')
-        + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
+        + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
         + spec
         + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
-        + f'<p>{e("money")} Narxi / Цена: {narx}</p>'
+        + f'<p>{e("money")} Narxi / Цена: {narx}' + (f'<br/>{soni_qatori(elon)}' if soni_qatori(elon) else '') + '</p>'   # B13: qoldiq
         + BOSH
         + '<tg-button-row>'
           # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
@@ -606,7 +837,7 @@ def build_rich_html(elon, models_by_id, premium=True):
           '</tg-button-row>'
         + '<tg-button-row>'
           '<tg-button type="url" url="https://t.me/Krakens_admin">✉️ Admin</tg-button>'
-          f'<tg-button type="url" url="https://t.me/{kanal}">{e("k")} Kanal</tg-button>'
+          f'<tg-button type="url" url="https://t.me/{kanal}">🪐 Kanal</tg-button>'   # v8: lampa (K logo) → 🪐 (foydalanuvchi)
           '</tg-button-row>'
     )
 
@@ -643,6 +874,352 @@ def richtest(admin_chat, num):
             hisobot.append(f"❌ {nom}: <code>{html_escape(xato)}</code>")
     hisobot.append("\nSinov postlarini keyin o'chiramiz.")
     send_msg(admin_chat, '\n'.join(hisobot))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  G11.2 / B15 (2026-09-18): KANAL MEXANIKASI — hozircha TEST kanalda sinaladi.
+#  Rebrandingdan keyin FAQAT `POST_CHANNEL_ID` env almashadi (Render) — kod o'zgarmaydi.
+#
+#  · kanal_post(num)        rich post → kanal; `channel_message_id` Sheets'ga + xotiraga
+#  · kanal_tahrir(num)      narx / sotildi / qolmadi / soni o'zgarsa POST TAHRIRLANADI
+#                           (editMessageText + rich_message). Sukut shu (A14 qarori).
+#  · kanal_ochir(num)       e'lon o'chirilsa post o'chadi (deleteMessage), id tozalanadi
+#  · kanal_yana_keldi(num)  «Yana keldi»: eski post O'CHIB, YANGISI yuboriladi (yangi id) —
+#                           keyingi tahrirlar shunga. Forward EMAS (nusxa tahrirni olmaydi).
+#  · /toplam                case / part / accessory — alohida post EMAS: postlanmaganlarni
+#                           BITTA to'plam postiga (tugmalar startapp=<tab>), adminga avval
+#                           ko'rsatadi, tasdiqlasa kanalga. Ichidagi e'lon o'zgarsa —
+#                           to'plam posti qayta yasalib tahrirlanadi.
+#  · /katalog               qadaladigan «Katalog» posti (bo'lim tugmalari), tasdiq bilan
+#  · AVTO-POST faqat phone/camera — sayt saqlaganda (yangi yoki waited→active).
+#    Boshqa turlar faqat /toplam orqali (foydalanuvchi 2026-09-18: «10 ta batareyka,
+#    20 ta chexol tashlasam g'alati bo'ladi»).
+#  🔴 Eski 93 e'lon (id yo'q) hech qachon o'z-o'zidan postlanmaydi — faqat G11.4 (/hammasini_yubor).
+# ══════════════════════════════════════════════════════════════════════════
+POST_CHANNEL = os.environ.get('POST_CHANNEL_ID', TEST_CHANNEL)
+AVTO_POST_TURLAR = ('phone', 'camera')
+TOPLAM_TURLAR = ('accessory', 'case', 'part')
+TUR_NOMI = {'phone': ('📱', 'Smartfonlar', 'Смартфоны'), 'camera': ('📷', 'Kameralar', 'Камеры'),
+            'accessory': ('🔌', 'Aksessuarlar', 'Аксессуары'), 'case': ('🛡', "G'iloflar", 'Чехлы'),
+            'part': ('🛠', 'Zapchastlar', 'Запчасти')}
+
+
+def elon_turi(elon, models_by_id):
+    """E'lon bo'limi (phone/camera/accessory/case/part) — model → lineyka → tur (sayt listingType bilan bir xil)."""
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    sk = str((model or {}).get('series', '') or '')
+    ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
+    return ser_type(ser) if ser else 'phone'
+
+
+def kanal_msg_id(elon):
+    """channel_message_id (Sheets'da matn/son) → int yoki None."""
+    try:
+        v = str((elon or {}).get('channel_message_id', '') or '').strip()
+        return int(float(v)) if v else None
+    except Exception:
+        return None
+
+
+def kop_donali(elon):
+    """B13 soni: `soni` bo'sh emas — ko'p donali tovar (sayt koPDonali bilan bir xil)."""
+    return str((elon or {}).get('soni', '') if (elon or {}).get('soni') is not None else '').strip() != ''
+
+
+def soni_val(elon):
+    if not kop_donali(elon):
+        return None
+    try:
+        return max(0, int(float(str(elon.get('soni')).strip())))
+    except Exception:
+        return 0
+
+
+def soni_qatori(elon):
+    """Postdagi qoldiq qatori: «📦 5 dona bor» / «📦 Oxirgi 1 ta»; bitta tovar yoki 0 — bo'sh."""
+    n = soni_val(elon)
+    if n is None or n == 0:
+        return ''
+    return '📦 Oxirgi 1 ta / Последний' if n == 1 else f'📦 {n} dona bor / {n} шт.'
+
+
+def _sheets_update(payload):
+    """Elonlar qatorini yangilash (faqat kelgan maydonlar — Apps Script updateElon B9). True — ok."""
+    if not SHEET_URL:
+        return False
+    try:
+        r = req.get(f'{SHEET_URL}?action=update&data={urllib.parse.quote(json.dumps(payload))}', timeout=20)
+        text = r.text.strip()
+        d = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        return bool(d.get('ok'))
+    except Exception as e:
+        logger.error(f'_sheets_update: {e}')
+        return False
+
+
+def kanal_id_yoz(num, mid):
+    """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash."""
+    ok = _sheets_update({'num': int(num), 'channel_message_id': int(mid) if mid else ''})
+    with _elon_cache_lock:
+        e = _ELON_CACHE['by_num'].get(str(num))
+        if e is not None:
+            e['channel_message_id'] = int(mid) if mid else ''
+    if not ok:
+        logger.error(f'kanal_id_yoz: №{num} id {mid} Sheets ga yozilmadi')
+    return ok
+
+
+def edit_rich(chat_id, message_id, html):
+    """editMessageText + rich_message. (True, '') / (False, xato). «not modified» — ok."""
+    try:
+        r = req.post(f'{TG_API}/editMessageText', json={
+            'chat_id': chat_id, 'message_id': int(message_id), 'rich_message': {'html': html},
+        }, timeout=30).json()
+    except Exception as ex:
+        return False, f'tarmoq: {ex}'
+    if r.get('ok'):
+        return True, ''
+    desc = str(r.get('description') or r)
+    if 'not modified' in desc:
+        return True, ''
+    return False, desc
+
+
+def delete_msg(chat_id, message_id):
+    try:
+        r = req.post(f'{TG_API}/deleteMessage', json={'chat_id': chat_id, 'message_id': int(message_id)}, timeout=15).json()
+    except Exception as ex:
+        return False, f'tarmoq: {ex}'
+    if r.get('ok'):
+        return True, ''
+    desc = str(r.get('description') or r)
+    if 'not found' in desc or 'MESSAGE_ID_INVALID' in desc:
+        return True, ''   # allaqachon yo'q — maqsad bajarilgan
+    return False, desc
+
+
+def kanal_post(num):
+    """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato)."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return None, "e'lon topilmadi"
+    if elon_status(elon) in ('deleted', 'waited'):
+        return None, "chala yoki o'chirilgan e'lon postlanmaydi"
+    html = build_rich_html(elon, models, premium=False)
+    mid, xato = send_rich(POST_CHANNEL, html)
+    if not mid:
+        return None, xato
+    kanal_id_yoz(num, mid)
+    return mid, ''
+
+
+def kanal_tahrir(num):
+    """Kanaldagi postni e'lonning hozirgi holatiga moslaydi. (True, '') / (False, sabab)."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return False, "e'lon topilmadi"
+    mid = kanal_msg_id(elon)
+    if not mid:
+        return False, "post yo'q"
+    if elon_turi(elon, models) in TOPLAM_TURLAR:
+        return toplam_tahrir(mid)
+    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False))
+
+
+def kanal_ochir(num):
+    """Postni o'chiradi, id'ni tozalaydi. To'plam ichidagi e'lon — to'plam qayta yasaladi."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return False, "e'lon topilmadi"
+    mid = kanal_msg_id(elon)
+    if not mid:
+        return True, ''
+    if elon_turi(elon, models) in TOPLAM_TURLAR:
+        kanal_id_yoz(num, None)
+        return toplam_tahrir(mid)
+    ok, xato = delete_msg(POST_CHANNEL, mid)
+    if ok:
+        kanal_id_yoz(num, None)
+    return ok, xato
+
+
+def kanal_yana_keldi(num):
+    """«Yana keldi»: eski post o'chadi, yangisi yuboriladi, yangi id yoziladi (A14 qarori 2026-09-18)."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return None, "e'lon topilmadi"
+    mid = kanal_msg_id(elon)
+    if mid and elon_turi(elon, models) not in TOPLAM_TURLAR:
+        delete_msg(POST_CHANNEL, mid)   # o'chmasa ham yangisi ketadi
+    return kanal_post(num)
+
+
+# ── To'plam (case / part / accessory) ──
+def _toplam_items(shart):
+    with _elon_cache_lock:
+        items = list(_ELON_CACHE['by_num'].values())
+        models = dict(_ELON_CACHE['models'])
+    out = [e for e in items if elon_status(e) not in ('deleted', 'waited') and elon_turi(e, models) in TOPLAM_TURLAR and shart(e)]
+    out.sort(key=lambda e: (TOPLAM_TURLAR.index(elon_turi(e, models)), -int(float(e.get('num', 0) or 0))))
+    return out, models
+
+
+def toplam_elonlar():
+    """Hali kanalga chiqmagan (id yo'q) faol case/part/accessory e'lonlar."""
+    return _toplam_items(lambda e: not kanal_msg_id(e))
+
+
+def build_toplam_html(items, models_by_id):
+    """To'plam posti: birinchi rasmlar slideshow (10 tagacha), tur bo'yicha ro'yxat, bo'lim tugmalari (startapp=<tab>)."""
+    rasmlar = []
+    for e in items:
+        r = images_of(e)
+        if r and r[0] not in rasmlar:
+            rasmlar.append(r[0])
+    imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar[:10])
+    media = f'<tg-slideshow>{imgs}</tg-slideshow>' if imgs else ''
+    BOSH = '<p>\u00a0</p>'
+    guruh = {}
+    for e in items:
+        guruh.setdefault(elon_turi(e, models_by_id), []).append(e)
+    bloklar = []
+    for tur in TOPLAM_TURLAR:
+        if tur not in guruh:
+            continue
+        emoji, uz, ru = TUR_NOMI[tur]
+        qatorlar = [f'<b>{emoji} {uz} / {ru}</b>']
+        for e in guruh[tur]:
+            num = int(float(e.get('num', 0) or 0))
+            model = models_by_id.get(str(e.get('specId', '') or ''), {})
+            nom = html_escape(elon_nomi(e, model, 'uz'))
+            price = html_escape(str(e.get('price', '') or '').replace('.0', ''))
+            if elon_status(e) == 'sold':
+                narx = '<s>' + (price + '$' if price else '') + '</s> ' + ('Qolmadi' if kop_donali(e) else 'Sotildi')
+            else:
+                narx = f'<b>{price}$</b>' if price else ''
+            qold = soni_qatori(e)
+            qatorlar.append(f'№{num} {nom} — {narx}' + (f' · {qold.split(" / ")[0]}' if qold else ''))
+        bloklar.append('<p>' + '<br/>'.join(qatorlar) + '</p>')
+    tugma = lambda tur: f'<tg-button type="url" url="https://t.me/{BOT_USERNAME}?startapp={tur}">{TUR_NOMI[tur][0]} {TUR_NOMI[tur][1]}</tg-button>'
+    return (
+        media + (BOSH if media else '')
+        + '<p><b>🧩 Aksessuar · g\'ilof · zapchast — yangi to\'plam</b><br/>#toplam</p>'
+        + ''.join(bloklar)
+        + BOSH
+        + '<tg-button-row>' + tugma('accessory') + '</tg-button-row>'
+        + '<tg-button-row>' + tugma('case') + tugma('part') + '</tg-button-row>'
+        + '<tg-button-row>'
+          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Saytni ochish / Открыть сайт</tg-button>'
+          '</tg-button-row>'
+    )
+
+
+def toplam_tahrir(mid):
+    """Shu to'plam postiga kirgan (id bir xil) e'lonlar bo'yicha post qayta yasalib tahrirlanadi; hech kim qolmasa — o'chadi."""
+    items, models = _toplam_items(lambda e: kanal_msg_id(e) == int(mid))
+    if not items:
+        return delete_msg(POST_CHANNEL, mid)
+    return edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models))
+
+
+def build_katalog_html():
+    """Qadaladigan «Katalog» posti — bo'lim tugmalari (startapp=<tab>), sayt tugmasi."""
+    tugma = lambda tur: f'<tg-button type="url" url="https://t.me/{BOT_USERNAME}?startapp={tur}">{TUR_NOMI[tur][0]} {TUR_NOMI[tur][1]}</tg-button>'
+    return (
+        '<p><b>🗂 KATALOG / КАТАЛОГ</b><br/>Bo\'limni tanlang — sayt shu bo\'limda ochiladi<br/>Выберите раздел — сайт откроется на нём</p>'
+        + '<tg-button-row>' + tugma('phone') + tugma('camera') + '</tg-button-row>'
+        + '<tg-button-row>' + tugma('accessory') + '</tg-button-row>'
+        + '<tg-button-row>' + tugma('case') + tugma('part') + '</tg-button-row>'
+        + '<tg-button-row>'
+          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Saytni ochish / Открыть сайт</tg-button>'
+          '</tg-button-row>'
+    )
+
+
+# Admin lichkasidagi tasdiq: kalit → {'tur': 'toplam'|'katalog', 'html': ..., 'nums': [...]}
+_KANAL_KUTMOQDA = {}
+
+
+def kanal_taklif(admin_chat, tur):
+    """/toplam yoki /katalog: postni AVVAL adminga ko'rsatadi, «Kanalga yuborish» tugmasi bilan."""
+    if tur == 'toplam':
+        items, models = toplam_elonlar()
+        if not items:
+            send_msg(admin_chat, "📭 Kanalga chiqmagan aksessuar / g'ilof / zapchast yo'q.")
+            return
+        html, nums = build_toplam_html(items, models), [int(float(e.get('num', 0) or 0)) for e in items]
+        izoh = f"🧩 To'plam: {len(items)} ta e'lon (№{', №'.join(str(n) for n in nums)})"
+    else:
+        html, nums = build_katalog_html(), []
+        izoh = "🗂 Katalog posti — kanalga yuborilib QADALADI"
+    mid, xato = send_rich(admin_chat, html)
+    if not mid:
+        send_msg(admin_chat, f"❌ Ko'rsatib bo'lmadi: <code>{html_escape(xato)}</code>")
+        return
+    key = f'{tur}{int(time.time())}'
+    _KANAL_KUTMOQDA[key] = {'tur': tur, 'html': html, 'nums': nums}
+    send_msg(admin_chat, izoh + f"\nKanal: {POST_CHANNEL}", {"inline_keyboard": [[
+        {"text": "✅ Kanalga yuborish", "callback_data": f"kanal_ok:{key}"},
+        {"text": "❌ Bekor", "callback_data": f"kanal_no:{key}"}]]})
+
+
+def kanal_tasdiq(admin_chat, key, ok):
+    p = _KANAL_KUTMOQDA.pop(key, None)
+    if not p:
+        send_msg(admin_chat, "⌛ Bu taklif eskirgan — buyruqni qayta yuboring.")
+        return
+    if not ok:
+        send_msg(admin_chat, "❌ Bekor qilindi.")
+        return
+    mid, xato = send_rich(POST_CHANNEL, p['html'])
+    if not mid:
+        send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
+        return
+    if p['tur'] == 'toplam':
+        for n in p['nums']:
+            kanal_id_yoz(n, mid)
+        send_msg(admin_chat, f"✅ To'plam kanalga chiqdi (id {mid}), {len(p['nums'])} ta e'longa yozildi.")
+    else:
+        try:
+            req.post(f'{TG_API}/pinChatMessage', json={'chat_id': POST_CHANNEL, 'message_id': mid, 'disable_notification': True}, timeout=15)
+        except Exception as e:
+            logger.error(f'pinChatMessage: {e}')
+        send_msg(admin_chat, f"✅ Katalog posti kanalga chiqdi va qadaldi (id {mid}).")
+
+
+def kanal_sinxron(eski, yangi):
+    """Sayt (admin) e'lonni saqlaganda: o'chirilgan → post o'chadi; post bor → tahrir;
+    yangi phone/camera (waited→active yoki yangi) → avto-post. Boshqa turlar — /toplam."""
+    try:
+        num = int(yangi['num'])
+        st = elon_status(yangi)
+        mid = kanal_msg_id(yangi)
+        if st == 'deleted':
+            if mid:
+                ok, xato = kanal_ochir(num)
+                if not ok:
+                    send_msg(ADMIN_ID, f"⚠️ №{num} kanal posti o'chmadi: <code>{html_escape(xato)}</code>")
+            return 'ochir' if mid else ''
+        if mid:
+            ok, xato = kanal_tahrir(num)
+            if not ok:
+                send_msg(ADMIN_ID, f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
+            return 'tahrir'
+        if not _ELON_CACHE['time']:
+            return ''   # xotira yuklanmagan — eskisi noma'lum, ehtiyot: avto-post yo'q
+        _, models = elon_cache_get(num)
+        yangi_elon = eski is None or elon_status(eski) == 'waited'
+        if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR:
+            mid, xato = kanal_post(num)
+            if mid:
+                send_msg(ADMIN_ID, f"📣 №{num} kanalga chiqdi (id {mid}) — {POST_CHANNEL}")
+            else:
+                send_msg(ADMIN_ID, f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
+            return 'post'
+        return ''
+    except Exception as e:
+        logger.error(f'kanal_sinxron: {e}')
+        return ''
 
 
 def html_escape(s):
@@ -1705,8 +2282,9 @@ async def handle_update(data):
                             [{"text": "📢 Kanalga a'zo bo'lish", "url": CHANNEL_LINK}],
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
-            # (pub_ / cancel_ callback'lari olib tashlandi — D2 qarori: kanalga
-            #  avto-yuborish qaytarilmadi, tugmalar hech qachon yuborilmaydi.)
+            # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
+            if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_chat == ADMIN_ID:
+                asyncio.create_task(blok(kanal_tasdiq, cq_chat, cq_data.split(':', 1)[1], cq_data.startswith('kanal_ok:')))
             return
 
         if not chat_id:
@@ -1740,6 +2318,20 @@ async def handle_update(data):
                 await blok(send_msg, chat_id, "Foydalanish: /richtest 248")
                 return
             asyncio.create_task(blok(richtest, chat_id, m_num.group(0)))
+            return
+
+        # G11.2: kanal buyruqlari (admin). Fonda (T1).
+        if chat_id == ADMIN_ID and text.split(' ')[0] in ('/toplam', '/katalog', '/post', '/yana', '/postochir'):
+            cmd = text.split(' ')[0]
+            m_num = re.search(r'\d{1,6}', text[len(cmd):])
+            if cmd == '/toplam':
+                asyncio.create_task(blok(kanal_taklif, chat_id, 'toplam'))
+            elif cmd == '/katalog':
+                asyncio.create_task(blok(kanal_taklif, chat_id, 'katalog'))
+            elif not m_num:
+                await blok(send_msg, chat_id, f"Foydalanish: {cmd} 248")
+            else:
+                asyncio.create_task(kanal_buyruq(chat_id, cmd, m_num.group(0)))
             return
 
         # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
@@ -1983,7 +2575,7 @@ def send_elon_card(chat_id, num):
             START_KB)
         return
     model = models.get(str(elon.get('specId', '')), {}) if isinstance(models, dict) else {}
-    nom = html_escape(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '')
+    nom = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi
     xotira = html_escape(str(elon.get('storage', '') or ''))
     rang = html_escape(clean_color(elon.get('color', '')))
     narx = str(elon.get('price', '') or '').replace('.0', '')
@@ -1994,9 +2586,11 @@ def send_elon_card(chat_id, num):
                 '']
     qatorlar.append(f"{cond_emoji} {cond_uz} / {cond_ru}")
     if holat == 'sold':
-        qatorlar.append("❗️ <b>SOTILDI / ПРОДАНО</b>")
+        qatorlar.append("❗️ <b>QOLMADI / НЕТ В НАЛИЧИИ</b>" if kop_donali(elon) else "❗️ <b>SOTILDI / ПРОДАНО</b>")
     else:
         qatorlar.append(f"💰 <b>{narx}$</b>")
+        if soni_qatori(elon):
+            qatorlar.append(soni_qatori(elon))   # B13: «📦 5 dona bor / 5 шт.»
     matn = "\n".join(qatorlar)
 
     images = elon.get('images', [])
@@ -2268,7 +2862,7 @@ def _share_result(num, elon, model):
     if 'ik.imagekit.io' in rasm and 'tr=' not in rasm:
         rasm += ('&' if '?' in rasm else '?') + 'tr=w-800,q-80'
 
-    nom = str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip()
+    nom = elon_nomi(elon, model, 'uz')   # G12: e'lonning o'z nomi
     xotira = str(elon.get('storage') or '').strip()
     rang = clean_color(elon.get('color') or '')
     narx = str(elon.get('price', '')).replace('.0', '')
@@ -2371,10 +2965,53 @@ async def elon_changed_endpoint(request):
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         elon['num'] = int(num)
+        with _elon_cache_lock:
+            eski = _ELON_CACHE['by_num'].get(num)
+        # Sayt payload'ida channel_message_id YO'Q — xotiradagisi saqlanib qolsin (aks holda post «yo'qolardi»)
+        if eski and not elon.get('channel_message_id'):
+            elon['channel_message_id'] = eski.get('channel_message_id', '')
         elon_cache_put(elon)
+        # G11.2: kanal posti — tahrir / o'chirish / avto-post (fonda)
+        asyncio.get_event_loop().run_in_executor(None, kanal_sinxron, eski, elon)
         return web.json_response({'ok': True})
     except Exception as e:
         logger.error(f'elon_changed: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def kanal_buyruq(chat_id, cmd, num):
+    """/post N · /yana N · /postochir N — natija adminga."""
+    if cmd == '/post':
+        mid, xato = await blok(kanal_post, num)
+        await blok(send_msg, chat_id, f"✅ №{num} kanalga chiqdi (id {mid}) — {POST_CHANNEL}" if mid else f"❌ №{num}: <code>{html_escape(xato)}</code>")
+    elif cmd == '/yana':
+        mid, xato = await blok(kanal_yana_keldi, num)
+        await blok(send_msg, chat_id, f"🔄 №{num} qayta postlandi (yangi id {mid})" if mid else f"❌ №{num}: <code>{html_escape(xato)}</code>")
+    else:
+        ok, xato = await blok(kanal_ochir, num)
+        await blok(send_msg, chat_id, f"🗑 №{num} posti o'chirildi" if ok else f"❌ №{num}: <code>{html_escape(xato)}</code>")
+
+
+async def kanal_post_endpoint(request):
+    """G11.2: saytdagi «📣 Kanalga» / «🔄 Yana keldi» tugmalari. Faqat admin (initData). Javob: {ok, mid}."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        num = str(data.get('num', '') or '').strip()
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        amal = str(data.get('amal', 'post'))
+        if amal == 'yana':
+            mid, xato = await blok(kanal_yana_keldi, num)
+        else:
+            mid, xato = await blok(kanal_post, num)
+        if not mid:
+            return web.json_response({'ok': False, 'error': xato})
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': POST_CHANNEL})
+    except Exception as e:
+        logger.error(f'kanal_post_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
 
 
@@ -2424,7 +3061,8 @@ async def main():
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/label', label_endpoint)
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
-    app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi
+    app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
+    app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_get('/health', health)
     app.router.add_route('OPTIONS', '/{path_info:.*}', lambda r: web.Response())
     runner = web.AppRunner(app)
