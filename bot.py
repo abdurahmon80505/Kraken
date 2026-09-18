@@ -73,7 +73,7 @@ _last_sent = {'num': 0}
 # eski yo'l bilan Sheets'dan olinib xotiraga qo'shiladi.
 # Foydalanuvchi: «har 10 daqiqada yangilash kerak emas, saqlash bosganda botga
 # so'rov boraqolsin» — shunday qilindi.
-_ELON_CACHE = {'by_num': {}, 'models': {}, 'time': 0.0, 'last_try': 0.0}
+_ELON_CACHE = {'by_num': {}, 'models': {}, 'series': [], 'turkumlar': [], 'time': 0.0, 'last_try': 0.0}
 ELON_CACHE_MAX_AGE = 24 * 3600
 _elon_cache_lock = threading.Lock()
 
@@ -202,6 +202,11 @@ def get_products():
         r = req.get(f"{SHEET_URL}?callback=d", timeout=15)
         text = r.text.strip()
         data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+        # G12: seriyalar ham keshda — `mos` kodlarini (p9s, phone) nomga aylantirish uchun
+        if isinstance(data.get('series'), list):
+            _ELON_CACHE['series'] = data['series']
+        if isinstance(data.get('turkumlar'), list):      # G12 daraxt: turkum → bo'lim
+            _ELON_CACHE['turkumlar'] = data['turkumlar']
         return data.get('listings', []), data.get('models', [])
     except Exception as e:
         logger.error(f'get_products: {e}')
@@ -360,6 +365,220 @@ async def handle_stat(chat_id, text):
     await blok(send_msg, chat_id, build_stat_text(s))
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  G12 — BREND va MOS QURILMA (sayt: 02-yordamchi.js bilan bir xil qoida)
+#  Modellar varag'ida `brand` va `mos` ustunlari. `mos` — vergul bilan kodlar:
+#  p10 (model) · p10s (seriya) · phone (bo'lim, kelajakdagilar ham). Sayt va bot
+#  bir xil o'qishi shart — aks holda saytda «mos», postda «mos emas» chiqadi.
+# ══════════════════════════════════════════════════════════════════════
+MOS_TYPES = ('phone', 'accessory', 'case', 'part', 'camera')
+
+
+def _type_norm(t):
+    t = str(t or '').strip().lower()
+    if t in ('smartfon', 'phone', 'telefon'):
+        return 'phone'
+    if t in ('camera', 'kamera'):
+        return 'camera'
+    if t in ('aksessuar', 'accessory', 'charger', 'anker', 'google'):
+        return 'accessory'
+    if t in ('gilof', "g'ilof", 'case', 'chexol', 'чехол'):
+        return 'case'
+    if t in ('zapchast', 'part', 'batareyka', 'battery', 'запчасть'):
+        return 'part'
+    return ''
+
+
+def ser_type(ser):
+    """Seriya turi — G12 daraxt: avval `turkum` (Turkumlar varag'i → type), bo'lmasa Sheets `type`
+    ustuni (sayt serType ning qisqasi)."""
+    tk = str((ser or {}).get('turkum', '') or '').strip().lower()
+    if tk:
+        for t in _ELON_CACHE.get('turkumlar') or []:
+            if str(t.get('key', '')).strip().lower() == tk:
+                tt = _type_norm(t.get('type'))
+                if tt:
+                    return tt
+                break
+    t = str((ser or {}).get('type', '') or '').strip().lower()
+    if t in ('smartfon', 'phone', 'telefon'):
+        return 'phone'
+    if t in ('aksessuar', 'accessory', 'charger', 'anker', 'google'):
+        return 'accessory'
+    if t in ('gilof', "g'ilof", 'case', 'chexol', 'чехол'):
+        return 'case'
+    if t in ('zapchast', 'part', 'batareyka', 'battery', 'запчасть'):
+        return 'part'
+    if t in ('camera', 'kamera'):
+        return 'camera'
+    return 'phone'
+
+
+def parse_mos(v):
+    """`mos` katagi → kodlar ro'yxati (vergul/nuqtali vergul yoki JSON)."""
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    s = str(v if v is not None else '').strip()
+    if not s:
+        return []
+    if s.startswith('['):
+        try:
+            a = json.loads(s)
+            if isinstance(a, list):
+                return [str(x).strip() for x in a if str(x).strip()]
+        except Exception:
+            pass
+    return [x.strip() for x in re.split(r'[,;]+', s) if x.strip()]
+
+
+def _mos_kind(k, models_by_id, series):
+    if k.lower() in MOS_TYPES:
+        return 'type'
+    if any(str(x.get('key')) == k for x in series):
+        return 'series'
+    if k in models_by_id:
+        return 'model'
+    return '?'
+
+
+def mos_expand(keys, models_by_id, series=None):
+    """Kodlar → mos model id'lari to'plami (sayt mosExpand bilan bir xil)."""
+    series = _ELON_CACHE['series'] if series is None else series
+    out = set()
+    for k in parse_mos(keys):
+        kind = _mos_kind(k, models_by_id, series)
+        if kind == 'type':
+            for mid, m in models_by_id.items():
+                ser = next((x for x in series if str(x.get('key')) == str(m.get('series'))), None)
+                if ser and ser_type(ser) == k.lower():
+                    out.add(str(mid))
+        elif kind == 'series':
+            for mid, m in models_by_id.items():
+                if str(m.get('series')) == k:
+                    out.add(str(mid))
+        elif kind == 'model':
+            out.add(k)
+    return out
+
+
+def _mos_short_names(names):
+    """«Google Pixel 10», «Google Pixel 10 Pro» → «Pixel 10 / 10 Pro» (sayt _mosShortNames)."""
+    words = [str(n or '').split() for n in names]
+    words = [w for w in words if w]
+    if not words:
+        return ''
+    if len(words) == 1:
+        w = words[0]
+        return ' '.join(w[1:] if len(w) > 2 else w)
+    common = 0
+    while all(len(w) > common + 1 and w[common].lower() == words[0][common].lower() for w in words):
+        common += 1
+    first = ' '.join(words[0][1:] if common > 1 else words[0])
+    rest = [' '.join(w[common:]) for w in words[1:]]
+    return ' / '.join([first] + [r for r in rest if r])
+
+
+def mos_label(keys, models_by_id, series=None, lang='uz'):
+    """Odam o'qiydigan matn: «Barcha telefonlar», «Pixel 9 Seriyasi», «Pixel 10 / 10 Pro»."""
+    series = _ELON_CACHE['series'] if series is None else series
+    TYPE_LBL = {
+        'phone': ('Barcha telefonlar', 'Все телефоны'),
+        'camera': ('Barcha kameralar', 'Все камеры'),
+        'accessory': ('Barcha aksessuarlar', 'Все аксессуары'),
+        'case': ("Barcha g'iloflar", 'Все чехлы'),
+        'part': ('Barcha zapchastlar', 'Все запчасти'),
+    }
+    parts, model_names, ser_labels = [], [], []
+    for k in parse_mos(keys):
+        kind = _mos_kind(k, models_by_id, series)
+        if kind == 'type':
+            parts.append(TYPE_LBL[k.lower()][0 if lang == 'uz' else 1])
+        elif kind == 'series':
+            ser = next(x for x in series if str(x.get('key')) == k)
+            ser_labels.append(str((ser.get('labelUz') if lang == 'uz' else (ser.get('labelRu') or ser.get('labelUz'))) or k))
+        elif kind == 'model':
+            m = models_by_id[k]
+            model_names.append(str((m.get('nameUz') if lang == 'uz' else (m.get('nameRu') or m.get('nameUz'))) or k))
+    if ser_labels:
+        parts.append(_mos_series_range(ser_labels, lang))
+    if model_names:
+        parts.append(_mos_short_names(model_names))
+    return ', '.join(parts)
+
+
+def _mos_series_range(labels, lang='uz'):
+    """«Pixel 6 Seriyasi … Pixel 9 Seriyasi» → «Pixel 6–9 seriyalari» (ketma-ket), aks holda
+    «Pixel 6, 7, 9 seriyalari». Raqam yoki umumiy nom topilmasa — oddiy ro'yxat. Sayt _mosSeriesRange bilan bir xil."""
+    if len(labels) == 1:
+        return labels[0]
+    parsed = []
+    for lbl in labels:
+        m = re.match(r'^\s*(?:seriya|серия|series)?\s*(.*?)\s*(\d+)\s*(?:seriyasi|seriya|серия|series)?\s*$', str(lbl), re.I)
+        parsed.append((m.group(1).strip(), int(m.group(2))) if m else None)
+    if any(p is None for p in parsed) or len({p[0].lower() for p in parsed}) != 1:
+        return ', '.join(labels)
+    nums = sorted({p[1] for p in parsed})
+    consecutive = all(i == 0 or n == nums[i - 1] + 1 for i, n in enumerate(nums))
+    raqam = f'{nums[0]}–{nums[-1]}' if (consecutive and len(nums) > 2) else ', '.join(str(n) for n in nums)
+    pre = parsed[0][0]
+    return f'{pre} {raqam} seriyalari' if lang == 'uz' else f'{pre} {raqam} серии'
+
+
+def brendsizmi(b):
+    """«NoName» brendi nomga qo'shilmaydi (sayt brendsizmi)."""
+    return str(b or '').strip().lower() in ('noname', 'no name', 'no-name', 'brendsiz', 'без бренда', '-')
+
+
+def model_brand(model):
+    """G12 daraxt: brend modelda bo'lmasa — lineykasidan (Seriyalar `brand`)."""
+    b = str((model or {}).get('brand') or '').strip()
+    if b or not model:
+        return b
+    for s in _ELON_CACHE.get('series') or []:
+        if str(s.get('key', '')) == str(model.get('series', '')):
+            return str(s.get('brand') or '').strip()
+    return ''
+
+
+def model_display_name(model, lang='uz'):
+    """Model nomi brend bilan; nom brenddan boshlansa ikki marta chiqmaydi (sayt modelDisplayName)."""
+    if not model:
+        return ''
+    name = str((model.get('nameUz') if lang == 'uz' else (model.get('nameRu') or model.get('nameUz'))) or model.get('name') or '').strip()
+    brand = model_brand(model)
+    if brand and not brendsizmi(brand) and not name.lower().startswith(brand.lower()):
+        return f'{brand} {name}'
+    return name
+
+
+def elon_nomi(elon, model, lang='uz'):
+    """G12 (2026-09-15): e'lonning O'Z nomi (Elonlar nameUz/nameRu) bo'lsa shu — admin
+    «Pixel 8 (GrapheneOS)» deb o'zgartira oladi; bo'sh bo'lsa model nomi. Brend prefiksi
+    model_display_name qoidasi bilan. Sayt: elonNomi."""
+    e = elon or {}
+    own = str((e.get('nameUz') if lang == 'uz' else (e.get('nameRu') or e.get('nameUz'))) or e.get('name') or '').strip()
+    if not own:
+        return model_display_name(model, lang)
+    brand = model_brand(model)
+    if brand and not brendsizmi(brand) and not own.lower().startswith(brand.lower()):
+        return f'{brand} {own}'
+    return own
+
+
+def mos_line(model, models_by_id, lang='uz'):
+    """«Mos: …» qatori — faqat modelda `mos` bo'lsa (aksessuar/g'ilof/zapchast)."""
+    if not model or not parse_mos(model.get('mos')):
+        return ''
+    return ('Mos: ' if lang == 'uz' else 'Подходит: ') + mos_label(model.get('mos'), models_by_id, None, lang)
+
+
+def izoh_matni(item, lang='uz'):
+    """G12 K2: e'lon izohi («ekran singan», «MagSafe, stand») — ru bo'sh bo'lsa uz (sayt elonIzoh bilan bir xil)."""
+    uz = str((item or {}).get('izoh') or '').strip()
+    ru = str((item or {}).get('izohRu') or '').strip()
+    return ru if (lang == 'ru' and ru) else uz
+
+
 def build_elon(item, models_by_id):
     """Bitta elon uchun (matn, entities) qaytaradi. entities premium emoji uchun."""
     num = int(float(item.get('num', 0) or 0))
@@ -375,6 +594,12 @@ def build_elon(item, models_by_id):
     model = models_by_id.get(spec_id, {})
     spec_uz = model.get('specUz', '') or ''
     spec_ru = model.get('specRu', '') or ''
+    # G12: nom brend bilan (modeldan); e'londagi nom bo'lsa — o'sha, brend oldiga
+    brand = str(model.get('brand') or '').strip()
+    if brand and not str(name_uz).lower().startswith(brand.lower()):
+        name_uz = f'{brand} {name_uz}'.strip()
+    mos_txt = mos_line(model, models_by_id, 'uz')
+    izoh_txt = izoh_matni(item, 'uz')   # G12 K2
 
     cond_uz, cond_ru, cond_emoji = holati_matni(cond, cycle)
 
@@ -409,7 +634,12 @@ def build_elon(item, models_by_id):
     if color_clean:
         add(f" {color_clean}")
     add("\n")
-    add(f"#phone #{num}\n\n")
+    add(f"#phone #{num}\n")
+    if mos_txt:
+        add(f"🔗 {mos_txt}\n")
+    if izoh_txt:
+        add(f"📝 {izoh_txt}\n")
+    add("\n")
 
     # ── Texnik xarakteristika (collapsed blockquote) ──
     q_start = _utf16len(''.join(parts))
@@ -543,7 +773,9 @@ def build_rich_html(elon, models_by_id, premium=True):
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow."""
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
-    name = html_escape(str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip())
+    name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), brend bilan
+    mos_txt = html_escape(mos_line(model, models_by_id, 'uz'))
+    izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
     storage = html_escape(str(elon.get('storage') or '').strip())
     color = html_escape(clean_color(elon.get('color') or ''))
     price = str(elon.get('price', '') or '').replace('.0', '')
@@ -552,12 +784,10 @@ def build_rich_html(elon, models_by_id, premium=True):
     cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
 
-    # v6: slideshow — hammasi; «N ta rasm — suring» slideshow'ning O'Z izohi (figcaption),
-    #     rasm tagiga yopishib turadi (alohida paragraf sarlavha bilan qo'shilib ketgan edi)
+    # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     rasmlar = images_of(elon)[:10]
     imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar)
-    izoh = f'<figcaption>📷 {len(rasmlar)} ta rasm — suring ⟶</figcaption>' if len(rasmlar) > 1 else ''
-    media = f'<tg-slideshow>{imgs}{izoh}</tg-slideshow>' if imgs else ''
+    media = f'<tg-slideshow>{imgs}</tg-slideshow>' if imgs else ''
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
     if elon_status(elon) == 'sold':
@@ -591,7 +821,7 @@ def build_rich_html(elon, models_by_id, premium=True):
     return (
         media
         + (BOSH if media else '')
-        + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}</p>'
+        + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
         + spec
         + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
@@ -606,7 +836,7 @@ def build_rich_html(elon, models_by_id, premium=True):
           '</tg-button-row>'
         + '<tg-button-row>'
           '<tg-button type="url" url="https://t.me/Krakens_admin">✉️ Admin</tg-button>'
-          f'<tg-button type="url" url="https://t.me/{kanal}">{e("k")} Kanal</tg-button>'
+          f'<tg-button type="url" url="https://t.me/{kanal}">🪐 Kanal</tg-button>'   # v8: lampa (K logo) → 🪐 (foydalanuvchi)
           '</tg-button-row>'
     )
 
@@ -1983,7 +2213,7 @@ def send_elon_card(chat_id, num):
             START_KB)
         return
     model = models.get(str(elon.get('specId', '')), {}) if isinstance(models, dict) else {}
-    nom = html_escape(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '')
+    nom = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi
     xotira = html_escape(str(elon.get('storage', '') or ''))
     rang = html_escape(clean_color(elon.get('color', '')))
     narx = str(elon.get('price', '') or '').replace('.0', '')
@@ -2268,7 +2498,7 @@ def _share_result(num, elon, model):
     if 'ik.imagekit.io' in rasm and 'tr=' not in rasm:
         rasm += ('&' if '?' in rasm else '?') + 'tr=w-800,q-80'
 
-    nom = str(model.get('nameUz') or elon.get('nameUz') or elon.get('name') or '').strip()
+    nom = elon_nomi(elon, model, 'uz')   # G12: e'lonning o'z nomi
     xotira = str(elon.get('storage') or '').strip()
     rang = clean_color(elon.get('color') or '')
     narx = str(elon.get('price', '')).replace('.0', '')
