@@ -194,6 +194,142 @@ def send_start(chat_id):
         logger.error(f'sendAnimation: {e}')
     send_msg(chat_id, START_CAPTION, START_KB)   # zaxira: animatsiyasiz
 
+
+# ══════════════════════════════════════════════════════════════════════════
+#  BUGUN6 §2 (2026-09-23): KANAL «XUSH KELIBSIZ» — ephemeral xabar (Bot API 10.2 / 10.3)
+#  Odam kanalga qo'shilganda (`chat_member` yangilanishi) bot unga KANAL ICHIDA faqat o'ziga
+#  ko'rinadigan xabar yuboradi («Only visible to you»): rasm tepada, ostida 2 tilda matn, «Saytga kirish».
+#  Foydalanuvchi: «manabuni ishlatish kerak — kanalga kirishi bilan sayt chiqadi».
+#  · Faqat XUSH_KANALLAR — hozir faqat TEST kanal. Asosiy kanalga — foydalanuvchi aytganda (ro'yxatga CHANNEL).
+#  · Rasm — shu papkadagi `kanal_xush_kelibsiz.png` (foydalanuvchi skrinshoti, faqat TEST uchun). Almashtirish:
+#    faylni SHU NOM bilan almashtirib GitHub'ga → Render «Manual Deploy». Birinchi yuborishda yuklanadi, keyin
+#    Telegram'dagi file_id qayta ishlatiladi. Eski skeleton GIF — YO'Q (foydalanuvchi).
+#  · Tugma — `url` (t.me/<bot>?startapp): `web_app` tugma FAQAT bot bilan shaxsiy chatda ishlaydi (Bot API).
+#    «Kerakli telefon kelsa xabar bering» tugmasi — YO'Q (foydalanuvchi: «endi kirgan mijoz uchun g'alati»).
+#  · 10.3: parametr `ephemeral_message_parameters.receiver_user_id` (10.2 dagi eski ko'rinish almashtirilgan).
+#    Kanalda botga «welcome messages» ruxsati kerak bo'lishi mumkin (10.3 `can_send_welcome_messages`).
+#  · Natija adminga: xato — Telegram javobi bilan (bir xil xato 10 daqiqada 1 marta); ishga tushgandan keyingi
+#    birinchi muvaffaqiyat — bir marta. 🔴 Telegram ephemeral'ni qabul qilmay ODDIY post qilsa (hammaga
+#    ko'rinsa) — post darhol o'chiriladi va xush kelibsiz to'xtaydi (keyingi deploy'gacha).
+# ══════════════════════════════════════════════════════════════════════════
+XUSH_KANALLAR = (TEST_CHANNEL,)
+XUSH_RASM = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
+XUSH_MATN = (
+    "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
+    "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
+    "🇷🇺 <b>Добро пожаловать! Мы разместили все наши смартфоны на этом сайте. "
+    "Это удобнее, чем канал — обязательно загляните.</b>"
+)
+XUSH_KB = {"inline_keyboard": [[{
+    "text": START_KB["inline_keyboard"][0][0]["text"],   # /start dagi tugma bilan bir xil matn
+    "url": f"https://t.me/{BOT_USERNAME}?startapp=home",  # kanal postlaridagi «Saytni ochish» bilan bir xil yo'l
+}]]}
+# `chat_member` sukut bo'yicha KELMAYDI — setWebhook'da aniq aytilishi shart. Qolganlari — ilgari sukut bo'yicha
+# kelayotgan asosiy turlar (bot hozir faqat message, callback_query va chat_member'ni o'qiydi).
+ALLOWED_UPDATES = ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query',
+                   'inline_query', 'chosen_inline_result', 'my_chat_member', 'chat_member', 'chat_join_request']
+_xush = {'file_id': '', 'yuborilgan': {}, 'xato_vaqt': {}, 'ishladi': False, 'toxtatildi': False}
+_xush_lock = threading.Lock()
+
+
+def _kanal_mos(chat, kanal):
+    """Update'dagi chat shu kanalmi — '@username' (katta-kichik harf farqsiz) yoki raqamli id bo'yicha."""
+    k = str(kanal or '').strip()
+    if not k or not isinstance(chat, dict):
+        return False
+    if k.startswith('@'):
+        return ('@' + str(chat.get('username') or '')).lower() == k.lower()
+    return str(chat.get('id', '')) == k
+
+
+def _azo(m):
+    m = m or {}
+    s = m.get('status')
+    return s in ('member', 'administrator', 'creator') or (s == 'restricted' and bool(m.get('is_member')))
+
+
+def xush_kimga(cm):
+    """`chat_member` yangilanishi → xush kelibsiz kimga (user id) yoki None.
+
+    Faqat XUSH_KANALLAR; faqat YANGI qo'shilgan (a'zo emas → oddiy a'zo); bot emas. Chiqib ketish, admin qilib
+    tayinlash, huquq o'zgarishi — xush kelibsiz emas."""
+    if not isinstance(cm, dict) or not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR):
+        return None
+    yangi = cm.get('new_chat_member') or {}
+    user = yangi.get('user') or {}
+    if user.get('is_bot') or not user.get('id'):
+        return None
+    if _azo(cm.get('old_chat_member')) or yangi.get('status') not in ('member', 'restricted') or not _azo(yangi):
+        return None
+    return user['id']
+
+
+def xush_yubor(chat_id, uid):
+    """Kanal ichida faqat `uid` ga ko'rinadigan rasm + matn + tugma. (True, '') yoki (False, xato matni)."""
+    maydon = {
+        'chat_id': chat_id,
+        'caption': XUSH_MATN,
+        'parse_mode': 'HTML',
+        'reply_markup': XUSH_KB,
+        'ephemeral_message_parameters': {'receiver_user_id': uid},
+    }
+    try:
+        if _xush['file_id']:
+            j = req.post(f'{TG_API}/sendPhoto', json=dict(maydon, photo=_xush['file_id']), timeout=30).json()
+        else:
+            forma = {k: (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)) for k, v in maydon.items()}
+            with open(XUSH_RASM, 'rb') as f:
+                j = req.post(f'{TG_API}/sendPhoto', data=forma,
+                             files={'photo': ('kanal_xush_kelibsiz.png', f, 'image/png')}, timeout=60).json()
+    except Exception as ex:
+        return False, f'tarmoq: {ex}'
+    if not j.get('ok'):
+        _xush['file_id'] = ''   # file_id eskirgan bo'lishi mumkin — keyingi safar rasm qayta yuklanadi
+        return False, str(j.get('description') or j)
+    res = j.get('result') or {}
+    if res.get('message_id') and not res.get('receiver_user'):
+        # 🔴 Ephemeral bo'lmay chiqdi — kanalda HAMMAGA ko'rinadi. Darhol o'chiriladi, keyingilari to'xtaydi.
+        delete_msg(chat_id, res['message_id'])
+        _xush['toxtatildi'] = True
+        return False, ("Telegram xabarni «faqat o'ziga» emas, ODDIY post qilib yubordi — post darhol o'chirildi, "
+                       "xush kelibsiz to'xtatildi (keyingi deploy'gacha)")
+    rasmlar = res.get('photo') or []
+    if rasmlar and rasmlar[-1].get('file_id'):
+        _xush['file_id'] = rasmlar[-1]['file_id']
+    return True, ''
+
+
+def kanal_xush_kelibsiz(cm):
+    """`chat_member` → yangi a'zoga xush kelibsiz (fonda, `blok` bilan). Natija: 'yuborildi' | 'xato' | ''."""
+    uid = xush_kimga(cm)
+    if not uid or _xush['toxtatildi']:
+        return ''
+    chat = cm.get('chat') or {}
+    hozir = time.time()
+    with _xush_lock:
+        # bir odam chiqib-kirib tursa — soatiga bir marta
+        if hozir - _xush['yuborilgan'].get((chat.get('id'), uid), 0) < 3600:
+            return ''
+        _xush['yuborilgan'][(chat.get('id'), uid)] = hozir
+        if len(_xush['yuborilgan']) > 5000:
+            _xush['yuborilgan'] = {k: t for k, t in _xush['yuborilgan'].items() if hozir - t < 3600}
+    ok, xato = xush_yubor(chat.get('id'), uid)
+    kanal = html_escape('@' + chat['username'] if chat.get('username') else str(chat.get('id', '')))
+    if ok:
+        logger.info(f'xush kelibsiz: {uid} -> {kanal}')
+        if not _xush['ishladi']:
+            _xush['ishladi'] = True
+            ism = html_escape(((cm.get('new_chat_member') or {}).get('user') or {}).get('first_name', '') or str(uid))
+            send_msg(ADMIN_ID, f"✅ Kanal xush kelibsiz ishladi: <b>{ism}</b> {kanal} ga qo'shildi — unga "
+                               f"«faqat o'ziga ko'rinadigan» xabar ketdi.")
+        return 'yuborildi'
+    logger.error(f'xush kelibsiz: {xato}')
+    if hozir - _xush['xato_vaqt'].get(xato, 0) >= 600:
+        _xush['xato_vaqt'][xato] = hozir
+        send_msg(ADMIN_ID, f"⚠️ Kanal xush kelibsiz yuborilmadi ({kanal}):\n<code>{html_escape(xato)}</code>")
+    return 'xato'
+
+
 def get_products():
     """Sheets'dan barcha elon va modellarni oladi (action'siz so'rov)."""
     if not SHEET_URL:
@@ -2258,6 +2394,11 @@ async def webhook(request):
 
 async def handle_update(data):
     try:
+        # BUGUN6 §2: kanalga yangi a'zo → faqat o'ziga ko'rinadigan xush kelibsiz (fonda — T1)
+        if data.get('chat_member'):
+            asyncio.create_task(blok(kanal_xush_kelibsiz, data['chat_member']))
+            return
+
         message = data.get('message', {})
         text = message.get('text', '')
         chat_id = message.get('chat', {}).get('id')
@@ -3071,7 +3212,8 @@ async def main():
     await site.start()
     render_url = os.environ.get('RENDER_URL', '')
     if render_url:
-        r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook'})
+        # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
+        r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook', 'allowed_updates': ALLOWED_UPDATES})
         logger.info(f'Webhook: {r.json()}')
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
