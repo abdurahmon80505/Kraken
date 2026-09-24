@@ -1134,6 +1134,96 @@ def delete_msg(chat_id, message_id):
     return False, desc
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  BUGUN10 §3b (2026-09-24): ISTAKKA JAVOB MIJOZGA BOT ORQALI
+#  Mijoz saytda istak yozadi («Topa olmadingizmi?» / Profil → Istaklar) → Kraken Apps Script adminga shu bot nomidan
+#  «🔔 Yangi istak» xabarini yuboradi (apps-script/IstakXabar.gs). Admin o'sha xabarga Telegram'da «Reply» qilib yozsa —
+#  bot javobni MIJOZGA yuboradi. Foydalanuvchi: «"Topa olmadingizmi"dan kelgan xabarga men javob bera olamanmi va mening
+#  javobim mijozga botdan keladigan qilamizmi?»
+#  · Faqat ADMIN_ID lichkasidan va faqat botning o'z «🔔 Yangi istak» xabariga javob bo'lsa (boshqa reply — eski yo'l).
+#  · Mijoz — xabardagi «🆔 <id>» qatoridan. Apps Script bu qatorni FAQAT Telegram imzosi (initData) tasdiqlangan mijozga
+#    yozadi; brauzerdan yozgan / imzosiz istakda qator yo'q → javob yo'q, adminga sababi aytiladi.
+#  · Matn → bitta xabar (sarlavha + javob). Rasm / video / fayl → o'sha narsa nusxasi (copyMessage), sarlavha izohida.
+#    Boshqasi (ovozli, stiker…) → avval sarlavha, keyin nusxa. Sarlavha mijoz tilida (xabardagi «🌐 uz/ru»).
+#  · Natija adminga, javobiga reply bo'lib: «✅ Mijozga yuborildi» yoki sababi (bot bloklangan / mijoz botga yozmagan).
+# ══════════════════════════════════════════════════════════════════════════
+ISTAK_BELGI = '🔔 Yangi istak'   # 🔴 apps-script/IstakXabar.gs ISTAK_XABAR_BELGI bilan BIR XIL
+ISTAK_IZOHLI = ('photo', 'video', 'animation', 'document', 'audio')   # copyMessage izoh (caption) oladigan turlar
+
+
+def istak_javob_manzil(reply):
+    """Admin reply qilgan xabar botning «🔔 Yangi istak» xabarimi. Bo'lsa {'id', 'til', 'matn'} — aks holda None.
+    🆔 qatori yo'q bo'lsa (brauzer / imzosiz) — {'id': None} (adminga sababi aytiladi)."""
+    r = reply or {}
+    kim = r.get('from') or {}
+    if not kim.get('is_bot') or str(kim.get('username') or '').lower() != BOT_USERNAME.lower():
+        return None
+    t = str(r.get('text') or '')
+    if not t.startswith(ISTAK_BELGI):
+        return None
+    m = re.search(r'^🆔 (\d{3,15})\s*$', t, re.M)
+    w = re.search(r'^💬 (.+)$', t, re.M)
+    return {'id': int(m.group(1)) if m else None,
+            'til': 'ru' if re.search(r'^🌐 ru\s*$', t, re.M) else 'uz',
+            'matn': (w.group(1).strip() if w else '')[:120]}
+
+
+def istak_javob_sarlavha(manzil):
+    """Mijozga ketadigan sarlavha (HTML) — uning tilida, istagi eslatiladi."""
+    so = html_escape(manzil.get('matn') or '')
+    if manzil.get('til') == 'ru':
+        return '📩 <b>Ответ Kraken Mobile</b>' + (f'\nНа ваш запрос: «{so}»' if so else '')
+    return '📩 <b>Kraken Mobile javobi</b>' + (f"\nSiz so'ragan: «{so}»" if so else '')
+
+
+def _istak_xato_sababi(desc):
+    d = str(desc or '')
+    if 'blocked' in d:
+        return "mijoz botni bloklagan"
+    if 'chat not found' in d or "can't initiate" in d or 'initiate conversation' in d:
+        return "mijoz botga hali yozmagan (bot unga birinchi yoza olmaydi)"
+    return d[:150] or "noma'lum xato"
+
+
+def istak_javob_yubor(admin_chat, message, manzil):
+    """Admin javobini mijozga yuboradi, natijani adminga (javobiga reply) aytadi. Natija: 'yuborildi' | 'id yoq' | 'xato'."""
+    mid = message.get('message_id')
+
+    def adminga(matn):
+        try:
+            req.post(f'{TG_API}/sendMessage', json={'chat_id': admin_chat, 'text': matn, 'parse_mode': 'HTML',
+                                                    'reply_parameters': {'message_id': mid, 'allow_sending_without_reply': True}},
+                     timeout=8)
+        except Exception as e:
+            logger.error(f'istak javobi (admin): {e}')
+
+    if not manzil.get('id'):
+        adminga("⚠️ Bu istak brauzerdan yoki Telegram imzosisiz yozilgan — mijozning Telegram'i yo'q, bot javob yubora olmaydi.")
+        return 'id yoq'
+    uid, sarl = manzil['id'], istak_javob_sarlavha(manzil)
+    try:
+        if message.get('text'):
+            j = req.post(f'{TG_API}/sendMessage', json={'chat_id': uid, 'text': sarl + '\n\n' + html_escape(message['text']),
+                                                        'parse_mode': 'HTML'}, timeout=10).json()
+        elif any(message.get(k) for k in ISTAK_IZOHLI):
+            cap = html_escape(message.get('caption') or '')
+            j = req.post(f'{TG_API}/copyMessage', json={'chat_id': uid, 'from_chat_id': admin_chat, 'message_id': mid,
+                                                        'caption': sarl + ('\n\n' + cap if cap else ''), 'parse_mode': 'HTML'},
+                         timeout=15).json()
+        else:
+            j = req.post(f'{TG_API}/sendMessage', json={'chat_id': uid, 'text': sarl, 'parse_mode': 'HTML'}, timeout=10).json()
+            if j.get('ok'):
+                j = req.post(f'{TG_API}/copyMessage', json={'chat_id': uid, 'from_chat_id': admin_chat, 'message_id': mid},
+                             timeout=15).json()
+    except Exception as e:
+        j = {'ok': False, 'description': f'tarmoq: {e}'}
+    if j.get('ok'):
+        adminga('✅ Mijozga yuborildi')
+        return 'yuborildi'
+    adminga('❌ Yuborilmadi: ' + html_escape(_istak_xato_sababi(j.get('description'))))
+    return 'xato'
+
+
 def kanal_post(num):
     """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato)."""
     elon, models = elon_cache_get(num)
@@ -2430,6 +2520,14 @@ async def handle_update(data):
 
         if not chat_id:
             return
+
+        # BUGUN10 §3b: admin «🔔 Yangi istak» xabariga reply qilsa — javob mijozga (rasm-e'lon yasashdan OLDIN
+        # tekshiriladi: istakka rasm bilan javob chala e'lon bo'lib qolmasin). Buyruqlar (/…) — eski yo'lda. Fonda (T1).
+        if chat_id == ADMIN_ID and message.get('reply_to_message') and not text.startswith('/'):
+            manzil = istak_javob_manzil(message.get('reply_to_message'))
+            if manzil:
+                asyncio.create_task(blok(istak_javob_yubor, chat_id, message, manzil))
+                return
 
         # ── ADMIN rasm yuborsa ──
         photo = message.get('photo')
