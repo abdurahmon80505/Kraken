@@ -2486,7 +2486,7 @@ def _single_photo_elon(chat_id, file_id):
 
 INLINE_SAHIFA = 50            # Telegram: bitta javobda ≤ 50 natija
 INLINE_KUTISH = 5.0           # rasm yuklanishini kutish (s) — so'ng tayyori rich, qolgani karta
-RASM_YUKLASH_CHAT = ADMIN_ID  # SAVOL (BUGUN16 oxiri): admin lichkasi yoki TEST_CHANNEL
+RASM_YUKLASH_CHAT = ADMIN_ID  # S130 (BUGUN16.md oxiri): admin lichkasi yoki TEST_CHANNEL
 _RASM_XATO_KUTISH = 3600      # yuklanmagan rasm 1 soat qayta urinilmaydi
 _RASM_FID = {}                # rasm URL → Telegram file_id
 _RASM_XATO = {}               # rasm URL → yuklanmagan vaqti
