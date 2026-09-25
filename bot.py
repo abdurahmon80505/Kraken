@@ -677,28 +677,21 @@ def model_brand(model):
 
 
 def model_display_name(model, lang='uz'):
-    """Model nomi brend bilan; nom brenddan boshlansa ikki marta chiqmaydi (sayt modelDisplayName)."""
+    """Model nomi — Sheets'da qanday yozilgan bo'lsa SHUNDAY (BUGUN17 §1, A24=c; sayt modelDisplayName).
+    NEGA: brend o'zi qo'shilganda «Аккумулятор для Google Pixel 8a» kabi nomlar buzilardi —
+    endi to'liq nom qo'lda yoziladi. Brend (model_brand) faqat filtr/qidiruv uchun."""
     if not model:
         return ''
-    name = str((model.get('nameUz') if lang == 'uz' else (model.get('nameRu') or model.get('nameUz'))) or model.get('name') or '').strip()
-    brand = model_brand(model)
-    if brand and not brendsizmi(brand) and not name.lower().startswith(brand.lower()):
-        return f'{brand} {name}'
-    return name
+    return str((model.get('nameUz') if lang == 'uz' else (model.get('nameRu') or model.get('nameUz'))) or model.get('name') or '').strip()
 
 
 def elon_nomi(elon, model, lang='uz'):
     """G12 (2026-09-15): e'lonning O'Z nomi (Elonlar nameUz/nameRu) bo'lsa shu — admin
-    «Pixel 8 (GrapheneOS)» deb o'zgartira oladi; bo'sh bo'lsa model nomi. Brend prefiksi
-    model_display_name qoidasi bilan. Sayt: elonNomi."""
+    «Pixel 8 (GrapheneOS)» deb o'zgartira oladi; bo'sh bo'lsa model nomi. Brend QO'SHILMAYDI
+    (BUGUN17 §1) — nom qanday yozilsa shunday. Sayt: elonNomi."""
     e = elon or {}
     own = str((e.get('nameUz') if lang == 'uz' else (e.get('nameRu') or e.get('nameUz'))) or e.get('name') or '').strip()
-    if not own:
-        return model_display_name(model, lang)
-    brand = model_brand(model)
-    if brand and not brendsizmi(brand) and not own.lower().startswith(brand.lower()):
-        return f'{brand} {own}'
-    return own
+    return own or model_display_name(model, lang)
 
 
 def mos_line(model, models_by_id, lang='uz'):
@@ -730,10 +723,8 @@ def build_elon(item, models_by_id):
     model = models_by_id.get(spec_id, {})
     spec_uz = model.get('specUz', '') or ''
     spec_ru = model.get('specRu', '') or ''
-    # G12: nom brend bilan (modeldan); e'londagi nom bo'lsa — o'sha, brend oldiga
-    brand = str(model.get('brand') or '').strip()
-    if brand and not str(name_uz).lower().startswith(brand.lower()):
-        name_uz = f'{brand} {name_uz}'.strip()
+    # BUGUN17 §1: nom yozilganidek — brend oldiga QO'SHILMAYDI (e'lonning o'z nomi, bo'sh bo'lsa model nomi)
+    name_uz = elon_nomi(item, model, 'uz')
     mos_txt = mos_line(model, models_by_id, 'uz')
     izoh_txt = izoh_matni(item, 'uz')   # G12 K2
 
@@ -910,7 +901,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None):
     rasm_src — {rasm URL: src} (BUGUN16 inline: `tg://photo?id=…` — inline'da URL ishlamaydi); qolgani o'zgarmaydi."""
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
-    name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), brend bilan
+    name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), yozilganidek (BUGUN17)
     mos_txt = html_escape(mos_line(model, models_by_id, 'uz'))
     izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
     storage = html_escape(str(elon.get('storage') or '').strip())
@@ -2502,10 +2493,15 @@ def _inline_norm(s):
 
 
 def inline_nomlari(elon, models):
-    """E'lonning qidiriladigan nomlari — o'z nomi va model nomi, uz va ru."""
+    """E'lonning qidiriladigan nomlari — o'z nomi va model nomi, uz va ru.
+    BUGUN17: nomga brend qo'shilmaydi, shuning uchun «anker nano» ham topilsin — brend + nom alohida."""
     model = (models or {}).get(str(elon.get('specId', '') or ''), {})
-    return [elon_nomi(elon, model, 'uz'), elon_nomi(elon, model, 'ru'),
-            model_display_name(model, 'uz'), model_display_name(model, 'ru')]
+    nomlar = [elon_nomi(elon, model, 'uz'), elon_nomi(elon, model, 'ru'),
+              model_display_name(model, 'uz'), model_display_name(model, 'ru')]
+    brand = model_brand(model)
+    if brand and not brendsizmi(brand):
+        nomlar += [f'{brand} {n}' for n in nomlar if n and not n.lower().startswith(brand.lower())]
+    return nomlar
 
 
 def _elon_vaqti(elon):
