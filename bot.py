@@ -904,9 +904,10 @@ def _rich_table(*spec_texts):
     return f'<table bordered compact>{"".join(rows)}</table>' if rows else ''
 
 
-def build_rich_html(elon, models_by_id, premium=True):
+def build_rich_html(elon, models_by_id, premium=True, rasm_src=None):
     """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
-    v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow."""
+    v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow.
+    rasm_src — {rasm URL: src} (BUGUN16 inline: `tg://photo?id=…` — inline'da URL ishlamaydi); qolgani o'zgarmaydi."""
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), brend bilan
@@ -922,7 +923,7 @@ def build_rich_html(elon, models_by_id, premium=True):
 
     # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     rasmlar = images_of(elon)[:10]
-    imgs = ''.join(f'<img src="{html_escape(u)}"/>' for u in rasmlar)
+    imgs = ''.join(f'<img src="{html_escape((rasm_src or {}).get(u, u))}"/>' for u in rasmlar)
     media = f'<tg-slideshow>{imgs}</tg-slideshow>' if imgs else ''
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
@@ -2466,6 +2467,302 @@ def _single_photo_elon(chat_id, file_id):
         send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  BUGUN16 §1 (2026-09-25): INLINE REJIM — «@bot 248», «@bot pixel 10 pro xl»
+#
+#  Foydalanuvchi: «yuborishdan oldin rasmi chiqib tursin; kod yozmagan paytimda
+#  esa barcha e'lonlar chiqib tursin va nomni yozsam ham nomi bilan chiqib
+#  kelsin». Tanlanganda — KANALDAGI rich post (build_rich_html, premium=False —
+#  kanal_post bilan bir xil matn, rasmlar tartibi bir xil).
+#
+#  🔴 TUZOQ: inline rich xabarda «Only previously uploaded files may be used» —
+#  ImageKit URL ishlamaydi, Telegram file_id kerak. Shu sabab rasm bir marta
+#  RASM_YUKLASH_CHAT ga ovozsiz yuboriladi, file_id olinadi, xabar DARROV
+#  o'chiriladi. file_id xotirada (restartda qayta yuklanadi). Hali yuklanmagan
+#  e'lon — oddiy rasm kartasi (_share_result) bilan chiqadi, keyingi so'rovda rich.
+#  Yuklash faqat inline so'rov kelganda boshlanadi (BotFather'da yoqilmaguncha jim).
+#  Ma'lumot — _ELON_CACHE (G10.3), jadvalga yozilmaydi.
+# ══════════════════════════════════════════════════════════════════════════
+
+INLINE_SAHIFA = 50            # Telegram: bitta javobda ≤ 50 natija
+INLINE_KUTISH = 5.0           # rasm yuklanishini kutish (s) — so'ng tayyori rich, qolgani karta
+# BUGUN19 §1 (S130 = b + ovozsiz, 2026-09-26): rasm TEST kanalga yuklanadi (lichka toza qoladi).
+# Elonlar'da to'liq Telegram file_id saqlanmaydi (images — faqat ImageKit URL; nomidagi «AgACAgIA» —
+# file_id'ning 8 harfi, hamma rasmda bir xil) — shuning uchun jadvaldan olinmaydi (BUGUN19.md, S137).
+RASM_YUKLASH_CHAT = TEST_CHANNEL
+_RASM_ZAXIRA_CHAT = ADMIN_ID  # TEST kanal rad etsa (bot a'zo/admin emas, kanal yo'q) — lichka, ovozsiz (BUGUN16 yo'li)
+_RASM_CHAT = {'id': RASM_YUKLASH_CHAT}
+_RASM_XATO_KUTISH = 3600      # yuklanmagan rasm 1 soat qayta urinilmaydi
+_RASM_FID = {}                # rasm URL → Telegram file_id
+_RASM_XATO = {}               # rasm URL → yuklanmagan vaqti
+_rasm_navbat = []             # yuklash navbati (URL)
+_rasm_kutilmoqda = set()      # navbatda yoki yuklanayotgan URL'lar
+_rasm_ishchi = {'bor': False}
+_rasm_lock = threading.Lock()
+
+
+def _inline_norm(s):
+    """Qidiruv uchun: kichik harf, bo'shliq/tinish belgisiz («Pixel 10 Pro XL» = «pixel10proxl»)."""
+    return re.sub(r'[\W_]+', '', str(s or '').lower())
+
+
+def inline_nomlari(elon, models):
+    """E'lonning qidiriladigan nomlari — o'z nomi va model nomi, uz va ru."""
+    model = (models or {}).get(str(elon.get('specId', '') or ''), {})
+    return [elon_nomi(elon, model, 'uz'), elon_nomi(elon, model, 'ru'),
+            model_display_name(model, 'uz'), model_display_name(model, 'ru')]
+
+
+def _elon_vaqti(elon):
+    v = str(elon.get('created', '') or '').strip()
+    if not v:
+        return 0.0
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(v.replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _num_int(elon):
+    try:
+        return int(float(elon.get('num', 0) or 0))
+    except (ValueError, TypeError):
+        return 0
+
+
+def inline_topish(query, by_num, models):
+    """So'rov bo'yicha FAOL e'lonlar (yangisi birinchi). Sotilgan/o'chirilgan/kutilayotgan — yo'q.
+    '' — hammasi; '248' / '#248' / '№248' — shu raqamli e'lon BIRINCHI, keyin nomida shu son borlari
+    («15» — №15 va iPhone 15'lar); matn — nomida HAMMA so'zlar bor e'lonlar (harf katta-kichikligi,
+    uz/ru, bo'shliq farqsiz)."""
+    faol = [e for e in (by_num or {}).values() if isinstance(e, dict) and elon_status(e) == 'active']
+    faol.sort(key=lambda e: (_elon_vaqti(e), _num_int(e)), reverse=True)
+    q = str(query or '').strip()
+    birinchi = []
+    m = re.fullmatch(r'[#№]\s*(\d{1,6})|(\d{1,6})', q)
+    if m:
+        raqam = int(m.group(1) or m.group(2))
+        birinchi = [e for e in faol if _num_int(e) == raqam]
+        if m.group(1):                  # «#248» — faqat raqam
+            return birinchi
+    sozlar = [w for w in (_inline_norm(s) for s in q.split()) if w]
+    if not sozlar:
+        return faol
+    natija = list(birinchi)
+    for e in faol:
+        if any(e is b for b in birinchi):
+            continue
+        nomlar = [_inline_norm(n) for n in inline_nomlari(e, models) if n]
+        if any(all(w in n for w in sozlar) for n in nomlar):
+            natija.append(e)
+    return natija
+
+
+def _ik_olcham(url, tr):
+    """ImageKit rasmiga o'lcham (tr=…) qo'shadi; boshqa manzil o'zgarmaydi."""
+    if 'ik.imagekit.io' in url and 'tr=' not in url:
+        return url + ('&' if '?' in url else '?') + 'tr=' + tr
+    return url
+
+
+def _rasm_fid(xabar):
+    """Xabardagi eng katta rasmning file_id si."""
+    rasmlar = (xabar or {}).get('photo') or []
+    return rasmlar[-1].get('file_id') if rasmlar else None
+
+
+def _rasm_tg(metod, payload):
+    """Telegram so'rovi; 429 da kutib BIR marta qayta uradi. Javob (dict)."""
+    for urinish in range(2):
+        try:
+            r = req.post(f'{TG_API}/{metod}', json=payload, timeout=60).json()
+        except Exception as ex:
+            return {'ok': False, 'description': f'tarmoq: {ex}'}
+        kut = ((r.get('parameters') or {}).get('retry_after')) if not r.get('ok') else None
+        if kut and urinish == 0:
+            time.sleep(min(float(kut), 30))
+            continue
+        return r
+    return r
+
+
+def _chat_xatosi(r):
+    """Javob rasm emas, CHAT sababli rad etilganmi (kanal yo'q, bot a'zo/admin emas)."""
+    t = str((r or {}).get('description', '')).lower()
+    return (r or {}).get('error_code') in (400, 403) and any(
+        s in t for s in ('chat not found', 'not a member', 'not enough rights', 'forbidden',
+                         'need administrator', 'have no rights', 'chat_write_forbidden'))
+
+
+def _rasm_yubor(guruh):
+    """≤10 rasmni TEST kanalga (RASM_YUKLASH_CHAT) ovozsiz yuboradi, file_id'larni oladi, xabarlarni o'chiradi.
+    Kanal chat sababli rad etsa — shu seans oxirigacha lichkaga (_RASM_ZAXIRA_CHAT), ovozsiz."""
+    chat = _RASM_CHAT['id']
+    if len(guruh) == 1:
+        r = _rasm_tg('sendPhoto', {'chat_id': chat, 'photo': _ik_olcham(guruh[0], 'w-1600,q-85'),
+                                   'disable_notification': True})
+        xabarlar = [r.get('result')] if r.get('ok') else None
+    else:
+        r = _rasm_tg('sendMediaGroup', {'chat_id': chat, 'disable_notification': True,
+                                        'media': [{'type': 'photo', 'media': _ik_olcham(u, 'w-1600,q-85')} for u in guruh]})
+        xabarlar = r.get('result') if r.get('ok') else None
+    if not xabarlar and chat != _RASM_ZAXIRA_CHAT and _chat_xatosi(r):
+        logger.error(f"inline rasm: {chat} rad etdi ({r.get('description')}) — endi lichkaga, ovozsiz")
+        _RASM_CHAT['id'] = _RASM_ZAXIRA_CHAT
+        return _rasm_yubor(guruh)
+    if not xabarlar:
+        if len(guruh) > 1:
+            for u in guruh:             # bitta buzuq rasm butun albomni yiqitadi — bittalab
+                _rasm_yubor([u])
+            return
+        logger.warning(f"inline rasm yuklanmadi: {guruh[0]} — {r.get('description')}")
+        _RASM_XATO[guruh[0]] = time.time()
+        return
+    for u, x in zip(guruh, xabarlar):
+        fid = _rasm_fid(x)
+        if fid:
+            _RASM_FID[u] = fid
+            _RASM_XATO.pop(u, None)
+        else:
+            _RASM_XATO[u] = time.time()
+    ids = [x.get('message_id') for x in xabarlar if isinstance(x, dict) and x.get('message_id')]
+    if ids:
+        o = _rasm_tg('deleteMessages', {'chat_id': chat, 'message_ids': ids})
+        if not o.get('ok'):             # kanalda «Delete messages» huquqi yo'q — rasm qolib ketadi
+            logger.warning(f"inline rasm o'chirilmadi ({chat}): {o.get('description')}")
+
+
+def _rasm_ishchi_ish():
+    """Fon ipi: navbatdagi rasmlarni 10 tadan yuklaydi (webhook'ni to'xtatmaydi — T1)."""
+    while True:
+        with _rasm_lock:
+            guruh = _rasm_navbat[:10]
+            del _rasm_navbat[:10]
+            if not guruh:
+                _rasm_ishchi['bor'] = False
+                return
+        try:
+            _rasm_yubor(guruh)
+        except Exception as ex:
+            logger.error(f'inline rasm ishchisi: {ex}')
+            for u in guruh:
+                if u not in _RASM_FID:
+                    _RASM_XATO[u] = time.time()
+        finally:
+            with _rasm_lock:
+                _rasm_kutilmoqda.difference_update(guruh)
+        time.sleep(1.0)                 # Telegram cheklovi — bir chatga tez-tez yubormaslik
+
+
+def rasm_navbatga(urls, ishga=True):
+    """file_id'i yo'q rasmlarni navbatning BOSHIGA qo'yadi (hozir so'ralgani birinchi)."""
+    hozir = time.time()
+    yangi = []
+    for u in urls:
+        if u in _RASM_FID or u in _rasm_kutilmoqda or u in yangi:
+            continue
+        if hozir - _RASM_XATO.get(u, 0) < _RASM_XATO_KUTISH:
+            continue
+        yangi.append(u)
+    if not yangi:
+        return
+    with _rasm_lock:
+        yangi = [u for u in yangi if u not in _rasm_kutilmoqda]
+        _rasm_kutilmoqda.update(yangi)
+        _rasm_navbat[:0] = yangi
+        boshlash = ishga and not _rasm_ishchi['bor']
+        if boshlash:
+            _rasm_ishchi['bor'] = True
+    if boshlash:
+        threading.Thread(target=_rasm_ishchi_ish, daemon=True).start()
+
+
+def inline_natija(elon, models):
+    """Bitta e'lon — inline natija. Hamma rasmi yuklangan bo'lsa KANAL rich posti, aks holda rasm kartasi."""
+    num = _num_int(elon)
+    model = (models or {}).get(str(elon.get('specId', '') or ''), {})
+    rasmlar = images_of(elon)[:10]
+    nom = elon_nomi(elon, model, 'uz')
+    xotira = str(elon.get('storage') or '').strip()
+    rang = clean_color(elon.get('color') or '')
+    sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
+    narx = str(elon.get('price', '') or '').replace('.0', '')
+    cycle = str(elon.get('cycle', '') or '').replace('.0', '')
+    cond_uz, _cond_ru, _emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
+    izoh = ' · '.join(x for x in ((f'{narx}$' if narx else ''), cond_uz, f'№{num}') if x)
+
+    if rasmlar and all(u in _RASM_FID for u in rasmlar):
+        src = {u: f'tg://photo?id=r{i}' for i, u in enumerate(rasmlar)}
+        return {
+            'type': 'article',
+            'id': f'r{num}',
+            'title': sarlavha,
+            'description': izoh,
+            'thumbnail_url': _ik_olcham(rasmlar[0], 'w-200,q-70'),
+            'input_message_content': {'rich_message': {
+                'html': build_rich_html(elon, models, premium=False, rasm_src=src),
+                'media': [{'id': f'r{i}', 'media': {'type': 'photo', 'media': _RASM_FID[u]}}
+                          for i, u in enumerate(rasmlar)],
+            }},
+        }
+    karta = _share_result(num, elon, model)
+    if karta:
+        karta['title'] = sarlavha
+        karta['description'] = izoh
+    return karta
+
+
+def elon_cache_hammasi():
+    """(by_num nusxasi, models) — xotira hech yuklanmagan bo'lsa bir urinish (60 s da bir)."""
+    c = _ELON_CACHE
+    if not c['time'] and time.time() - c['last_try'] > 60:
+        elon_cache_load()
+    with _elon_cache_lock:
+        return dict(c['by_num']), c['models']
+
+
+async def inline_javob(iq):
+    """inline_query → answerInlineQuery (sahifa 50 tadan, next_offset bilan)."""
+    try:
+        by_num, models = await blok(elon_cache_hammasi)
+        topildi = inline_topish(iq.get('query', ''), by_num, models)
+        try:
+            boshi = max(0, int(iq.get('offset') or 0))
+        except ValueError:
+            boshi = 0
+        sahifa = topildi[boshi:boshi + INLINE_SAHIFA]
+        keyingi = str(boshi + INLINE_SAHIFA) if boshi + INLINE_SAHIFA < len(topildi) else ''
+
+        urls = [u for e in sahifa for u in images_of(e)[:10]]
+        rasm_navbatga(urls)
+        oxiri = time.monotonic() + INLINE_KUTISH
+        while any(u in _rasm_kutilmoqda for u in urls) and time.monotonic() < oxiri:
+            await asyncio.sleep(0.25)
+
+        natijalar = [n for n in (inline_natija(e, models) for e in sahifa) if n]
+        hammasi_rich = all(n.get('type') == 'article' for n in natijalar)
+        r = await blok(req.post, f'{TG_API}/answerInlineQuery', json={
+            'inline_query_id': iq.get('id'),
+            'results': natijalar,
+            'next_offset': keyingi,
+            'cache_time': 30 if hammasi_rich else 0,   # karta bo'lsa keyingi so'rovda rich chiqsin
+            'is_personal': False,
+        }, timeout=15)
+        # Rich natija rad etilsa (hali jonli sinalmagan) — ro'yxat bo'sh qolmasin: shu so'rovga faqat kartalar
+        javob = r.json() if hasattr(r, 'json') else {}
+        if not javob.get('ok') and any(n.get('type') == 'article' for n in natijalar):
+            logger.error(f"inline rich rad etildi: {javob.get('description')} — kartalar bilan qayta")
+            kartalar = [k for k in (_share_result(_num_int(e), e, (models or {}).get(str(e.get('specId', '') or ''), {}))
+                                    for e in sahifa) if k]
+            await blok(req.post, f'{TG_API}/answerInlineQuery', json={
+                'inline_query_id': iq.get('id'), 'results': kartalar, 'next_offset': keyingi,
+                'cache_time': 0, 'is_personal': False,
+            }, timeout=15)
+    except Exception as ex:
+        logger.error(f'inline_javob: {ex}')
+
+
 async def webhook(request):
     """🔴 QOIDALAR T1: Telegram'ga DARROV 200 qaytariladi.
 
@@ -2484,6 +2781,11 @@ async def webhook(request):
 
 async def handle_update(data):
     try:
+        # BUGUN16 §1: «@bot …» — inline rejim
+        if data.get('inline_query'):
+            await inline_javob(data['inline_query'])
+            return
+
         # BUGUN6 §2: kanalga yangi a'zo → faqat o'ziga ko'rinadigan xush kelibsiz (fonda — T1)
         if data.get('chat_member'):
             asyncio.create_task(blok(kanal_xush_kelibsiz, data['chat_member']))
