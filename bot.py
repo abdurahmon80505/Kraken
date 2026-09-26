@@ -2477,7 +2477,12 @@ def _single_photo_elon(chat_id, file_id):
 
 INLINE_SAHIFA = 50            # Telegram: bitta javobda ≤ 50 natija
 INLINE_KUTISH = 5.0           # rasm yuklanishini kutish (s) — so'ng tayyori rich, qolgani karta
-RASM_YUKLASH_CHAT = ADMIN_ID  # S130 (BUGUN16.md oxiri): admin lichkasi yoki TEST_CHANNEL
+# BUGUN19 §1 (S130 = b + ovozsiz, 2026-09-26): rasm TEST kanalga yuklanadi (lichka toza qoladi).
+# Elonlar'da to'liq Telegram file_id saqlanmaydi (images — faqat ImageKit URL; nomidagi «AgACAgIA» —
+# file_id'ning 8 harfi, hamma rasmda bir xil) — shuning uchun jadvaldan olinmaydi (BUGUN19.md, S137).
+RASM_YUKLASH_CHAT = TEST_CHANNEL
+_RASM_ZAXIRA_CHAT = ADMIN_ID  # TEST kanal rad etsa (bot a'zo/admin emas, kanal yo'q) — lichka, ovozsiz (BUGUN16 yo'li)
+_RASM_CHAT = {'id': RASM_YUKLASH_CHAT}
 _RASM_XATO_KUTISH = 3600      # yuklanmagan rasm 1 soat qayta urinilmaydi
 _RASM_FID = {}                # rasm URL → Telegram file_id
 _RASM_XATO = {}               # rasm URL → yuklanmagan vaqti
@@ -2578,16 +2583,30 @@ def _rasm_tg(metod, payload):
     return r
 
 
+def _chat_xatosi(r):
+    """Javob rasm emas, CHAT sababli rad etilganmi (kanal yo'q, bot a'zo/admin emas)."""
+    t = str((r or {}).get('description', '')).lower()
+    return (r or {}).get('error_code') in (400, 403) and any(
+        s in t for s in ('chat not found', 'not a member', 'not enough rights', 'forbidden',
+                         'need administrator', 'have no rights', 'chat_write_forbidden'))
+
+
 def _rasm_yubor(guruh):
-    """≤10 rasmni RASM_YUKLASH_CHAT ga ovozsiz yuboradi, file_id'larni oladi, xabarlarni o'chiradi."""
+    """≤10 rasmni TEST kanalga (RASM_YUKLASH_CHAT) ovozsiz yuboradi, file_id'larni oladi, xabarlarni o'chiradi.
+    Kanal chat sababli rad etsa — shu seans oxirigacha lichkaga (_RASM_ZAXIRA_CHAT), ovozsiz."""
+    chat = _RASM_CHAT['id']
     if len(guruh) == 1:
-        r = _rasm_tg('sendPhoto', {'chat_id': RASM_YUKLASH_CHAT, 'photo': _ik_olcham(guruh[0], 'w-1600,q-85'),
+        r = _rasm_tg('sendPhoto', {'chat_id': chat, 'photo': _ik_olcham(guruh[0], 'w-1600,q-85'),
                                    'disable_notification': True})
         xabarlar = [r.get('result')] if r.get('ok') else None
     else:
-        r = _rasm_tg('sendMediaGroup', {'chat_id': RASM_YUKLASH_CHAT, 'disable_notification': True,
+        r = _rasm_tg('sendMediaGroup', {'chat_id': chat, 'disable_notification': True,
                                         'media': [{'type': 'photo', 'media': _ik_olcham(u, 'w-1600,q-85')} for u in guruh]})
         xabarlar = r.get('result') if r.get('ok') else None
+    if not xabarlar and chat != _RASM_ZAXIRA_CHAT and _chat_xatosi(r):
+        logger.error(f"inline rasm: {chat} rad etdi ({r.get('description')}) — endi lichkaga, ovozsiz")
+        _RASM_CHAT['id'] = _RASM_ZAXIRA_CHAT
+        return _rasm_yubor(guruh)
     if not xabarlar:
         if len(guruh) > 1:
             for u in guruh:             # bitta buzuq rasm butun albomni yiqitadi — bittalab
@@ -2605,7 +2624,9 @@ def _rasm_yubor(guruh):
             _RASM_XATO[u] = time.time()
     ids = [x.get('message_id') for x in xabarlar if isinstance(x, dict) and x.get('message_id')]
     if ids:
-        _rasm_tg('deleteMessages', {'chat_id': RASM_YUKLASH_CHAT, 'message_ids': ids})
+        o = _rasm_tg('deleteMessages', {'chat_id': chat, 'message_ids': ids})
+        if not o.get('ok'):             # kanalda «Delete messages» huquqi yo'q — rasm qolib ketadi
+            logger.warning(f"inline rasm o'chirilmadi ({chat}): {o.get('description')}")
 
 
 def _rasm_ishchi_ish():
