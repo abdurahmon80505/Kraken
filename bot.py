@@ -1341,6 +1341,29 @@ def _narx_son(e):
         return None
 
 
+def toplam_seriya(items, models_by_id):
+    """B34 (BUGUN42): to'plamdagi HAMMA e'lon bitta telefon seriyasiga tegishli bo'lsa — o'sha seriya nomi (uz, ru), aks holda None.
+    Tovar seriyasi: modelda `mos` bo'lsa — mos modellarning seriyalari (g'ilof «Pixel 10 / 10 Pro» → Pixel 10), yo'q bo'lsa —
+    modelning o'z seriyasi (telefon). Umumiy seriya aniq bitta bo'lsa — sarlavhaga (foydalanuvchi: «Pixel 10 seriyasi,
+    9 seriyasi, 8 seriyasi qilib ham jo'natish kerak»)."""
+    series = _ELON_CACHE.get('series') or []
+    umumiy = None
+    for e in items:
+        model = models_by_id.get(str(e.get('specId', '') or ''), {})
+        mids = mos_expand(model.get('mos'), models_by_id, series) if parse_mos(model.get('mos')) else {str(e.get('specId', '') or '')}
+        sers = {str((models_by_id.get(m) or {}).get('series', '') or '') for m in mids} - {''}
+        umumiy = sers if umumiy is None else umumiy & sers
+        if not umumiy:
+            return None
+    if not umumiy or len(umumiy) != 1:
+        return None
+    ser = next((s for s in series if str(s.get('key', '')) == next(iter(umumiy))), None)
+    if not ser or ser_type(ser) not in ('phone', 'camera'):
+        return None
+    uz = str(ser.get('labelUz') or '').strip()
+    return (uz, str(ser.get('labelRu') or uz).strip()) if uz else None
+
+
 def build_toplam_html(items, models_by_id, kollaj=False):
     """To'plam posti — A17 (a) QISQA e'lon (BUGUN31; ilgari 50 ta e'lon nomma-nom — «chuvalchangdek po'ta»):
     rasm (slayd 10 tagacha / kollaj 4), «📦 Yangi keldi», «N ta tovar · min–max$»;
@@ -1388,9 +1411,21 @@ def build_toplam_html(items, models_by_id, kollaj=False):
     tugma = lambda tur: f'<tg-button type="url" url="https://t.me/{BOT_USERNAME}?startapp={tur}">{TUR_NOMI[tur][0]} {TUR_NOMI[tur][1]}</tg-button>'
     qator_tugma = ''.join('<tg-button-row>' + ''.join(tugma(t) for t in turlar[i:i + 2]) + '</tg-button-row>'
                           for i in range(0, len(turlar), 2))
+    # B34: bitta seriya — sarlavhada («Pixel 10 Seriyasi» / «Серия Pixel 10» — jadvaldagi labelUz / labelRu)
+    seriya = toplam_seriya(items, models_by_id)
+    if not seriya:
+        sarlavha = '📦 Yangi keldi / Новое поступление'
+    else:
+        uz, ru = seriya[0].replace('Seriyasi', 'seriyasi'), seriya[1]
+        if set(turlar) <= {'phone', 'camera'}:
+            sarlavha = f'📱 {uz} / {ru}'
+        else:
+            ru = 'Для серии ' + ru[len('Серия '):] if ru.startswith('Серия ') else 'Для ' + ru
+            sarlavha = f'📦 {uz} uchun / {ru}'
+        sarlavha = html_escape(sarlavha)
     return (
         media
-        + '<p><b>📦 Yangi keldi / Новое поступление</b><br/>#toplam</p>'
+        + f'<p><b>{sarlavha}</b><br/>#toplam</p>'
         + jami
         + royxat
         + BOSH
@@ -1412,9 +1447,49 @@ def toplam_tahrir(mid):
 
 def kollaj_tugma(mid, kollaj=False):
     """B28: admin lichkasidagi tugma (kanal postida emas — obunachilar ko'rmasin)."""
+    ochir = [{"text": "🗑 Postni o'chirish", "callback_data": f"pochir:{int(mid)}"}]   # B34: sinov postini tozalash
     if kollaj:
-        return {"inline_keyboard": [[{"text": "🎞 Slaydga qaytarish", "callback_data": f"slayd:{int(mid)}"}]]}
-    return {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": f"kollaj:{int(mid)}"}]]}
+        return {"inline_keyboard": [[{"text": "🎞 Slaydga qaytarish", "callback_data": f"slayd:{int(mid)}"}], ochir]}
+    return {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": f"kollaj:{int(mid)}"}], ochir]}
+
+
+def post_ochir(mid):
+    """B34 (BUGUN42): kanal postini o'chiradi va unga yozilgan HAMMA e'lonning channel_message_id sini tozalaydi —
+    TEST kanaldagi sinov postidan keyin e'lonlar «kanalda posti bor» bo'lib qolmasin (B27 — 93 e'lon asosiy kanalga,
+    id bo'shlarini yuboradi). (True, 'N ta e'lon') / (False, sabab)."""
+    mid = int(mid)
+    items, _ = _mid_elonlar(mid, hammasi=True)
+    ok, xato = delete_msg(POST_CHANNEL, mid)
+    if not ok:
+        return False, xato
+    _KOLLAJ.discard(mid)
+    for e in items:
+        kanal_id_yoz(int(float(e.get('num', 0) or 0)), None)
+    return True, f"{len(items)} ta e'lon"
+
+
+def post_ochir_tugma(admin_chat, xabar_id, data):
+    """«🗑 Postni o'chirish» → «Ha / Yo'q» (tasodifan bosilmasin); «Ha» — post_ochir."""
+    amal, _, mid = str(data).partition(':')
+    if not re.fullmatch(r'\d{1,10}', mid):
+        return
+    tugma = lambda kb: req.post(f'{TG_API}/editMessageReplyMarkup', json={
+        'chat_id': admin_chat, 'message_id': xabar_id, 'reply_markup': kb}, timeout=10)
+    try:
+        if amal == 'pochir':
+            tugma({"inline_keyboard": [[{"text": "✅ Ha, o'chirilsin", "callback_data": f"pochir_ha:{mid}"},
+                                        {"text": "↩️ Yo'q", "callback_data": f"pochir_yoq:{mid}"}]]})
+        elif amal == 'pochir_yoq':
+            tugma(kollaj_tugma(mid, int(mid) in _KOLLAJ))
+        elif amal == 'pochir_ha':
+            ok, izoh = post_ochir(mid)
+            if ok:
+                tugma({"inline_keyboard": []})
+                send_msg(admin_chat, f"🗑 Post o'chirildi ({POST_CHANNEL}, id {mid}) — {izoh} yana «kanalga chiqmagan» bo'ldi.")
+            else:
+                send_msg(admin_chat, f"❌ Post o'chmadi: <code>{html_escape(izoh)}</code>")
+    except Exception as e:
+        logger.error(f'post_ochir_tugma: {e}')
 
 
 def post_korinish(mid, kollaj):
@@ -2958,6 +3033,9 @@ async def handle_update(data):
             # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin lichkasi)
             if cq_data.startswith(('kollaj:', 'slayd:')) and cq_chat == ADMIN_ID:
                 asyncio.create_task(blok(kollaj_almashtir, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
+            # B34: «🗑 Postni o'chirish» (faqat admin lichkasi)
+            if cq_data.startswith('pochir') and cq_chat == ADMIN_ID:
+                asyncio.create_task(blok(post_ochir_tugma, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
             return
 
         if not chat_id:
@@ -2990,6 +3068,17 @@ async def handle_update(data):
             if chat_id != ADMIN_ID:
                 return
             await send_new_elons(chat_id, text)
+            return
+
+        # B34 (BUGUN42): demo saytni Telegram ICHIDA ochish tugmasi — «📣 Yuborish» (B29) initData bilan ishlaydi, oddiy
+        # brauzerda initData yo'q. Manzil faqat Render env DEMO_URL da (repo ochiq — demo havolasi kodga yozilmaydi).
+        if text.startswith('/demo') and chat_id == ADMIN_ID:
+            demo = os.environ.get('DEMO_URL', '').strip()
+            if not demo.startswith('https://'):
+                await blok(send_msg, chat_id, "DEMO_URL sozlanmagan (Render → Environment → DEMO_URL = demo sayt manzili, https://…).")
+            else:
+                await blok(send_msg, chat_id, "🧪 Demo sayt — Telegram ichida (admin):",
+                           {"inline_keyboard": [[{"text": "🧪 Demo'ni ochish", "web_app": {"url": demo}}]]})
             return
 
         # G11.0: Rich Message sinovi — faqat admin, faqat lichka + TEST kanal. Fonda (T1).
