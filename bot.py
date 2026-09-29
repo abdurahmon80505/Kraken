@@ -3020,11 +3020,44 @@ def inline_natija(elon, models):
                           for i, u in enumerate(rasmlar)],
             }},
         }
+    return _inline_karta(num, elon, model, sarlavha, izoh)
+
+
+def _inline_karta(num, elon, model, sarlavha=None, izoh=None):
+    """Rasmi hali yuklanmagan e'lon — article (ro'yxatda sarlavha + «narx · holat · №»).
+
+    BUGUN43 (2026-09-29): ilgari bu yerda _share_result (type=photo) qaytardi. Telegram ro'yxatida
+    photo natijaning title/description'i ko'rinmaydi — «Photo» deb chiqadi (pixel 8 pro, 1-natija).
+    Endi article: xabar matni — o'sha qisqa HTML, rasm — katta havola-ko'rinish, tugma — o'sha.
+    Ulashish (savePreparedInlineMessage) _share_result'ni o'zgarishsiz ishlatadi.
+    """
     karta = _share_result(num, elon, model)
-    if karta:
-        karta['title'] = sarlavha
-        karta['description'] = izoh
-    return karta
+    if not karta:
+        return None
+    if sarlavha is None:
+        nom = elon_nomi(elon, model, 'uz')
+        xotira = str(elon.get('storage') or '').strip()
+        rang = clean_color(elon.get('color') or '')
+        sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
+    if izoh is None:
+        narx = str(elon.get('price', '') or '').replace('.0', '')
+        cycle = str(elon.get('cycle', '') or '').replace('.0', '')
+        cond_uz, _r, _e = holati_matni(elon.get('condition', 'used') or 'used', cycle)
+        izoh = ' · '.join(x for x in ((f'{narx}$' if narx else ''), cond_uz, f'№{num}') if x)
+    return {
+        'type': 'article',
+        'id': karta['id'],
+        'title': sarlavha,
+        'description': izoh,
+        'thumbnail_url': karta['thumbnail_url'],
+        'input_message_content': {
+            'message_text': karta['caption'],
+            'parse_mode': 'HTML',
+            'link_preview_options': {'url': karta['photo_url'], 'prefer_large_media': True,
+                                     'show_above_text': True},
+        },
+        'reply_markup': karta['reply_markup'],
+    }
 
 
 def elon_cache_hammasi():
@@ -3055,7 +3088,7 @@ async def inline_javob(iq):
             await asyncio.sleep(0.25)
 
         natijalar = [n for n in (inline_natija(e, models) for e in sahifa) if n]
-        hammasi_rich = all(n.get('type') == 'article' for n in natijalar)
+        hammasi_rich = all('rich_message' in n.get('input_message_content', {}) for n in natijalar)
         r = await blok(req.post, f'{TG_API}/answerInlineQuery', json={
             'inline_query_id': iq.get('id'),
             'results': natijalar,
@@ -3065,7 +3098,7 @@ async def inline_javob(iq):
         }, timeout=15)
         # Rich natija rad etilsa (hali jonli sinalmagan) — ro'yxat bo'sh qolmasin: shu so'rovga faqat kartalar
         javob = r.json() if hasattr(r, 'json') else {}
-        if not javob.get('ok') and any(n.get('type') == 'article' for n in natijalar):
+        if not javob.get('ok') and not all(n.get('type') == 'photo' for n in natijalar):
             logger.error(f"inline rich rad etildi: {javob.get('description')} — kartalar bilan qayta")
             kartalar = [k for k in (_share_result(_num_int(e), e, (models or {}).get(str(e.get('specId', '') or ''), {}))
                                     for e in sahifa) if k]
