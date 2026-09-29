@@ -53,6 +53,108 @@ _photo_groups = {}
 # ── ELON YUBORISH ─────────────────────────────────────────
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
 
+# ── B33 (BUGUN42): admin xabarlari — alohida yopiq guruhda, mavzular (Topics) bo'yicha ──
+# Render env ADMIN_GURUH = "-1001234567890 post=12 olx=13 stat=14 mijoz=15 kollaj=16" — guruhda /guruh buyrug'i
+# mavzularni o'zi ochadi va shu qatorni yozib beradi. Env bo'sh — hammasi eskicha admin lichkasiga (ADMIN_ID).
+# Guruhdan faqat ADMIN_ID odamning xabari qabul qilinadi. Mijoz bilan yozishma o'zgarmaydi.
+GURUH_MAVZULAR = [('post', '📢 Postlar'), ('olx', '🛒 OLX'), ('stat', '📊 Statistika'),
+                  ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar')]
+
+
+def guruh_oqi(qator):
+    """"-100… post=12 …" → {'id': -100…, 'post': 12, …} yoki {} (buzuq / bo'sh)."""
+    q = (qator or '').split()
+    if not q or not re.fullmatch(r'-100\d{5,15}', q[0]):
+        return {}
+    g = {'id': int(q[0])}
+    for bolak in q[1:]:
+        k, _, v = bolak.partition('=')
+        if k in dict(GURUH_MAVZULAR) and v.isdigit():
+            g[k] = int(v)
+    return g
+
+
+def guruh_qator(g):
+    return ' '.join([str(g['id'])] + [f'{k}={g[k]}' for k, _ in GURUH_MAVZULAR if g.get(k)])
+
+
+GURUH = guruh_oqi(os.environ.get('ADMIN_GURUH', ''))
+
+
+class Joy(int):
+    """chat_id + mavzu (message_thread_id). int kabi ishlaydi (== , dict kaliti, JSON) — mavzu `req.post` da qo'shiladi."""
+    def __new__(cls, chat, thread=None):
+        o = super().__new__(cls, chat)
+        o.thread = thread
+        return o
+
+
+def admin_joy(bolim):
+    """Adminga xabar qayerga: guruh sozlangan bo'lsa — guruhning o'sha mavzusi, aks holda lichka (eskicha)."""
+    if GURUH.get('id'):
+        return Joy(GURUH['id'], GURUH.get(bolim))
+    return ADMIN_ID
+
+
+def admin_mi(chat_id):
+    """Admin buyruq/tugma joyi: lichka yoki sozlangan guruh (guruhda odam ADMIN_ID ekani handle_update da tekshiriladi)."""
+    return chat_id == ADMIN_ID or bool(GURUH.get('id')) and chat_id == GURUH['id']
+
+
+class _TgReq:
+    """`requests` o'rniga: send…/copy…/forward… so'rovida chat_id Joy (mavzuli) bo'lsa — message_thread_id qo'shiladi.
+    Mavzu o'chirilgan bo'lsa (400 «thread») — mavzusiz qayta yuboriladi (xabar yo'qolmasin)."""
+    def __init__(self, asl):
+        self._asl = asl  # asl `requests` moduli (req = _TgReq(req) dan keyin global req — shu obyekt)
+
+    def __getattr__(self, nom):
+        return getattr(self._asl, nom)
+
+    def post(self, url, **kw):
+        j = kw.get('json')
+        usul = url.rsplit('/', 1)[-1]
+        if (isinstance(j, dict) and getattr(j.get('chat_id'), 'thread', None)
+                and usul.startswith(('send', 'copy', 'forward')) and 'message_thread_id' not in j):
+            r = self._asl.post(url, **dict(kw, json=dict(j, message_thread_id=j['chat_id'].thread)))
+            if r.status_code == 400 and 'thread' in (r.text or '').lower():
+                logger.warning(f'mavzu {j["chat_id"].thread} topilmadi — mavzusiz yuborildi')
+                r = self._asl.post(url, **kw)
+            return r
+        return self._asl.post(url, **kw)
+
+
+req = _TgReq(req)
+
+
+def guruh_sozla(chat, forum, xabar_chat):
+    """/guruh (guruhda, admin): 5 mavzuni ochadi, GURUH ni xotirada yoqadi, env qatorini yozib beradi."""
+    global GURUH
+    if not forum:
+        send_msg(xabar_chat, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: guruh sozlamalari → Topics → yoqing, "
+                             "keyin /guruh ni qayta yuboring.")
+        return
+    if GURUH.get('id') == chat and all(GURUH.get(k) for k, _ in GURUH_MAVZULAR):
+        g = GURUH
+    else:
+        g = {'id': chat}
+        for k, nom in GURUH_MAVZULAR:
+            try:
+                j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
+            except Exception as e:
+                j = {'description': str(e)}
+            if not j.get('ok'):
+                send_msg(xabar_chat, f"⚠️ «{nom}» mavzusi ochilmadi: <code>{html_escape(str(j.get('description', '')))}</code>\n"
+                                     "Botni guruhga admin qiling va «Mavzularni boshqarish» huquqini bering, keyin /guruh.")
+                return
+            g[k] = j['result']['message_thread_id']
+        GURUH = g
+        for k, nom in GURUH_MAVZULAR:
+            send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
+    send_msg(xabar_chat, "✅ Guruh tayyor — hozirdan xabarlar shu yerga keladi (bot qayta ishga tushguncha).\n"
+                         "Doimiy bo'lishi uchun Render → Environment → <b>ADMIN_GURUH</b> = quyidagi qator "
+                         "(bosib nusxalang), keyin Manual Deploy:\n"
+                         f"<code>{guruh_qator(g)}</code>")
+
 # Premium emoji ID'lari (base emoji -> custom_emoji_id)
 PREMIUM = {
     'google': ('📱', '5330169502279690330'),   # G logo (sarlavha)
@@ -320,13 +422,13 @@ def kanal_xush_kelibsiz(cm):
         if not _xush['ishladi']:
             _xush['ishladi'] = True
             ism = html_escape(((cm.get('new_chat_member') or {}).get('user') or {}).get('first_name', '') or str(uid))
-            send_msg(ADMIN_ID, f"✅ Kanal xush kelibsiz ishladi: <b>{ism}</b> {kanal} ga qo'shildi — unga "
+            send_msg(admin_joy('mijoz'), f"✅ Kanal xush kelibsiz ishladi: <b>{ism}</b> {kanal} ga qo'shildi — unga "
                                f"«faqat o'ziga ko'rinadigan» xabar ketdi.")
         return 'yuborildi'
     logger.error(f'xush kelibsiz: {xato}')
     if hozir - _xush['xato_vaqt'].get(xato, 0) >= 600:
         _xush['xato_vaqt'][xato] = hozir
-        send_msg(ADMIN_ID, f"⚠️ Kanal xush kelibsiz yuborilmadi ({kanal}):\n<code>{html_escape(xato)}</code>")
+        send_msg(admin_joy('mijoz'), f"⚠️ Kanal xush kelibsiz yuborilmadi ({kanal}):\n<code>{html_escape(xato)}</code>")
     return 'xato'
 
 
@@ -1632,12 +1734,12 @@ def kanal_sinxron(eski, yangi):
             if mid:
                 ok, xato = kanal_ochir(num)
                 if not ok:
-                    send_msg(ADMIN_ID, f"⚠️ №{num} kanal posti o'chmadi: <code>{html_escape(xato)}</code>")
+                    send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti o'chmadi: <code>{html_escape(xato)}</code>")
             return 'ochir' if mid else ''
         if mid:
             ok, xato = kanal_tahrir(num)
             if not ok:
-                send_msg(ADMIN_ID, f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
+                send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
             return 'tahrir'
         if not _ELON_CACHE['time']:
             return ''   # xotira yuklanmagan — eskisi noma'lum, ehtiyot: avto-post yo'q
@@ -1646,9 +1748,9 @@ def kanal_sinxron(eski, yangi):
         if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR:
             mid, xato = kanal_post(num)
             if mid:
-                send_msg(ADMIN_ID, f"📣 №{num} kanalga chiqdi (id {mid}) — {POST_CHANNEL}", kollaj_tugma(mid))
+                send_msg(admin_joy('post'), f"📣 №{num} kanalga chiqdi (id {mid}) — {POST_CHANNEL}", kollaj_tugma(mid))
             else:
-                send_msg(ADMIN_ID, f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
+                send_msg(admin_joy('post'), f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
             return 'post'
         return ''
     except Exception as e:
@@ -3009,10 +3111,33 @@ async def handle_update(data):
         user = message.get('from', {})
         contact = message.get('contact')
 
+        # B33 (BUGUN42): guruhda /guruh (faqat admin) — mavzularni ochadi. Sozlangan guruhda faqat admin xabari qabul
+        # qilinadi; chat_id — mavzuli (Joy), javob o'sha mavzuga ketadi. Boshqa guruhlar — eskicha.
+        guruhdan = False
+        if message.get('chat', {}).get('type') in ('group', 'supergroup'):
+            buyruq = text.split(' ')[0].split('@')[0]
+            if buyruq == '/guruh':
+                if user.get('id') == ADMIN_ID:
+                    await blok(guruh_sozla, chat_id, bool(message['chat'].get('is_forum')),
+                               Joy(chat_id, message.get('message_thread_id')))
+                return
+            if GURUH.get('id') and chat_id == GURUH['id']:
+                if user.get('id') != ADMIN_ID:
+                    return
+                guruhdan = True
+                chat_id = Joy(chat_id, message.get('message_thread_id'))
+                if text.startswith('/') and '@' in text.split(' ')[0]:
+                    text = buyruq + text[len(text.split(' ')[0]):]
+        adm = chat_id == ADMIN_ID or guruhdan
+
         cq = data.get('callback_query', {})
         if cq:
-            cq_chat = cq.get('message', {}).get('chat', {}).get('id')
+            cq_msg = cq.get('message', {})
+            cq_chat = cq_msg.get('chat', {}).get('id')
             cq_user = cq.get('from', {})
+            cq_adm = cq_user.get('id') == ADMIN_ID and admin_mi(cq_chat)
+            if cq_adm and cq_chat != ADMIN_ID:
+                cq_chat = Joy(cq_chat, cq_msg.get('message_thread_id'))
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
@@ -3028,13 +3153,13 @@ async def handle_update(data):
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
             # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
-            if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_chat == ADMIN_ID:
+            if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_adm:
                 asyncio.create_task(blok(kanal_tasdiq, cq_chat, cq_data.split(':', 1)[1], cq_data.startswith('kanal_ok:')))
             # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin lichkasi)
-            if cq_data.startswith(('kollaj:', 'slayd:')) and cq_chat == ADMIN_ID:
+            if cq_data.startswith(('kollaj:', 'slayd:')) and cq_adm:
                 asyncio.create_task(blok(kollaj_almashtir, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
             # B34: «🗑 Postni o'chirish» (faqat admin lichkasi)
-            if cq_data.startswith('pochir') and cq_chat == ADMIN_ID:
+            if cq_data.startswith('pochir') and cq_adm:
                 asyncio.create_task(blok(post_ochir_tugma, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
             return
 
@@ -3043,7 +3168,7 @@ async def handle_update(data):
 
         # BUGUN10 §3b: admin «🔔 Yangi istak» xabariga reply qilsa — javob mijozga (rasm-e'lon yasashdan OLDIN
         # tekshiriladi: istakka rasm bilan javob chala e'lon bo'lib qolmasin). Buyruqlar (/…) — eski yo'lda. Fonda (T1).
-        if chat_id == ADMIN_ID and message.get('reply_to_message') and not text.startswith('/'):
+        if adm and message.get('reply_to_message') and not text.startswith('/'):
             manzil = istak_javob_manzil(message.get('reply_to_message'))
             if manzil:
                 asyncio.create_task(blok(istak_javob_yubor, chat_id, message, manzil))
@@ -3051,7 +3176,7 @@ async def handle_update(data):
 
         # ── ADMIN rasm yuborsa ──
         photo = message.get('photo')
-        if photo and chat_id == ADMIN_ID:
+        if photo and adm:
             largest = photo[-1]  # eng katta o'lcham
             file_id = largest.get('file_id', '')
             mgid = message.get('media_group_id')
@@ -3065,14 +3190,14 @@ async def handle_update(data):
             return
 
         if text.startswith('/yubor') or text.startswith('/elon'):
-            if chat_id != ADMIN_ID:
+            if not adm:
                 return
             await send_new_elons(chat_id, text)
             return
 
         # B34 (BUGUN42): demo saytni Telegram ICHIDA ochish tugmasi — «📣 Yuborish» (B29) initData bilan ishlaydi, oddiy
         # brauzerda initData yo'q. Manzil faqat Render env DEMO_URL da (repo ochiq — demo havolasi kodga yozilmaydi).
-        if text.startswith('/demo') and chat_id == ADMIN_ID:
+        if text.startswith('/demo') and adm:
             demo = os.environ.get('DEMO_URL', '').strip()
             if not demo.startswith('https://'):
                 await blok(send_msg, chat_id, "DEMO_URL sozlanmagan (Render → Environment → DEMO_URL = demo sayt manzili, https://…).")
@@ -3082,7 +3207,7 @@ async def handle_update(data):
             return
 
         # G11.0: Rich Message sinovi — faqat admin, faqat lichka + TEST kanal. Fonda (T1).
-        if text.startswith('/richtest') and chat_id == ADMIN_ID:
+        if text.startswith('/richtest') and adm:
             m_num = re.search(r'\d{1,6}', text)
             if not m_num:
                 await blok(send_msg, chat_id, "Foydalanish: /richtest 248")
@@ -3091,7 +3216,7 @@ async def handle_update(data):
             return
 
         # G11.2: kanal buyruqlari (admin). Fonda (T1).
-        if chat_id == ADMIN_ID and text.split(' ')[0] in ('/toplam', '/katalog', '/post', '/yana', '/postochir'):
+        if adm and text.split(' ')[0] in ('/toplam', '/katalog', '/post', '/yana', '/postochir'):
             cmd = text.split(' ')[0]
             m_num = re.search(r'\d{1,6}', text[len(cmd):])
             if cmd == '/toplam':
@@ -3105,11 +3230,11 @@ async def handle_update(data):
             return
 
         # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
-        if text.startswith('/stat') and chat_id == ADMIN_ID:
+        if text.startswith('/stat') and adm:
             asyncio.create_task(handle_stat(chat_id, text))
             return
 
-        if text.startswith('/tozala') and chat_id == ADMIN_ID:
+        if text.startswith('/tozala') and adm:
             # Fonda ishlaydi — Telegram javobni kutmasin (aks holda buyruqni qayta yuboradi)
             asyncio.create_task(handle_tozala(chat_id, text))
             return
@@ -3125,13 +3250,13 @@ async def handle_update(data):
         elif text == '/konkurs':
             # ADMIN: sovrin rasmi yig'ish rejimi (hech narsa demay rasm kutadi).
             # Oddiy mijoz: konkursda qatnashish flow'i.
-            if chat_id == ADMIN_ID:
+            if adm:
                 user_states[chat_id] = {'step': 'konkurs_photo'}
                 # Javob matni YO'Q — bot jimgina rasm kutadi (docx #9)
             else:
                 await start_konkurs_flow(chat_id, user)
 
-        elif text == '/konkursyuborish' and chat_id == ADMIN_ID:
+        elif text == '/konkursyuborish' and adm:
             # ADMIN: aktiv konkurs anonsini kanalga yuboradi.
             _konkurs_cache['time'] = 0
             k = await blok(get_konkurs)
@@ -3183,7 +3308,7 @@ async def handle_update(data):
                 await blok(send_konkurs_channel_post, CHANNEL, anons, pics, markup)
                 await blok(send_msg, chat_id, "✅ Konkurs anonsi kanalga yuborildi!")
 
-        elif text == '/konkurstimer' and chat_id == ADMIN_ID:
+        elif text == '/konkurstimer' and adm:
             # Admin zaxira: aktiv konkurs timerini qayta o'rnatadi + holatni ko'rsatadi
             _konkurs_cache['time'] = 0
             k = await blok(get_konkurs)
@@ -3219,7 +3344,7 @@ async def handle_update(data):
             elif _phone_ok(text) and await tiklash_holati(chat_id, user):
                 # E3: mijoz raqamni QO'LDA yozgan (tugmasiz) va aktiv konkurs bor
                 await handle_phone(chat_id, text, user)
-            else:
+            elif not guruhdan:   # B33: guruhda (admin o'zi yozgan izoh) — jim
                 # E4: noma'lum xabar — ilgari bot umuman javob bermasdi
                 await blok(send_msg, chat_id, NOMALUM_XABAR, START_KB)
     except Exception as e:
@@ -3526,7 +3651,7 @@ async def publish_endpoint(request):
         if not num:
             return web.json_response({'error': 'No num'}, status=400)
         asyncio.get_event_loop().run_in_executor(
-            None, preview_elon_to_admin, num, ADMIN_ID)
+            None, preview_elon_to_admin, num, admin_joy('olx'))
         return web.json_response({'ok': True})
     except Exception as e:
         logger.error(f'publish_endpoint: {e}')
@@ -3782,7 +3907,7 @@ async def kanal_post_endpoint(request):
         if not mid:
             return web.json_response({'ok': False, 'error': xato})
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
-        await blok(send_msg, ADMIN_ID, f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {POST_CHANNEL}", kollaj_tugma(mid))
+        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {POST_CHANNEL}", kollaj_tugma(mid))
         return web.json_response({'ok': True, 'mid': mid, 'kanal': POST_CHANNEL})
     except Exception as e:
         logger.error(f'kanal_post_endpoint: {e}')
@@ -3809,7 +3934,7 @@ async def kanal_toplam_endpoint(request):
         izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {POST_CHANNEL}"
         if otkazildi:
             izoh += "\n⏭ O'tkazildi: " + ', '.join(f"№{o['num']} ({html_escape(o['sabab'])})" for o in otkazildi)
-        await blok(send_msg, ADMIN_ID, izoh, kollaj_tugma(mid))
+        await blok(send_msg, admin_joy('post'), izoh, kollaj_tugma(mid))
         return web.json_response({'ok': True, 'mid': mid, 'kanal': POST_CHANNEL, 'nums': yuborildi, 'otkazildi': otkazildi})
     except Exception as e:
         logger.error(f'kanal_toplam_endpoint: {e}')
