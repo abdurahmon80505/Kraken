@@ -107,7 +107,18 @@ ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
 # mavzularni o'zi ochadi va shu qatorni yozib beradi. Env bo'sh — hammasi eskicha admin lichkasiga (ADMIN_ID).
 # Guruhdan faqat ADMIN_ID odamning xabari qabul qilinadi. Mijoz bilan yozishma o'zgarmaydi.
 GURUH_MAVZULAR = [('post', '📢 Postlar'), ('olx', '🛒 OLX'), ('stat', '📊 Statistika'),
-                  ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar')]
+                  ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar'),
+                  # MS3.2 (BUGUN56, 2026-10-08): rasm yuklash — har bo'limga o'z mavzusi. Shu mavzuga tashlangan rasm(lar)dan
+                  # chala e'lon yaratiladi va javobdagi tugma saytni o'sha bo'limda ochadi. Lichkadan — avvalgidek (Mobile).
+                  ('rasm_mobile', '📱 Rasm · Mobile'), ('rasm_pc', '💻 Rasm · PC'), ('rasm_camera', '📷 Rasm · Camera')]
+
+
+def rasm_yonalish(joy):
+    """Admin rasmi qaysi bo'limga: guruhning «Rasm · …» mavzusidan — o'sha yo'nalish; boshqa joydan — None (avvalgidek)."""
+    thread = getattr(joy, 'thread', None)
+    if not thread or not GURUH.get('id') or int(joy) != GURUH['id']:
+        return None
+    return next((k[5:] for k, _ in GURUH_MAVZULAR if k.startswith('rasm_') and GURUH.get(k) == thread), None)
 
 
 def guruh_oqi(qator):
@@ -176,7 +187,8 @@ req = _TgReq(req)
 
 
 def guruh_sozla(chat, forum, xabar_chat):
-    """/guruh (guruhda, admin): 5 mavzuni ochadi, GURUH ni xotirada yoqadi, env qatorini yozib beradi."""
+    """/guruh (guruhda, admin): mavzularni ochadi, GURUH ni xotirada yoqadi, env qatorini yozib beradi.
+    MS3.2: guruh allaqachon sozlangan bo'lsa — faqat YO'Q mavzular ochiladi (eskilari takrorlanmaydi)."""
     global GURUH
     if not forum:
         send_msg(xabar_chat, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: guruh sozlamalari → Topics → yoqing, "
@@ -185,8 +197,9 @@ def guruh_sozla(chat, forum, xabar_chat):
     if GURUH.get('id') == chat and all(GURUH.get(k) for k, _ in GURUH_MAVZULAR):
         g = GURUH
     else:
-        g = {'id': chat}
-        for k, nom in GURUH_MAVZULAR:
+        g = dict(GURUH) if GURUH.get('id') == chat else {'id': chat}
+        yangi = [(k, nom) for k, nom in GURUH_MAVZULAR if not g.get(k)]
+        for k, nom in yangi:
             try:
                 j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
             except Exception as e:
@@ -197,8 +210,9 @@ def guruh_sozla(chat, forum, xabar_chat):
                 return
             g[k] = j['result']['message_thread_id']
         GURUH = g
-        for k, nom in GURUH_MAVZULAR:
-            send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
+        for k, nom in yangi:
+            send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga rasm tashlang: chala e'lon shu bo'limga yaratiladi."
+                     if k.startswith('rasm_') else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
     send_msg(xabar_chat, "✅ Guruh tayyor — hozirdan xabarlar shu yerga keladi (bot qayta ishga tushguncha).\n"
                          "Doimiy bo'lishi uchun Render → Environment → <b>ADMIN_GURUH</b> = quyidagi qator "
                          "(bosib nusxalang), keyin Manual Deploy:\n"
@@ -2900,8 +2914,9 @@ def upload_to_imagekit(file_id):
         return tg_url  # fallback
 
 
-def create_bot_elon(file_ids):
-    """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets."""
+def create_bot_elon(file_ids, yonalish=None):
+    """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets.
+    yonalish (MS3.2) — Apps Script'ga ham boradi (hozir yozilmaydi — ustun yo'q; e'lon yo'nalishi modeldan)."""
     urls = []
     for fid in file_ids:
         u = upload_to_imagekit(fid)
@@ -2910,7 +2925,7 @@ def create_bot_elon(file_ids):
     if not urls:
         return None
     try:
-        payload = urllib.parse.quote(json.dumps({'images': urls}))
+        payload = urllib.parse.quote(json.dumps(dict({'images': urls}, **({'yonalish': yonalish} if yonalish else {}))))
         r = req.get(f'{SHEET_URL}?action=botCreateElon&data={payload}', timeout=20)
         res = r.json()
         return res if res.get('ok') else None
@@ -2925,20 +2940,8 @@ def finalize_photo_group(mgid, chat_id):
     if not grp:
         return
     file_ids = grp.get('file_ids', [])
-    res = create_bot_elon(file_ids)
-    if res:
-        num = res.get('num', '?')
-        cnt = res.get('images', len(file_ids))
-        send_msg(chat_id,
-            f"✅ Yangi elon yaratildi: <b>№{num}</b>\n"
-            f"📸 {cnt} ta rasm saqlandi.\n\n"
-            f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
-            keyboard={"inline_keyboard": [[{
-                "text": "🛠 Admin panel / Saytga kirish",
-                "web_app": {"url": SAYT_URL}
-            }]]})
-    else:
-        send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+    res = create_bot_elon(file_ids, grp.get('yonalish'))
+    _elon_tayyor_xabar(chat_id, res, (res or {}).get('images', len(file_ids)), grp.get('yonalish'))
 
 
 async def handle_konkurs_photo(chat_id, file_id, media_group_id=None):
@@ -3021,12 +3024,13 @@ def _save_konkurs_photos(chat_id, file_ids):
 
 async def handle_admin_photo(chat_id, file_id, media_group_id):
     """Admin rasm yuborsa — chala elon yaratadi.
-    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi."""
+    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi.
+    MS3.2: guruhning «Rasm · …» mavzusidan kelsa — e'lon o'sha bo'limniki (rasm_yonalish)."""
     if media_group_id:
         # Albom: rasmlarni yig'amiz, 2 sekund kutib, keyin bitta elon qilamiz
         grp = _photo_groups.get(media_group_id)
         if not grp:
-            grp = {'file_ids': [], 'chat_id': chat_id}
+            grp = {'file_ids': [], 'chat_id': chat_id, 'yonalish': rasm_yonalish(chat_id)}
             _photo_groups[media_group_id] = grp
         grp['file_ids'].append(file_id)
         # Oldingi taymer bo'lsa bekor qilamiz, yangisini o'rnatamiz
@@ -3044,19 +3048,25 @@ async def handle_admin_photo(chat_id, file_id, media_group_id):
 
 
 def _single_photo_elon(chat_id, file_id):
-    res = create_bot_elon([file_id])
-    if res:
-        num = res.get('num', '?')
-        send_msg(chat_id,
-            f"✅ Yangi elon yaratildi: <b>№{num}</b>\n"
-            f"📸 1 ta rasm saqlandi.\n\n"
-            f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
-            keyboard={"inline_keyboard": [[{
-                "text": "🛠 Admin panel / Saytga kirish",
-                "web_app": {"url": SAYT_URL}
-            }]]})
-    else:
+    yon = rasm_yonalish(chat_id)
+    _elon_tayyor_xabar(chat_id, create_bot_elon([file_id], yon), 1, yon)
+
+
+def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
+    """Chala e'lon yaratildi / xato — admin javobi. MS3.2: bo'lim mavzusidan — nomi va sayt o'sha bo'limda ochiladi (?p=y_pc)."""
+    if not res:
         send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+        return
+    num = res.get('num', '?')
+    bolim = f" · {YON_KANAL[yon][0]}" if yon in YON_KANAL else ''
+    send_msg(chat_id,
+        f"✅ Yangi elon yaratildi: <b>№{num}</b>{bolim}\n"
+        f"📸 {cnt} ta rasm saqlandi.\n\n"
+        f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+        keyboard={"inline_keyboard": [[{
+            "text": "🛠 Admin panel / Saytga kirish",
+            "web_app": {"url": SAYT_URL + (f'?p=y_{yon}' if yon in YON_KANAL else '')}
+        }]]})
 
 
 # ══════════════════════════════════════════════════════════════════════════
