@@ -19,8 +19,9 @@ PORT = int(os.environ.get('PORT', 8080))
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
 # Kanal ID — Render'dan CHANNEL_ID env orqali o'zgartiriladi.
 # Test paytida:  CHANNEL_ID=@Kraken_mobile_test  (Render dashboard'ga qo'shasan)
-# Testdan keyin: env'ni o'chirasan yoki @Kraken_mobile qilasan → asosiy kanalga qaytadi.
-CHANNEL = os.environ.get('CHANNEL_ID', '@Kraken_mobile')
+# Testdan keyin: env'ni o'chirasan yoki @nuqta_tech_mobile qilasan → asosiy kanalga qaytadi.
+# 2026-10-08 (BUGUN56): Mobile kanal manzili @Kraken_mobile → @nuqta_tech_mobile (foydalanuvchi o'zgartirdi; eskisi endi bo'sh).
+CHANNEL = os.environ.get('CHANNEL_ID', '@nuqta_tech_mobile')
 # G11.0: SINOV kanali — /richtest faqat shu yerga va admin lichkasiga yuboradi.
 # ASOSIY KANALGA (CHANNEL) sinov xabari HECH QACHON KETMAYDI (foydalanuvchi:
 # «hozir rasvo qiladi-ku… faqat lichkamga… test kanaliga yuborsin»).
@@ -66,12 +67,13 @@ BREND = 'Nuqta tech'
 # «Yangi raqam — yangi postlarning rich text'ida; admin — @nuqta_tech_admin; postdagi kanal havolasi — e'lon qaysi
 # bo'limdan yuborilgan bo'lsa, o'sha kanal nomi va havolasi». Qiymatlar sayt `01-sozlama.js` KONTAKT bilan bir xil.
 # Kod o'zgarmasdan env bilan almashadi: ADMIN_USERNAME, ALOQA_TEL, KANAL_MOBILE / KANAL_PC / KANAL_CAMERA (@ siz ham bo'ladi).
-# 🔴 @nuqta_tech_admin Telegram'da hali yo'q bo'lsa — merge'dan oldin env ADMIN_USERNAME=Krakens_admin (aks holda tugma ochilmaydi).
+# ✅ 2026-10-08: @nuqta_tech_admin, @nuqta_tech_PC, @nuqta_tech_camera — Telegram'da bor (G2, G3; MS2 — «PC» katta harf bilan).
+# Guruhlar (…_chat) bot matnlariga qo'yilmaydi — G1: hozir faqat izoh uchun, a'zo 100 dan oshgach.
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'nuqta_tech_admin').strip().lstrip('@')
 ALOQA_TEL = os.environ.get('ALOQA_TEL', '+998 99 500 00 96').strip()
 YON_KANAL = {   # yo'nalish kaliti (jadval «Yo'nalishlar») → (kanal nomi K5, username K10)
     'mobile': (f'{BREND} · Mobile', os.environ.get('KANAL_MOBILE', 'nuqta_tech_mobile').strip().lstrip('@')),
-    'pc': (f'{BREND} · PC', os.environ.get('KANAL_PC', 'nuqta_tech_pc').strip().lstrip('@')),
+    'pc': (f'{BREND} · PC', os.environ.get('KANAL_PC', 'nuqta_tech_PC').strip().lstrip('@')),
     'camera': (f'{BREND} · Camera', os.environ.get('KANAL_CAMERA', 'nuqta_tech_camera').strip().lstrip('@')),
 }
 
