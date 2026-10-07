@@ -29,7 +29,23 @@ TEST_CHANNEL = os.environ.get('TEST_CHANNEL_ID', '@Kraken_mobile_test')
 CHANNEL_USERNAME = CHANNEL.lstrip('@')
 CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
-BOT_USERNAME = 'kraken_mobile_shop_bot'
+# Bot manzili (@username) — BITTA joy, kodda boshqa joyda yozilmaydi (2026-10-07, R1.4 b: yangi bot «Nuqta tech Store»
+# @nuqta_tech_store_bot). Tartib: Render env BOT_USERNAME (qo'lda) → bo'lmasa — BOT_TOKEN egasi (Telegram getMe, ishga
+# tushganda bir marta) → bo'lmasa — eski bot. Ya'ni chiqarish kuni Render'da faqat BOT_TOKEN almashadi, manzil o'zi to'g'rilanadi.
+def _bot_manzili():
+    env = os.environ.get('BOT_USERNAME', '').strip().lstrip('@')
+    if env:
+        return env
+    if BOT_TOKEN:
+        try:
+            j = req.get(f'{TG_API}/getMe', timeout=8).json()
+            if j.get('ok') and (j.get('result') or {}).get('username'):
+                return j['result']['username']
+            logger.error(f'getMe: {j}')
+        except Exception as e:
+            logger.error(f'getMe: {e}')
+    return 'kraken_mobile_shop_bot'
+BOT_USERNAME = _bot_manzili()
 SHEET_URL = os.environ.get('SHEET_URL', '')
 # ADMIN_USERNAME — pastda, «ALOQA» blokida (2026-10-07)
 
@@ -4222,7 +4238,7 @@ async def main():
     except Exception as e:
         logger.error(f'init elon_cache: {e}')
     asyncio.create_task(elon_cache_loop())   # kuniga bir marta ehtiyot yuklash
-    logger.info(f'Started on port {PORT}')
+    logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
     while True:
         await asyncio.sleep(3600)
 
