@@ -1277,6 +1277,19 @@ def richtest(admin_chat, num):
 #  🔴 Eski 93 e'lon (id yo'q) hech qachon o'z-o'zidan postlanmaydi — faqat G11.4 (/hammasini_yubor).
 # ══════════════════════════════════════════════════════════════════════════
 POST_CHANNEL = os.environ.get('POST_CHANNEL_ID', TEST_CHANNEL)
+# MS3.1 (BUGUN56, 2026-10-08): yo'nalish → o'z kanali. «mobile, pc» e'lon IKKALA kanalga bir xil post bo'ladi.
+# env POST_KANALLAR = "mobile=@nuqta_tech_mobile pc=@nuqta_tech_PC camera=@nuqta_tech_camera" (yoki -100… raqam).
+# Env yo'q — hamma yo'nalish POST_CHANNEL'ga, bitta post (avvalgidek). Yozilmagan yo'nalish — POST_CHANNEL.
+# channel_message_id: «123» — eski (POST_CHANNEL'dagi bitta post) yoki «mobile:123 pc:45» — har kanaldagi post.
+# To'plam va katalog postlari — avvalgidek faqat POST_CHANNEL.
+POST_KANALLAR = {k.strip().lower(): v.strip() for k, _, v in
+                 (x.partition('=') for x in re.split(r'[\s,;]+', os.environ.get('POST_KANALLAR', '')) if '=' in x)
+                 if k.strip() and v.strip()}
+
+
+def post_kanal(yon):
+    """Yo'nalish posti qaysi kanalga (POST_KANALLAR → POST_CHANNEL)."""
+    return POST_KANALLAR.get(str(yon or '').strip().lower()) or POST_CHANNEL
 AVTO_POST_TURLAR = ('phone', 'camera')
 TOPLAM_TURLAR = ('accessory', 'case', 'part')
 TUR_NOMI = {'phone': ('📱', 'Smartfonlar', 'Смартфоны'), 'camera': ('📷', 'Kameralar', 'Камеры'),
@@ -1320,12 +1333,35 @@ def post_yonalish(elon, models_by_id, tanlangan=None, mid=None):
 
 
 def kanal_msg_id(elon):
-    """channel_message_id (Sheets'da matn/son) → int yoki None."""
-    try:
-        v = str((elon or {}).get('channel_message_id', '') or '').strip()
-        return int(float(v)) if v else None
-    except Exception:
-        return None
+    """channel_message_id (Sheets'da matn/son) → int yoki None. «mobile:123 pc:45» — birinchisi (asosiy post)."""
+    p = kanal_postlar(elon)
+    return p[0][2] if p else None
+
+
+def kanal_postlar(elon):
+    """channel_message_id → [(yo'nalish yoki None, kanal, mid)]. «123» → [(None, POST_CHANNEL, 123)];
+    «mobile:123 pc:45» → [('mobile', kanal, 123), ('pc', kanal, 45)] (MS3.1)."""
+    v = str((elon or {}).get('channel_message_id', '') or '').strip()
+    if not v:
+        return []
+    if ':' not in v:
+        try:
+            return [(None, POST_CHANNEL, int(float(v)))]
+        except Exception:
+            return []
+    out = []
+    for qism in re.split(r'[\s,;]+', v):
+        y, _, m = qism.partition(':')
+        if y.strip() and re.fullmatch(r'\d{1,12}', m.strip()):
+            out.append((y.strip().lower(), post_kanal(y), int(m)))
+    return out
+
+
+def kanal_id_matn(postlar):
+    """[(yo'nalish, mid)] → Sheets qiymati: bitta post POST_CHANNEL'da — 123 (eski ko'rinish), aks holda «mobile:123 pc:45»."""
+    if len(postlar) == 1 and post_kanal(postlar[0][0]) == POST_CHANNEL:
+        return int(postlar[0][1])
+    return ' '.join(f'{y}:{int(m)}' for y, m in postlar)
 
 
 def kop_donali(elon):
@@ -1365,12 +1401,14 @@ def _sheets_update(payload):
 
 
 def kanal_id_yoz(num, mid):
-    """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash."""
-    ok = _sheets_update({'num': int(num), 'channel_message_id': int(mid) if mid else ''})
+    """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash.
+    mid — son yoki «mobile:123 pc:45» matni (MS3.1)."""
+    qiymat = '' if not mid else (mid if isinstance(mid, str) and ':' in mid else int(mid))
+    ok = _sheets_update({'num': int(num), 'channel_message_id': qiymat})
     with _elon_cache_lock:
         e = _ELON_CACHE['by_num'].get(str(num))
         if e is not None:
-            e['channel_message_id'] = int(mid) if mid else ''
+            e['channel_message_id'] = qiymat
     if not ok:
         logger.error(f'kanal_id_yoz: №{num} id {mid} Sheets ga yozilmadi')
     return ok
@@ -1504,12 +1542,27 @@ def kanal_post(num, yonalish=None):
     if elon_status(elon) in ('deleted', 'waited'):
         return None, "chala yoki o'chirilgan e'lon postlanmaydi"
     yon = post_yonalish(elon, models, tanlangan=yonalish)
-    html = build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)
-    mid, xato = send_rich(POST_CHANNEL, html)
-    if not mid:
-        return None, xato
-    _POST_YON[int(mid)] = yon
-    kanal_id_yoz(num, mid)
+    # MS3.1: e'lonning har yo'nalishi o'z kanaliga (saytda tanlangani birinchi — asosiy post). Kanal bir xil — bitta post
+    yonlar = [yon] + [y for y in elon_yonalishlar(elon, models) if y in YON_KANAL and y != yon]
+    postlar, xatolar, kanallar = [], [], set()
+    for y in yonlar:
+        chat = post_kanal(y)
+        if chat in kanallar:
+            continue
+        kanallar.add(chat)
+        m, x = send_rich(chat, build_rich_html(elon, models, premium=False, belgi=True, yonalish=y))
+        if m:
+            postlar.append((y, int(m)))
+            _POST_YON[int(m)] = y
+        else:
+            xatolar.append(f'{chat}: {x}')
+            logger.error(f'kanal_post №{num} → {chat}: {x}')
+    if not postlar:
+        return None, '; '.join(xatolar)
+    mid = postlar[0][1]
+    kanal_id_yoz(num, kanal_id_matn(postlar))
+    if xatolar:
+        send_msg(admin_joy('post'), f"⚠️ №{num} ba'zi kanalga chiqmadi: <code>{html_escape('; '.join(xatolar))}</code>")
     # A26: e'lon kanalga chiqdi — OLX bo'limiga matn + belgili albom (fonda: sayt / buyruq javobi kutib qolmasin)
     threading.Thread(target=olx_albom, args=(num,), daemon=True).start()
     return mid, ''
@@ -1526,8 +1579,14 @@ def kanal_tahrir(num):
     if toplam_postmi(elon, models):
         return toplam_tahrir(mid)
     # A26: tahrirda ham suv belgisi (joyi o'zgargan bo'lsa — yangi joyda). editMessageText — bildirishnomasiz
-    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
-                                                        yonalish=post_yonalish(elon, models, mid=mid)))
+    # MS3.1: har kanaldagi posti (yo'nalishi o'ziniki); kollaj — asosiy post bo'yicha
+    natija = (True, '')
+    for y, chat, m in kanal_postlar(elon):
+        ok, xato = edit_rich(chat, m, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
+                                                      yonalish=y or post_yonalish(elon, models, mid=m)))
+        if not ok and natija[0]:
+            natija = (False, xato)
+    return natija
 
 
 def olx_albom(num, jim=False):
@@ -1576,10 +1635,18 @@ def kanal_ochir(num):
     if toplam_postmi(elon, models):
         kanal_id_yoz(num, None)
         return toplam_tahrir(mid)
-    ok, xato = delete_msg(POST_CHANNEL, mid)
-    if ok:
+    qoldi, xato = [], ''   # MS3.1: hamma kanaldagi posti; o'chmagani id'da qoladi
+    for y, chat, m in kanal_postlar(elon):
+        ok, x = delete_msg(chat, m)
+        if not ok:
+            qoldi.append((y, m))
+            xato = xato or x
+    if not qoldi:
         kanal_id_yoz(num, None)
-    return ok, xato
+        return True, ''
+    if qoldi[0][0] and len(qoldi) < len(kanal_postlar(elon)):
+        kanal_id_yoz(num, ' '.join(f'{y}:{m}' for y, m in qoldi))
+    return False, xato
 
 
 def kanal_yana_keldi(num, yonalish=None):
@@ -1590,7 +1657,8 @@ def kanal_yana_keldi(num, yonalish=None):
     mid = kanal_msg_id(elon)
     toplamda = bool(mid) and toplam_postmi(elon, models)
     if mid and not toplamda:
-        delete_msg(POST_CHANNEL, mid)   # o'chmasa ham yangisi ketadi
+        for _, chat, m in kanal_postlar(elon):   # MS3.1: hamma kanaldagisi
+            delete_msg(chat, m)   # o'chmasa ham yangisi ketadi
     yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
     if yangi and toplamda:
         toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
@@ -1766,9 +1834,16 @@ def post_ochir(mid):
     id bo'shlarini yuboradi). (True, 'N ta e'lon') / (False, sabab)."""
     mid = int(mid)
     items, _ = _mid_elonlar(mid, hammasi=True)
-    ok, xato = delete_msg(POST_CHANNEL, mid)
-    if not ok:
-        return False, xato
+    postlar = kanal_postlar(items[0]) if len(items) == 1 else []
+    if postlar and postlar[0][0]:
+        for _, chat, m in postlar:   # MS3.1: yo'nalish kanallaridagi hamma posti
+            ok, xato = delete_msg(chat, m)
+            if not ok:
+                return False, xato
+    else:
+        ok, xato = delete_msg(POST_CHANNEL, mid)
+        if not ok:
+            return False, xato
     _KOLLAJ.discard(mid)
     for e in items:
         kanal_id_yoz(int(float(e.get('num', 0) or 0)), None)
@@ -1810,8 +1885,7 @@ def post_korinish(mid, kollaj):
     if len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR:
         ok, xato = edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models, kollaj=kollaj))
     else:
-        ok, xato = edit_rich(POST_CHANNEL, mid, build_rich_html(items[0], models, premium=False, kollaj=kollaj, belgi=True,
-                                                                yonalish=post_yonalish(items[0], models, mid=mid)))
+        ok, xato = kanal_tahrir(int(float(items[0].get('num', 0) or 0)))   # MS3.1: hamma kanaldagi posti
     if not ok:
         (_KOLLAJ.add if eski else _KOLLAJ.discard)(mid)
     return ok, xato
