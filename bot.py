@@ -31,7 +31,7 @@ CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 BOT_USERNAME = 'kraken_mobile_shop_bot'
 SHEET_URL = os.environ.get('SHEET_URL', '')
-ADMIN_USERNAME = 'Krakens_admin'
+# ADMIN_USERNAME — pastda, «ALOQA» blokida (2026-10-07)
 
 # Apps Script maxfiy kaliti. Mijoz telefon raqamlari (getParticipants) endi faqat
 # shu kalit bilan beriladi — brauzerdan (saytdan) so'ralsa bo'sh qaytadi.
@@ -43,8 +43,21 @@ IK_PRIVATE_KEY = os.environ.get('IK_PRIVATE_KEY', 'private_uRjC2/psPBQPc5fAhmshb
 IK_UPLOAD_URL = 'https://upload.imagekit.io/api/v1/files/upload'
 
 # ── REBRENDING (A5, 2026-10-06): brend nomi — mijozga ko'rinadigan bot matnlari shundan oladi ──
-# Kanal / bot / admin username'lari — yuqoridagi CHANNEL (env CHANNEL_ID), BOT_USERNAME, ADMIN_USERNAME.
+# Kanal / bot username'lari — yuqoridagi CHANNEL (env CHANNEL_ID), BOT_USERNAME; admin, raqam — pastdagi ALOQA.
 BREND = 'Nuqta tech'
+
+# ── ALOQA (2026-10-07, foydalanuvchi): kanal postidagi raqam, admin va yo'nalish kanallari — BITTA joy ──
+# «Yangi raqam — yangi postlarning rich text'ida; admin — @nuqta_tech_admin; postdagi kanal havolasi — e'lon qaysi
+# bo'limdan yuborilgan bo'lsa, o'sha kanal nomi va havolasi». Qiymatlar sayt `01-sozlama.js` KONTAKT bilan bir xil.
+# Kod o'zgarmasdan env bilan almashadi: ADMIN_USERNAME, ALOQA_TEL, KANAL_MOBILE / KANAL_PC / KANAL_CAMERA (@ siz ham bo'ladi).
+# 🔴 @nuqta_tech_admin Telegram'da hali yo'q bo'lsa — merge'dan oldin env ADMIN_USERNAME=Krakens_admin (aks holda tugma ochilmaydi).
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'nuqta_tech_admin').strip().lstrip('@')
+ALOQA_TEL = os.environ.get('ALOQA_TEL', '+998 99 500 00 96').strip()
+YON_KANAL = {   # yo'nalish kaliti (jadval «Yo'nalishlar») → (kanal nomi K5, username K10)
+    'mobile': (f'{BREND} · Mobile', os.environ.get('KANAL_MOBILE', 'nuqta_tech_mobile').strip().lstrip('@')),
+    'pc': (f'{BREND} · PC', os.environ.get('KANAL_PC', 'nuqta_tech_pc').strip().lstrip('@')),
+    'camera': (f'{BREND} · Camera', os.environ.get('KANAL_CAMERA', 'nuqta_tech_camera').strip().lstrip('@')),
+}
 
 # ── A26 / B36: SUV BELGISI — kanal posti va OLX albomi rasmlariga logo (ImageKit overlay, rasm qayta ishlanmaydi) ──
 # Logo ImageKit'da bir marta yuklangan: kraken/nuqta-tech_avatar-yashil.png (2026-10-06). Doira (r-max), 50% shaffof,
@@ -336,13 +349,13 @@ def send_start(chat_id):
 XUSH_KANALLAR = tuple(os.environ.get('XUSH_KANALLAR', '').split()) or (TEST_CHANNEL,)
 # ── B38 (K9 = ha, K10 = a, K12 = b — «Do'kon» tugmasi YO'Q): HUB — tech kanal ──
 # Mijozga faqat «Nuqta tech» aytiladi → tech kanalga kiradi → bot FAQAT unga ko'rinadigan xabar: 3 yo'nalish tugmasi.
-# env TECH_KANAL_ID (@nuqta_tech yoki -100…) — bo'sh bo'lsa hub o'chiq. Yo'nalish kanallari manzili — env KANAL_MOBILE /
-# KANAL_CAMERA / KANAL_PC (username, @ siz); sukut — K10 manzillari. Sinov: TECH_KANAL_ID = TEST kanal.
+# env TECH_KANAL_ID (@nuqta_tech yoki -100…) — bo'sh bo'lsa hub o'chiq. Yo'nalish kanallari manzili — yuqoridagi YON_KANAL
+# (env KANAL_MOBILE / KANAL_CAMERA / KANAL_PC); sukut — K10 manzillari. Sinov: TECH_KANAL_ID = TEST kanal.
 TECH_KANAL = os.environ.get('TECH_KANAL_ID', '').strip()
 HUB_YONALISHLAR = (
-    ('📱 Smartfon', os.environ.get('KANAL_MOBILE', 'nuqta_tech_mobile').lstrip('@')),
-    ('📷 Kamera', os.environ.get('KANAL_CAMERA', 'nuqta_tech_camera').lstrip('@')),
-    ('💻 PC', os.environ.get('KANAL_PC', 'nuqta_tech_pc').lstrip('@')),
+    ('📱 Smartfon', YON_KANAL['mobile'][1]),
+    ('📷 Kamera', YON_KANAL['camera'][1]),
+    ('💻 PC', YON_KANAL['pc'][1]),
 )
 HUB_MATN = (
     f"🇺🇿 <b>{BREND}'ga xush kelibsiz!</b> Qaysi yo'nalish kerak — tanlang 👇\n\n"
@@ -952,10 +965,10 @@ def build_elon(item, models_by_id):
         add_fmt(f"{price}$", 'bold')
         add("\n\n")
 
-    # ── Kontaktlar ──
+    # ── Kontaktlar (ALOQA, 2026-10-07: raqam, admin; kanal — e'lonning yo'nalishidan) ──
     add(f"📩 @{ADMIN_USERNAME}\n")
-    add("📞 +998997638595\n\n")
-    add_prem('k'); add(f" @{CHANNEL_USERNAME} (Kanal/Канал)\n")
+    add(f"📞 {ALOQA_TEL}\n\n")
+    add_prem('k'); add(f" @{YON_KANAL[post_yonalish(item, models_by_id)][1]} (Kanal/Канал)\n")
     add_prem('k'); add(f" @{BOT_USERNAME}")
 
     text = ''.join(parts)
@@ -1106,12 +1119,13 @@ def belgi_src(elon):
     return {t: belgili(t, j) for t, j in rasm_joylari(elon)}
 
 
-def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False):
+def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None):
     """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow.
     v9 (BUGUN31, B28): kollaj=True — admin tugma bilan kollajga o'tkazgan post (sukut — slideshow).
     rasm_src — {rasm URL: src} (BUGUN16 inline: `tg://photo?id=…` — inline'da URL ishlamaydi); qolgani o'zgarmaydi.
-    belgi=True (A26) — kanal posti: rasmlarda suv belgisi (rasm_src berilmagan bo'lsa)."""
+    belgi=True (A26) — kanal posti: rasmlarda suv belgisi (rasm_src berilmagan bo'lsa).
+    yonalish (2026-10-07, ALOQA) — postdagi kanal shu yo'nalishniki; None — e'lonning asosiy yo'nalishi (post_yonalish)."""
     if belgi and rasm_src is None:
         rasm_src = belgi_src(elon)
     num = int(float(elon.get('num', 0) or 0))
@@ -1150,7 +1164,12 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     #     tugmalar align'siz — butun eniga (align="center" kichik qilib qo'ygan edi)
     # v4: RASM TEPADA, matn pastda — kanaldagi eski postga yaqin (foydalanuvchi so'radi);
     #     holati ikki tilda IKKI qator (bitta qatorga qo'shilgani «xunuk» edi)
-    kanal = CHANNEL.lstrip('@')
+    # ALOQA (2026-10-07): kanal — e'lon yuborilgan yo'nalishniki (Mobile → «Nuqta tech · Mobile» @nuqta_tech_mobile, …)
+    kanal_nomi, kanal = YON_KANAL[yonalish if yonalish in YON_KANAL else post_yonalish(elon, models_by_id)]
+    tel_href = re.sub(r'[^\d+]', '', ALOQA_TEL)
+    aloqa = (f'<p>📞 <a href="tel:{tel_href}">{html_escape(ALOQA_TEL)}</a><br/>'
+             f'📩 @{ADMIN_USERNAME}<br/>'
+             f'🪐 <a href="https://t.me/{kanal}">{html_escape(kanal_nomi)}</a></p>')
     # v5: bloklar orasida BO'SH JOY (Telegram rich'da paragraflar orasiga margin qo'ymaydi —
     #     bo'sh paragraf \u00a0 bilan). Holati + narx BITTA blok. Foydalanuvchi ko'rsatdi:
     #     xarakteristika / bo'sh / holati·holati·narx / bo'sh / tugma
@@ -1171,6 +1190,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
         + f'<p>{e("money")} Narxi / Цена: {narx}' + (f'<br/>{soni_qatori(elon)}' if soni_qatori(elon) else '') + '</p>'   # B13: qoldiq
         + BOSH
+        + aloqa   # ALOQA (2026-10-07): raqam (bosilsa qo'ng'iroq), admin, yo'nalish kanali
         + '<tg-button-row>'
           # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
           #     to'liq ko'rib bo'lgan odamga shu e'lonni saytda ko'rishdan naf yo'q — boshqa
@@ -1252,6 +1272,33 @@ def elon_turi(elon, models_by_id):
     sk = str((model or {}).get('series', '') or '')
     ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
     return ser_type(ser) if ser else 'phone'
+
+
+def elon_yonalishlar(elon, models_by_id):
+    """E'lon yo'nalishlari (mobile / pc / camera) — model `yonalish` → seriya `yonalish` → mobile
+    (sayt `modelYonalishlar` bilan bir xil; ustunlar jadvalga «🚀 Chiqarish kuni» 6-qadamda qo'shiladi, unga qadar — mobile)."""
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    own = [y.lower() for y in parse_mos((model or {}).get('yonalish'))]
+    if own:
+        return own
+    sk = str((model or {}).get('series', '') or '')
+    ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
+    return [y.lower() for y in parse_mos((ser or {}).get('yonalish'))] or ['mobile']
+
+
+# ALOQA (2026-10-07): kanal posti id → saytda e'lon yuborilgan yo'nalish (tahrirda ham o'sha kanal turishi uchun).
+# Xotirada: bot qayta ishga tushsa — e'lonning asosiy (birinchi) yo'nalishi; farq faqat ko'p yo'nalishli tovarda (zaryad: mobile, pc).
+_POST_YON = {}
+
+
+def post_yonalish(elon, models_by_id, tanlangan=None, mid=None):
+    """Postdagi kanal qaysi yo'nalishniki: saytda tanlangani (e'lon o'sha yo'nalishda bo'lsa) → shu post avval qaysi
+    yo'nalishdan yuborilgan bo'lsa → e'lonning asosiy yo'nalishi → mobile."""
+    bor = [y for y in elon_yonalishlar(elon, models_by_id) if y in YON_KANAL] or ['mobile']
+    for y in (str(tanlangan or '').strip().lower(), _POST_YON.get(int(mid)) if mid else None):
+        if y in bor:
+            return y
+    return bor[0]
 
 
 def kanal_msg_id(elon):
@@ -1430,17 +1477,20 @@ def istak_javob_yubor(admin_chat, message, manzil):
     return 'xato'
 
 
-def kanal_post(num):
-    """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato)."""
+def kanal_post(num, yonalish=None):
+    """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato).
+    yonalish — saytda e'lon yuborilgan bo'lim (postdagi kanal shuniki; ALOQA 2026-10-07)."""
     elon, models = elon_cache_get(num)
     if not elon:
         return None, "e'lon topilmadi"
     if elon_status(elon) in ('deleted', 'waited'):
         return None, "chala yoki o'chirilgan e'lon postlanmaydi"
-    html = build_rich_html(elon, models, premium=False, belgi=True)
+    yon = post_yonalish(elon, models, tanlangan=yonalish)
+    html = build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)
     mid, xato = send_rich(POST_CHANNEL, html)
     if not mid:
         return None, xato
+    _POST_YON[int(mid)] = yon
     kanal_id_yoz(num, mid)
     # A26: e'lon kanalga chiqdi — OLX bo'limiga matn + belgili albom (fonda: sayt / buyruq javobi kutib qolmasin)
     threading.Thread(target=olx_albom, args=(num,), daemon=True).start()
@@ -1458,7 +1508,8 @@ def kanal_tahrir(num):
     if toplam_postmi(elon, models):
         return toplam_tahrir(mid)
     # A26: tahrirda ham suv belgisi (joyi o'zgargan bo'lsa — yangi joyda). editMessageText — bildirishnomasiz
-    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True))
+    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
+                                                        yonalish=post_yonalish(elon, models, mid=mid)))
 
 
 def olx_albom(num, jim=False):
@@ -1513,7 +1564,7 @@ def kanal_ochir(num):
     return ok, xato
 
 
-def kanal_yana_keldi(num):
+def kanal_yana_keldi(num, yonalish=None):
     """«Yana keldi»: eski post o'chadi, yangisi yuboriladi, yangi id yoziladi (A14 qarori 2026-09-18)."""
     elon, models = elon_cache_get(num)
     if not elon:
@@ -1522,7 +1573,7 @@ def kanal_yana_keldi(num):
     toplamda = bool(mid) and toplam_postmi(elon, models)
     if mid and not toplamda:
         delete_msg(POST_CHANNEL, mid)   # o'chmasa ham yangisi ketadi
-    yangi, xato = kanal_post(num)
+    yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
     if yangi and toplamda:
         toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
     return yangi, xato
@@ -1741,7 +1792,8 @@ def post_korinish(mid, kollaj):
     if len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR:
         ok, xato = edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models, kollaj=kollaj))
     else:
-        ok, xato = edit_rich(POST_CHANNEL, mid, build_rich_html(items[0], models, premium=False, kollaj=kollaj))
+        ok, xato = edit_rich(POST_CHANNEL, mid, build_rich_html(items[0], models, premium=False, kollaj=kollaj, belgi=True,
+                                                                yonalish=post_yonalish(items[0], models, mid=mid)))
     if not ok:
         (_KOLLAJ.add if eski else _KOLLAJ.discard)(mid)
     return ok, xato
@@ -4056,10 +4108,11 @@ async def kanal_post_endpoint(request):
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         amal = str(data.get('amal', 'post'))
+        yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
         if amal == 'yana':
-            mid, xato = await blok(kanal_yana_keldi, num)
+            mid, xato = await blok(kanal_yana_keldi, num, yon)
         else:
-            mid, xato = await blok(kanal_post, num)
+            mid, xato = await blok(kanal_post, num, yon)
         if not mid:
             return web.json_response({'ok': False, 'error': xato})
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
