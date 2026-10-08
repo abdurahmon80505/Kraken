@@ -1320,8 +1320,12 @@ def elon_turi(elon, models_by_id):
 
 
 def elon_yonalishlar(elon, models_by_id):
-    """E'lon yo'nalishlari (mobile / pc / camera) — model `yonalish` → seriya `yonalish` → mobile
+    """E'lon yo'nalishlari (mobile / pc / camera) — e'lonning o'z `yonalish`i → model `yonalish` → seriya `yonalish` → mobile
     (sayt `modelYonalishlar` bilan bir xil; ustunlar jadvalga «🚀 Chiqarish kuni» 6-qadamda qo'shiladi, unga qadar — mobile)."""
+    # BUGUN60 Q5: e'lonning O'Z yo'nalishi (jadvalda `yonalish` ustuni — guruh mavzusidan yaratilgan yoki tahrirda tanlangan) — birinchi
+    e_yon = str((elon or {}).get('yonalish', '') or '').strip().lower()
+    if e_yon in ('mobile', 'pc', 'camera'):
+        return [e_yon]
     model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     own = [y.lower() for y in parse_mos((model or {}).get('yonalish'))]
     if own:
