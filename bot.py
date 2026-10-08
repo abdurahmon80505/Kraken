@@ -29,9 +29,25 @@ TEST_CHANNEL = os.environ.get('TEST_CHANNEL_ID', '@Kraken_mobile_test')
 CHANNEL_USERNAME = CHANNEL.lstrip('@')
 CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
-BOT_USERNAME = 'kraken_mobile_shop_bot'
+# Bot manzili (@username) — BITTA joy, kodda boshqa joyda yozilmaydi (2026-10-07, R1.4 b: yangi bot «Nuqta tech Store»
+# @nuqta_tech_store_bot). Tartib: Render env BOT_USERNAME (qo'lda) → bo'lmasa — BOT_TOKEN egasi (Telegram getMe, ishga
+# tushganda bir marta) → bo'lmasa — eski bot. Ya'ni chiqarish kuni Render'da faqat BOT_TOKEN almashadi, manzil o'zi to'g'rilanadi.
+def _bot_manzili():
+    env = os.environ.get('BOT_USERNAME', '').strip().lstrip('@')
+    if env:
+        return env
+    if BOT_TOKEN:
+        try:
+            j = req.get(f'{TG_API}/getMe', timeout=8).json()
+            if j.get('ok') and (j.get('result') or {}).get('username'):
+                return j['result']['username']
+            logger.error(f'getMe: {j}')
+        except Exception as e:
+            logger.error(f'getMe: {e}')
+    return 'kraken_mobile_shop_bot'
+BOT_USERNAME = _bot_manzili()
 SHEET_URL = os.environ.get('SHEET_URL', '')
-ADMIN_USERNAME = 'Krakens_admin'
+# ADMIN_USERNAME — pastda, «ALOQA» blokida (2026-10-07)
 
 # Apps Script maxfiy kaliti. Mijoz telefon raqamlari (getParticipants) endi faqat
 # shu kalit bilan beriladi — brauzerdan (saytdan) so'ralsa bo'sh qaytadi.
@@ -41,6 +57,37 @@ API_KEY = os.environ.get('API_KEY', '')
 # ── ImageKit (saytdagi bilan bir xil — barqaror rasm hosting) ──
 IK_PRIVATE_KEY = os.environ.get('IK_PRIVATE_KEY', 'private_uRjC2/psPBQPc5fAhmshbRw9K1o=')
 IK_UPLOAD_URL = 'https://upload.imagekit.io/api/v1/files/upload'
+
+# ── REBRENDING (A5, 2026-10-06): brend nomi — mijozga ko'rinadigan bot matnlari shundan oladi ──
+# Kanal / bot username'lari — yuqoridagi CHANNEL (env CHANNEL_ID), BOT_USERNAME; admin, raqam — pastdagi ALOQA.
+BREND = 'Nuqta tech'
+
+# ── ALOQA (2026-10-07, foydalanuvchi): kanal postidagi raqam, admin va yo'nalish kanallari — BITTA joy ──
+# «Yangi raqam — yangi postlarning rich text'ida; admin — @nuqta_tech_admin; postdagi kanal havolasi — e'lon qaysi
+# bo'limdan yuborilgan bo'lsa, o'sha kanal nomi va havolasi». Qiymatlar sayt `01-sozlama.js` KONTAKT bilan bir xil.
+# Kod o'zgarmasdan env bilan almashadi: ADMIN_USERNAME, ALOQA_TEL, KANAL_MOBILE / KANAL_PC / KANAL_CAMERA (@ siz ham bo'ladi).
+# 🔴 @nuqta_tech_admin Telegram'da hali yo'q bo'lsa — merge'dan oldin env ADMIN_USERNAME=Krakens_admin (aks holda tugma ochilmaydi).
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'nuqta_tech_admin').strip().lstrip('@')
+ALOQA_TEL = os.environ.get('ALOQA_TEL', '+998 99 500 00 96').strip()
+YON_KANAL = {   # yo'nalish kaliti (jadval «Yo'nalishlar») → (kanal nomi K5, username K10)
+    'mobile': (f'{BREND} · Mobile', os.environ.get('KANAL_MOBILE', 'nuqta_tech_mobile').strip().lstrip('@')),
+    'pc': (f'{BREND} · PC', os.environ.get('KANAL_PC', 'nuqta_tech_pc').strip().lstrip('@')),
+    'camera': (f'{BREND} · Camera', os.environ.get('KANAL_CAMERA', 'nuqta_tech_camera').strip().lstrip('@')),
+}
+
+# ── A26 / B36: SUV BELGISI — kanal posti va OLX albomi rasmlariga logo (ImageKit overlay, rasm qayta ishlanmaydi) ──
+# Logo ImageKit'da bir marta yuklangan: kraken/nuqta-tech_avatar-yashil.png (2026-10-06). Doira (r-max), 50% shaffof,
+# o'lchami — rasm ENIning 15% (sayt SUV_BELGI.olcham bilan bir xil), sukut joyi — chap o'rta (markaz: eni 11.5%, bo'yi 50%).
+# Joy har rasmga alohida — sayt admin tahrir oynasida tanlaydi va rasm manzili OXIRIGA yozadi: «…jpg#nb=X,Y» (markaz, %
+# — eni va bo'yidan) yoki «#nb=0» (belgisiz). Belgisiz manzil — sukut joy. «#» — fragment: eski kod uni kesmasa ham brauzer
+# rasmni baribir oladi. Bot manzilni ishlatishdan OLDIN belgi qismini kesadi (images_of, _ik_olcham — `belgi_ajrat`).
+# SUV_BELGI=0 (env) — belgi o'chadi (rasmlar avvalgidek).
+SUV_BELGI = os.environ.get('SUV_BELGI', '1') != '0'
+SUV_BELGI_RASM = 'kraken/nuqta-tech_avatar-yashil.png'
+SUV_BELGI_OLCHAM = 0.15
+SUV_BELGI_CHET = 0.04
+SUV_BELGI_SHAFFOF = 50
+SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash bilan bir xil)
 
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
@@ -314,8 +361,24 @@ def send_start(chat_id):
 #    birinchi muvaffaqiyat — bir marta. 🔴 Telegram ephemeral'ni qabul qilmay ODDIY post qilsa (hammaga
 #    ko'rinsa) — post darhol o'chiriladi va xush kelibsiz to'xtaydi (keyingi deploy'gacha).
 # ══════════════════════════════════════════════════════════════════════════
-XUSH_KANALLAR = (TEST_CHANNEL,)
-XUSH_RASM = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
+# Sayt xush kelibsizi ketadigan kanallar: env XUSH_KANALLAR («@nuqta_tech_mobile @…», bo'sh joy bilan) — qo'yilmasa TEST kanal.
+XUSH_KANALLAR = tuple(os.environ.get('XUSH_KANALLAR', '').split()) or (TEST_CHANNEL,)
+# ── B38 (K9 = ha, K10 = a, K12 = b — «Do'kon» tugmasi YO'Q): HUB — tech kanal ──
+# Mijozga faqat «Nuqta tech» aytiladi → tech kanalga kiradi → bot FAQAT unga ko'rinadigan xabar: 3 yo'nalish tugmasi.
+# env TECH_KANAL_ID (@nuqta_tech yoki -100…) — bo'sh bo'lsa hub o'chiq. Yo'nalish kanallari manzili — yuqoridagi YON_KANAL
+# (env KANAL_MOBILE / KANAL_CAMERA / KANAL_PC); sukut — K10 manzillari. Sinov: TECH_KANAL_ID = TEST kanal.
+TECH_KANAL = os.environ.get('TECH_KANAL_ID', '').strip()
+HUB_YONALISHLAR = (
+    ('📱 Smartfon', YON_KANAL['mobile'][1]),
+    ('📷 Kamera', YON_KANAL['camera'][1]),
+    ('💻 PC', YON_KANAL['pc'][1]),
+)
+HUB_MATN = (
+    f"🇺🇿 <b>{BREND}'ga xush kelibsiz!</b> Qaysi yo'nalish kerak — tanlang 👇\n\n"
+    f"🇷🇺 <b>Добро пожаловать в {BREND}!</b> Выберите направление 👇"
+)
+HUB_KB = {"inline_keyboard": [[{"text": t, "url": f"https://t.me/{u}"} for t, u in HUB_YONALISHLAR]]}
+XUSH_RASM =os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
 XUSH_MATN = (
     "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
     "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
@@ -324,7 +387,9 @@ XUSH_MATN = (
 )
 XUSH_KB = {"inline_keyboard": [[{
     "text": START_KB["inline_keyboard"][0][0]["text"],   # /start dagi tugma bilan bir xil matn
-    "url": f"https://t.me/{BOT_USERNAME}?startapp=home",  # kanal postlaridagi «Saytni ochish» bilan bir xil yo'l
+    # kanal postlaridagi «Saytni ochish» bilan bir xil yo'l. B38: hozircha hamma kanalda — mobile (home); har kanal saytni o'z
+    # yo'nalishida ochishi — A27 (yo'nalish g'ildiragi) bilan, sayt `startapp=<yo'nalish>` ni tushungach
+    "url": f"https://t.me/{BOT_USERNAME}?startapp=home",
 }]]}
 # `chat_member` sukut bo'yicha KELMAYDI — setWebhook'da aniq aytilishi shart. Qolganlari — ilgari sukut bo'yicha
 # kelayotgan asosiy turlar (bot hozir faqat message, callback_query va chat_member'ni o'qiydi).
@@ -355,7 +420,7 @@ def xush_kimga(cm):
 
     Faqat XUSH_KANALLAR; faqat YANGI qo'shilgan (a'zo emas → oddiy a'zo); bot emas. Chiqib ketish, admin qilib
     tayinlash, huquq o'zgarishi — xush kelibsiz emas."""
-    if not isinstance(cm, dict) or not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR):
+    if not isinstance(cm, dict) or not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL,)):
         return None
     yangi = cm.get('new_chat_member') or {}
     user = yangi.get('user') or {}
@@ -366,8 +431,9 @@ def xush_kimga(cm):
     return user['id']
 
 
-def xush_yubor(chat_id, uid):
-    """Kanal ichida faqat `uid` ga ko'rinadigan rasm + matn + tugma. (True, '') yoki (False, xato matni)."""
+def xush_yubor(chat_id, uid, hub=False):
+    """Kanal ichida faqat `uid` ga ko'rinadigan rasm + matn + tugma. (True, '') yoki (False, xato matni).
+    hub=True (B38) — tech kanal: rasmsiz matn + 3 yo'nalish tugmasi (HUB_KB)."""
     maydon = {
         'chat_id': chat_id,
         'caption': XUSH_MATN,
@@ -375,8 +441,14 @@ def xush_yubor(chat_id, uid):
         'reply_markup': XUSH_KB,
         'ephemeral_message_parameters': {'receiver_user_id': uid},
     }
+    if hub:
+        maydon = dict(maydon, reply_markup=HUB_KB)
+        maydon['text'] = HUB_MATN
+        del maydon['caption']
     try:
-        if _xush['file_id']:
+        if hub:
+            j = req.post(f'{TG_API}/sendMessage', json=maydon, timeout=30).json()
+        elif _xush['file_id']:
             j = req.post(f'{TG_API}/sendPhoto', json=dict(maydon, photo=_xush['file_id']), timeout=30).json()
         else:
             forma = {k: (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)) for k, v in maydon.items()}
@@ -386,7 +458,8 @@ def xush_yubor(chat_id, uid):
     except Exception as ex:
         return False, f'tarmoq: {ex}'
     if not j.get('ok'):
-        _xush['file_id'] = ''   # file_id eskirgan bo'lishi mumkin — keyingi safar rasm qayta yuklanadi
+        if not hub:
+            _xush['file_id'] = ''   # file_id eskirgan bo'lishi mumkin — keyingi safar rasm qayta yuklanadi
         return False, str(j.get('description') or j)
     res = j.get('result') or {}
     if res.get('message_id') and not res.get('receiver_user'):
@@ -415,7 +488,7 @@ def kanal_xush_kelibsiz(cm):
         _xush['yuborilgan'][(chat.get('id'), uid)] = hozir
         if len(_xush['yuborilgan']) > 5000:
             _xush['yuborilgan'] = {k: t for k, t in _xush['yuborilgan'].items() if hozir - t < 3600}
-    ok, xato = xush_yubor(chat.get('id'), uid)
+    ok, xato = xush_yubor(chat.get('id'), uid, hub=_kanal_mos(chat, TECH_KANAL))   # B38: tech kanal — hub
     kanal = html_escape('@' + chat['username'] if chat.get('username') else str(chat.get('id', '')))
     if ok:
         logger.info(f'xush kelibsiz: {uid} -> {kanal}')
@@ -724,7 +797,7 @@ def mos_label(keys, models_by_id, series=None, lang='uz'):
         'camera': ('Barcha kameralar', 'Все камеры'),
         'accessory': ('Barcha aksessuarlar', 'Все аксессуары'),
         'case': ("Barcha g'iloflar", 'Все чехлы'),
-        'part': ('Barcha zapchastlar', 'Все запчасти'),
+        'part': ('Barcha ehtiyot qismlar', 'Все запчасти'),   # S100: «Zapchastlar» → «Ehtiyot qismlar»
     }
     parts, model_names, ser_labels = [], [], []
     for k in parse_mos(keys):
@@ -908,11 +981,11 @@ def build_elon(item, models_by_id):
         add_fmt(f"{price}$", 'bold')
         add("\n\n")
 
-    # ── Kontaktlar ──
-    add("📩 @Krakens_admin\n")
-    add("📞 +998997638595\n\n")
-    add_prem('k'); add(" @Kraken_Mobile (Kanal/Канал)\n")
-    add_prem('k'); add(" @Kraken_Mobile_shop_bot")
+    # ── Kontaktlar (ALOQA, 2026-10-07: raqam, admin; kanal — e'lonning yo'nalishidan) ──
+    add(f"📩 @{ADMIN_USERNAME}\n")
+    add(f"📞 {ALOQA_TEL}\n\n")
+    add_prem('k'); add(f" @{YON_KANAL[post_yonalish(item, models_by_id)][1]} (Kanal/Канал)\n")
+    add_prem('k'); add(f" @{BOT_USERNAME}")
 
     text = ''.join(parts)
     entities = [{
@@ -954,9 +1027,9 @@ def _utf16len(s):
 #  2 ko'rinishda (collage, slideshow) admin lichkasiga VA test kanaliga yuboradi.
 # ══════════════════════════════════════════════════════════════════════════
 
-def images_of(elon):
-    """E'lon rasmlari — Sheets'da JSON matn, xotirada ro'yxat bo'lishi mumkin."""
-    images = elon.get('images')
+def _images_xom(elon):
+    """E'lon rasmlari xom holda (belgi qismi bilan) — Sheets'da JSON matn, xotirada ro'yxat bo'lishi mumkin."""
+    images = (elon or {}).get('images')
     if isinstance(images, str):
         try:
             images = json.loads(images)
@@ -965,6 +1038,51 @@ def images_of(elon):
     if not isinstance(images, list):
         images = []
     return [str(u).strip() for u in images if str(u or '').strip()]
+
+
+_BELGI_RE = re.compile(r'#nb=([^#]*)$')
+
+
+def belgi_ajrat(url):
+    """«…jpg#nb=12.5,50» → ('…jpg', (0.125, 0.5)); «#nb=0» → ('…jpg', 'yoq'); belgisiz / buzuq → ('…jpg', None).
+    Joy — logo MARKAZI, rasm eni / bo'yiga nisbatan 0–1 (sayt 09-admin.js belgiQosh bilan bir xil)."""
+    url = str(url or '').strip()
+    m = _BELGI_RE.search(url)
+    if not m:
+        return url, None
+    toza, v = url[:m.start()], m.group(1).strip()
+    if v == '0':
+        return toza, 'yoq'
+    try:
+        x, y = (float(s) for s in v.split(','))
+    except Exception:
+        return toza, None
+    if not (0 <= x <= 100 and 0 <= y <= 100):
+        return toza, None
+    return toza, (x / 100, y / 100)
+
+
+def images_of(elon):
+    """E'lon rasmlari — TOZA manzillar (suv belgisi joyi kesilgan). Hamma joy shuni ishlatadi."""
+    return [belgi_ajrat(u)[0] for u in _images_xom(elon)]
+
+
+def rasm_joylari(elon):
+    """[(toza manzil, joy)] — joy: None (sukut, chap o'rta) / 'yoq' (belgisiz) / (x, y)."""
+    return [belgi_ajrat(u) for u in _images_xom(elon)]
+
+
+def belgili(url, joy=None, tr=SUV_BELGI_TR):
+    """Rasm manzili + suv belgisi (ImageKit layer). ImageKit bo'lmagan, allaqachon `tr=` li yoki belgisiz rasm — faqat
+    o'lcham (tr). Layer resize'dan KEYIN zanjir (`:`) bilan — vergul bilan qo'shilsa ImageKit 400 qaytaradi (sinaldi);
+    `t-false` — logo chetlari kesilmasin (sukutda ImageKit bir xil rangli chetni kesib, doirani «zoom» qilib yuboradi)."""
+    url = belgi_ajrat(url)[0]
+    if not SUV_BELGI or joy == 'yoq' or 'ik.imagekit.io' not in url or 'tr=' in url:
+        return _ik_olcham(url, tr) if tr else url
+    x, y = joy if isinstance(joy, tuple) else (SUV_BELGI_CHET + SUV_BELGI_OLCHAM / 2, 0.5)
+    layer = (f"l-image,i-{SUV_BELGI_RASM.replace('/', '@@')},t-false,w-bw_mul_{SUV_BELGI_OLCHAM:g},r-max,"
+             f"o-{SUV_BELGI_SHAFFOF},lxc-bw_mul_{x:.3f},lyc-bh_mul_{y:.3f},l-end")
+    return url + ('&' if '?' in url else '?') + 'tr=' + (f'{tr}:' if tr else '') + layer
 
 
 def _rich_emoji(key):
@@ -1012,11 +1130,20 @@ def rich_media(rasmlar, kollaj=False, rasm_src=None):
     return f'<tg-slideshow>{imgs}</tg-slideshow>'
 
 
-def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False):
+def belgi_src(elon):
+    """{toza rasm manzili: belgili manzil} — kanal postining rich rasmlari uchun (rich_media rasm_src)."""
+    return {t: belgili(t, j) for t, j in rasm_joylari(elon)}
+
+
+def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None):
     """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow.
     v9 (BUGUN31, B28): kollaj=True — admin tugma bilan kollajga o'tkazgan post (sukut — slideshow).
-    rasm_src — {rasm URL: src} (BUGUN16 inline: `tg://photo?id=…` — inline'da URL ishlamaydi); qolgani o'zgarmaydi."""
+    rasm_src — {rasm URL: src} (BUGUN16 inline: `tg://photo?id=…` — inline'da URL ishlamaydi); qolgani o'zgarmaydi.
+    belgi=True (A26) — kanal posti: rasmlarda suv belgisi (rasm_src berilmagan bo'lsa).
+    yonalish (2026-10-07, ALOQA) — postdagi kanal shu yo'nalishniki; None — e'lonning asosiy yo'nalishi (post_yonalish)."""
+    if belgi and rasm_src is None:
+        rasm_src = belgi_src(elon)
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), yozilganidek (BUGUN17)
@@ -1053,7 +1180,12 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     #     tugmalar align'siz — butun eniga (align="center" kichik qilib qo'ygan edi)
     # v4: RASM TEPADA, matn pastda — kanaldagi eski postga yaqin (foydalanuvchi so'radi);
     #     holati ikki tilda IKKI qator (bitta qatorga qo'shilgani «xunuk» edi)
-    kanal = CHANNEL.lstrip('@')
+    # ALOQA (2026-10-07): kanal — e'lon yuborilgan yo'nalishniki (Mobile → «Nuqta tech · Mobile» @nuqta_tech_mobile, …)
+    kanal_nomi, kanal = YON_KANAL[yonalish if yonalish in YON_KANAL else post_yonalish(elon, models_by_id)]
+    tel_href = re.sub(r'[^\d+]', '', ALOQA_TEL)
+    aloqa = (f'<p>📞 <a href="tel:{tel_href}">{html_escape(ALOQA_TEL)}</a><br/>'
+             f'📩 @{ADMIN_USERNAME}<br/>'
+             f'🪐 <a href="https://t.me/{kanal}">{html_escape(kanal_nomi)}</a></p>')
     # v5: bloklar orasida BO'SH JOY (Telegram rich'da paragraflar orasiga margin qo'ymaydi —
     #     bo'sh paragraf \u00a0 bilan). Holati + narx BITTA blok. Foydalanuvchi ko'rsatdi:
     #     xarakteristika / bo'sh / holati·holati·narx / bo'sh / tugma
@@ -1074,6 +1206,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
         + f'<p>{e("money")} Narxi / Цена: {narx}' + (f'<br/>{soni_qatori(elon)}' if soni_qatori(elon) else '') + '</p>'   # B13: qoldiq
         + BOSH
+        + aloqa   # ALOQA (2026-10-07): raqam (bosilsa qo'ng'iroq), admin, yo'nalish kanali
         + '<tg-button-row>'
           # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
           #     to'liq ko'rib bo'lgan odamga shu e'lonni saytda ko'rishdan naf yo'q — boshqa
@@ -1081,7 +1214,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
           f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Saytni ochish / Открыть сайт</tg-button>'
           '</tg-button-row>'
         + '<tg-button-row>'
-          '<tg-button type="url" url="https://t.me/Krakens_admin">✉️ Admin</tg-button>'
+          f'<tg-button type="url" url="https://t.me/{ADMIN_USERNAME}">✉️ Admin</tg-button>'
           f'<tg-button type="url" url="https://t.me/{kanal}">🪐 Kanal</tg-button>'   # v8: lampa (K logo) → 🪐 (foydalanuvchi)
           '</tg-button-row>'
     )
@@ -1146,7 +1279,7 @@ AVTO_POST_TURLAR = ('phone', 'camera')
 TOPLAM_TURLAR = ('accessory', 'case', 'part')
 TUR_NOMI = {'phone': ('📱', 'Smartfonlar', 'Смартфоны'), 'camera': ('📷', 'Kameralar', 'Камеры'),
             'accessory': ('🔌', 'Aksessuarlar', 'Аксессуары'), 'case': ('🛡', "G'iloflar", 'Чехлы'),
-            'part': ('🛠', 'Zapchastlar', 'Запчасти')}
+            'part': ('🛠', 'Ehtiyot qismlar', 'Запчасти')}   # S100
 
 
 def elon_turi(elon, models_by_id):
@@ -1155,6 +1288,33 @@ def elon_turi(elon, models_by_id):
     sk = str((model or {}).get('series', '') or '')
     ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
     return ser_type(ser) if ser else 'phone'
+
+
+def elon_yonalishlar(elon, models_by_id):
+    """E'lon yo'nalishlari (mobile / pc / camera) — model `yonalish` → seriya `yonalish` → mobile
+    (sayt `modelYonalishlar` bilan bir xil; ustunlar jadvalga «🚀 Chiqarish kuni» 6-qadamda qo'shiladi, unga qadar — mobile)."""
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    own = [y.lower() for y in parse_mos((model or {}).get('yonalish'))]
+    if own:
+        return own
+    sk = str((model or {}).get('series', '') or '')
+    ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
+    return [y.lower() for y in parse_mos((ser or {}).get('yonalish'))] or ['mobile']
+
+
+# ALOQA (2026-10-07): kanal posti id → saytda e'lon yuborilgan yo'nalish (tahrirda ham o'sha kanal turishi uchun).
+# Xotirada: bot qayta ishga tushsa — e'lonning asosiy (birinchi) yo'nalishi; farq faqat ko'p yo'nalishli tovarda (zaryad: mobile, pc).
+_POST_YON = {}
+
+
+def post_yonalish(elon, models_by_id, tanlangan=None, mid=None):
+    """Postdagi kanal qaysi yo'nalishniki: saytda tanlangani (e'lon o'sha yo'nalishda bo'lsa) → shu post avval qaysi
+    yo'nalishdan yuborilgan bo'lsa → e'lonning asosiy yo'nalishi → mobile."""
+    bor = [y for y in elon_yonalishlar(elon, models_by_id) if y in YON_KANAL] or ['mobile']
+    for y in (str(tanlangan or '').strip().lower(), _POST_YON.get(int(mid)) if mid else None):
+        if y in bor:
+            return y
+    return bor[0]
 
 
 def kanal_msg_id(elon):
@@ -1281,8 +1441,8 @@ def istak_javob_sarlavha(manzil):
     """Mijozga ketadigan sarlavha (HTML) — uning tilida, istagi eslatiladi."""
     so = html_escape(manzil.get('matn') or '')
     if manzil.get('til') == 'ru':
-        return '📩 <b>Ответ Kraken Mobile</b>' + (f'\nНа ваш запрос: «{so}»' if so else '')
-    return '📩 <b>Kraken Mobile javobi</b>' + (f"\nSiz so'ragan: «{so}»" if so else '')
+        return f'📩 <b>Ответ {BREND}</b>' + (f'\nНа ваш запрос: «{so}»' if so else '')
+    return f'📩 <b>{BREND} javobi</b>' + (f"\nSiz so'ragan: «{so}»" if so else '')
 
 
 def _istak_xato_sababi(desc):
@@ -1333,18 +1493,23 @@ def istak_javob_yubor(admin_chat, message, manzil):
     return 'xato'
 
 
-def kanal_post(num):
-    """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato)."""
+def kanal_post(num, yonalish=None):
+    """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato).
+    yonalish — saytda e'lon yuborilgan bo'lim (postdagi kanal shuniki; ALOQA 2026-10-07)."""
     elon, models = elon_cache_get(num)
     if not elon:
         return None, "e'lon topilmadi"
     if elon_status(elon) in ('deleted', 'waited'):
         return None, "chala yoki o'chirilgan e'lon postlanmaydi"
-    html = build_rich_html(elon, models, premium=False)
+    yon = post_yonalish(elon, models, tanlangan=yonalish)
+    html = build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)
     mid, xato = send_rich(POST_CHANNEL, html)
     if not mid:
         return None, xato
+    _POST_YON[int(mid)] = yon
     kanal_id_yoz(num, mid)
+    # A26: e'lon kanalga chiqdi — OLX bo'limiga matn + belgili albom (fonda: sayt / buyruq javobi kutib qolmasin)
+    threading.Thread(target=olx_albom, args=(num,), daemon=True).start()
     return mid, ''
 
 
@@ -1358,7 +1523,44 @@ def kanal_tahrir(num):
         return False, "post yo'q"
     if toplam_postmi(elon, models):
         return toplam_tahrir(mid)
-    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ))
+    # A26: tahrirda ham suv belgisi (joyi o'zgargan bo'lsa — yangi joyda). editMessageText — bildirishnomasiz
+    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
+                                                        yonalish=post_yonalish(elon, models, mid=mid)))
+
+
+def olx_albom(num, jim=False):
+    """A26: OLX bo'limiga (guruh «🛒 OLX» mavzusi; guruh yo'q — admin lichkasi) OLX matni + ODDIY albom (rich emas) —
+    rasmlar suv belgisi bilan, OLX'ga bittalab saqlab joylash uchun. jim=True — bildirishnomasiz (tahrirdan keyin qayta).
+    (True, '') / (False, xato)."""
+    try:
+        elon, models = elon_cache_get(num)
+        if not elon:
+            return False, "e'lon topilmadi"
+        joy = admin_joy('olx')
+        _, olx_text = build_olx_text(elon, models)
+        r = req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': joy, 'text': olx_text, 'disable_notification': jim}, timeout=10).json()
+        if not r.get('ok'):
+            logger.error(f"olx_albom №{num} matn: {r.get('description')}")
+        rasmlar = [belgili(t, j) for t, j in rasm_joylari(elon)][:10]
+        if not rasmlar:
+            return bool(r.get('ok')), '' if r.get('ok') else str(r.get('description'))
+        if len(rasmlar) == 1:
+            r = req.post(f'{TG_API}/sendPhoto', json={
+                'chat_id': joy, 'photo': rasmlar[0], 'disable_notification': jim}, timeout=30).json()
+        else:
+            r = req.post(f'{TG_API}/sendMediaGroup', json={
+                'chat_id': joy, 'media': [{'type': 'photo', 'media': u} for u in rasmlar],
+                'disable_notification': jim}, timeout=60).json()
+        if not r.get('ok'):
+            xato = str(r.get('description') or r)
+            logger.error(f'olx_albom №{num} albom: {xato}')
+            send_msg(joy, f"⚠️ №{num} OLX albomi yuborilmadi: <code>{html_escape(xato)}</code>")
+            return False, xato
+        return True, ''
+    except Exception as e:
+        logger.error(f'olx_albom №{num}: {e}')
+        return False, str(e)
 
 
 def kanal_ochir(num):
@@ -1378,7 +1580,7 @@ def kanal_ochir(num):
     return ok, xato
 
 
-def kanal_yana_keldi(num):
+def kanal_yana_keldi(num, yonalish=None):
     """«Yana keldi»: eski post o'chadi, yangisi yuboriladi, yangi id yoziladi (A14 qarori 2026-09-18)."""
     elon, models = elon_cache_get(num)
     if not elon:
@@ -1387,7 +1589,7 @@ def kanal_yana_keldi(num):
     toplamda = bool(mid) and toplam_postmi(elon, models)
     if mid and not toplamda:
         delete_msg(POST_CHANNEL, mid)   # o'chmasa ham yangisi ketadi
-    yangi, xato = kanal_post(num)
+    yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
     if yangi and toplamda:
         toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
     return yangi, xato
@@ -1471,12 +1673,13 @@ def build_toplam_html(items, models_by_id, kollaj=False):
     rasm (slayd 10 tagacha / kollaj 4), «📦 Yangi keldi», «N ta tovar · min–max$»;
     5 tagacha — har biri bir qator (№, nom, narx), ko'p bo'lsa — tur bo'yicha soni; to'liq ro'yxat saytda.
     Tugmalar — postdagi turlar bo'limi (startapp=<tab>) + «Saytni ochish»."""
-    rasmlar = []
+    rasmlar, src = [], {}
     for e in items:
-        r = images_of(e)
-        if r and r[0] not in rasmlar:
-            rasmlar.append(r[0])
-    media = rich_media(rasmlar, kollaj)
+        r = rasm_joylari(e)
+        if r and r[0][0] not in rasmlar:
+            rasmlar.append(r[0][0])
+            src[r[0][0]] = belgili(*r[0])   # A26: to'plam posti ham kanal posti — suv belgisi bilan
+    media = rich_media(rasmlar, kollaj, src)
     BOSH = '<p> </p>'
     guruh = {}
     for e in items:
@@ -1605,7 +1808,8 @@ def post_korinish(mid, kollaj):
     if len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR:
         ok, xato = edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models, kollaj=kollaj))
     else:
-        ok, xato = edit_rich(POST_CHANNEL, mid, build_rich_html(items[0], models, premium=False, kollaj=kollaj))
+        ok, xato = edit_rich(POST_CHANNEL, mid, build_rich_html(items[0], models, premium=False, kollaj=kollaj, belgi=True,
+                                                                yonalish=post_yonalish(items[0], models, mid=mid)))
     if not ok:
         (_KOLLAJ.add if eski else _KOLLAJ.discard)(mid)
     return ok, xato
@@ -1681,7 +1885,7 @@ def kanal_taklif(admin_chat, tur):
     if tur == 'toplam':
         items, models = toplam_elonlar()
         if not items:
-            send_msg(admin_chat, "📭 Kanalga chiqmagan aksessuar / g'ilof / zapchast yo'q.")
+            send_msg(admin_chat, "📭 Kanalga chiqmagan aksessuar / g'ilof / ehtiyot qism yo'q.")
             return
         html, nums = build_toplam_html(items, models), [int(float(e.get('num', 0) or 0)) for e in items]
         izoh = f"🧩 To'plam: {len(items)} ta e'lon (№{', №'.join(str(n) for n in nums)})"
@@ -1740,6 +1944,9 @@ def kanal_sinxron(eski, yangi):
             ok, xato = kanal_tahrir(num)
             if not ok:
                 send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
+            elif eski is not None and _images_xom(eski) != _images_xom(yangi) and not toplam_postmi(yangi, elon_cache_get(num)[1]):
+                # A26: rasmlar yoki suv belgisi joyi o'zgardi — OLX albomi ham yangisi bilan, JIM (narx o'zgarsa — yo'q)
+                olx_albom(num, jim=True)
             return 'tahrir'
         if not _ELON_CACHE['time']:
             return ''   # xotira yuklanmagan — eskisi noma'lum, ehtiyot: avto-post yo'q
@@ -1829,7 +2036,7 @@ def build_olx_text(item, models_by_id):
     lines.append("Telegram kanal yoki saytimizdan zakaz qilganlarga narxi arzonroq "
                  "va kanalda har oy rozigrish (konkurs) bo'ladi!")
     lines.append("Bundan tashqari 20 ga yaqin modellar va boshqa aksessuarlar, "
-                 "zapchastlar bor!")
+                 "ehtiyot qismlar bor!")
     lines.append("Telegramdan yozing — linklarini tashlab beraman.")
     lines.append("")
     # ── Holati ──
@@ -2516,7 +2723,7 @@ def notify_participants(konkurs_id, winner_user_id, winner_username, prize, winn
         )
         markup = {"inline_keyboard": [[{
             "text": "🛍 Do'kon / Магазин",
-            "url": "https://t.me/kraken_mobile_shop_bot?startapp"
+            "url": f"https://t.me/{BOT_USERNAME}?startapp"
         }]]}
         if pic_list:
             send_konkurs_channel_post(CHANNEL, ch_text, pic_list, markup)
@@ -2874,7 +3081,9 @@ def inline_topish(query, by_num, models):
 
 
 def _ik_olcham(url, tr):
-    """ImageKit rasmiga o'lcham (tr=…) qo'shadi; boshqa manzil o'zgarmaydi."""
+    """ImageKit rasmiga o'lcham (tr=…) qo'shadi; boshqa manzil o'zgarmaydi. Suv belgisi joyi («#nb=…») avval kesiladi —
+    aks holda «?tr=» fragmentdan keyin qolib, Telegram o'lchamsiz asl rasmni olardi (B36)."""
+    url = belgi_ajrat(url)[0]
     if 'ik.imagekit.io' in url and 'tr=' not in url:
         return url + ('&' if '?' in url else '?') + 'tr=' + tr
     return url
@@ -3462,12 +3671,7 @@ def preview_elon_to_admin(num, admin_chat):
         send_msg(admin_chat, f"❌ №{num} elon topilmadi.")
         return
     _, text, entities = build_elon(elon, models)   # premium emoji lichkaga chiqadi
-    images = elon.get('images', [])
-    if isinstance(images, str):
-        try:
-            images = json.loads(images)
-        except Exception:
-            images = [images] if images else []
+    images = [belgili(t, j) for t, j in rasm_joylari(elon)]   # A26 (K2): OLX'ga ketadigan rasmlar — suv belgisi bilan
 
     # ── 1) OLX MATNI (avval — #5) ──
     _, olx_text = build_olx_text(elon, models)
@@ -3521,12 +3725,7 @@ def send_elon_card(chat_id, num):
             qatorlar.append(soni_qatori(elon))   # B13: «📦 5 dona bor / 5 шт.»
     matn = "\n".join(qatorlar)
 
-    images = elon.get('images', [])
-    if isinstance(images, str):
-        try:
-            images = json.loads(images)
-        except Exception:
-            images = [images] if images else []
+    images = images_of(elon)   # B36: suv belgisi joyi kesilgan toza manzil
     kb = {"inline_keyboard": [[{
         "text": "🛍 Saytda ochish / Открыть на сайте",
         "url": f"https://t.me/{BOT_USERNAME}?startapp=elon_{num}"
@@ -3669,7 +3868,7 @@ def send_reroll_notify(data):
             'chat_id': CHANNEL, 'text': c_text, 'parse_mode': 'HTML',
             'reply_markup': {"inline_keyboard": [[{
                 "text": "🛍 Do'kon / Магазин",
-                "url": "https://t.me/kraken_mobile_shop_bot?startapp"}]]}
+                "url": f"https://t.me/{BOT_USERNAME}?startapp"}]]}
         }, timeout=8)
     except Exception as e:
         logger.error(f'reroll channel: {e}')
@@ -3774,21 +3973,13 @@ def _share_result(num, elon, model):
     yasaydi. Premium emoji oddiy mijozning chatida ko'rinmaydi — do'stga
     buzilgan belgilar borardi. Shu sabab bu yerda qisqa, sof HTML matn.
     """
-    images = elon.get('images')
-    if isinstance(images, str):
-        try:
-            images = json.loads(images)
-        except Exception:
-            images = [images] if images else []
-    if not isinstance(images, list):
-        images = []
-    rasm = str(images[0]).strip() if images else ''
+    images = images_of(elon)   # B36: suv belgisi joyi kesilgan toza manzil
+    rasm = images[0] if images else ''
     if not rasm:
         return None       # type=photo uchun rasm SHART; rasmsiz e'lon ulashilmaydi
 
     # Telegram rasmni o'zi yuklab oladi — kichigi tezroq va ishonchliroq
-    if 'ik.imagekit.io' in rasm and 'tr=' not in rasm:
-        rasm += ('&' if '?' in rasm else '?') + 'tr=w-800,q-80'
+    rasm = _ik_olcham(rasm, 'w-800,q-80')
 
     nom = elon_nomi(elon, model, 'uz')   # G12: e'lonning o'z nomi
     xotira = str(elon.get('storage') or '').strip()
@@ -3933,10 +4124,11 @@ async def kanal_post_endpoint(request):
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         amal = str(data.get('amal', 'post'))
+        yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
         if amal == 'yana':
-            mid, xato = await blok(kanal_yana_keldi, num)
+            mid, xato = await blok(kanal_yana_keldi, num, yon)
         else:
-            mid, xato = await blok(kanal_post, num)
+            mid, xato = await blok(kanal_post, num, yon)
         if not mid:
             return web.json_response({'ok': False, 'error': xato})
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
@@ -4046,7 +4238,7 @@ async def main():
     except Exception as e:
         logger.error(f'init elon_cache: {e}')
     asyncio.create_task(elon_cache_loop())   # kuniga bir marta ehtiyot yuklash
-    logger.info(f'Started on port {PORT}')
+    logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
     while True:
         await asyncio.sleep(3600)
 
