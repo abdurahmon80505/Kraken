@@ -19,8 +19,9 @@ PORT = int(os.environ.get('PORT', 8080))
 TG_API = f'https://api.telegram.org/bot{BOT_TOKEN}'
 # Kanal ID — Render'dan CHANNEL_ID env orqali o'zgartiriladi.
 # Test paytida:  CHANNEL_ID=@Kraken_mobile_test  (Render dashboard'ga qo'shasan)
-# Testdan keyin: env'ni o'chirasan yoki @Kraken_mobile qilasan → asosiy kanalga qaytadi.
-CHANNEL = os.environ.get('CHANNEL_ID', '@Kraken_mobile')
+# Testdan keyin: env'ni o'chirasan yoki @nuqta_tech_mobile qilasan → asosiy kanalga qaytadi.
+# 2026-10-08 (BUGUN56): Mobile kanal manzili @Kraken_mobile → @nuqta_tech_mobile (foydalanuvchi o'zgartirdi; eskisi endi bo'sh).
+CHANNEL = os.environ.get('CHANNEL_ID', '@nuqta_tech_mobile')
 # G11.0: SINOV kanali — /richtest faqat shu yerga va admin lichkasiga yuboradi.
 # ASOSIY KANALGA (CHANNEL) sinov xabari HECH QACHON KETMAYDI (foydalanuvchi:
 # «hozir rasvo qiladi-ku… faqat lichkamga… test kanaliga yuborsin»).
@@ -66,12 +67,13 @@ BREND = 'Nuqta tech'
 # «Yangi raqam — yangi postlarning rich text'ida; admin — @nuqta_tech_admin; postdagi kanal havolasi — e'lon qaysi
 # bo'limdan yuborilgan bo'lsa, o'sha kanal nomi va havolasi». Qiymatlar sayt `01-sozlama.js` KONTAKT bilan bir xil.
 # Kod o'zgarmasdan env bilan almashadi: ADMIN_USERNAME, ALOQA_TEL, KANAL_MOBILE / KANAL_PC / KANAL_CAMERA (@ siz ham bo'ladi).
-# 🔴 @nuqta_tech_admin Telegram'da hali yo'q bo'lsa — merge'dan oldin env ADMIN_USERNAME=Krakens_admin (aks holda tugma ochilmaydi).
+# ✅ 2026-10-08: @nuqta_tech_admin, @nuqta_tech_PC, @nuqta_tech_camera — Telegram'da bor (G2, G3; MS2 — «PC» katta harf bilan).
+# Guruhlar (…_chat) bot matnlariga qo'yilmaydi — G1: hozir faqat izoh uchun, a'zo 100 dan oshgach.
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'nuqta_tech_admin').strip().lstrip('@')
 ALOQA_TEL = os.environ.get('ALOQA_TEL', '+998 99 500 00 96').strip()
 YON_KANAL = {   # yo'nalish kaliti (jadval «Yo'nalishlar») → (kanal nomi K5, username K10)
     'mobile': (f'{BREND} · Mobile', os.environ.get('KANAL_MOBILE', 'nuqta_tech_mobile').strip().lstrip('@')),
-    'pc': (f'{BREND} · PC', os.environ.get('KANAL_PC', 'nuqta_tech_pc').strip().lstrip('@')),
+    'pc': (f'{BREND} · PC', os.environ.get('KANAL_PC', 'nuqta_tech_PC').strip().lstrip('@')),
     'camera': (f'{BREND} · Camera', os.environ.get('KANAL_CAMERA', 'nuqta_tech_camera').strip().lstrip('@')),
 }
 
@@ -105,7 +107,18 @@ ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
 # mavzularni o'zi ochadi va shu qatorni yozib beradi. Env bo'sh — hammasi eskicha admin lichkasiga (ADMIN_ID).
 # Guruhdan faqat ADMIN_ID odamning xabari qabul qilinadi. Mijoz bilan yozishma o'zgarmaydi.
 GURUH_MAVZULAR = [('post', '📢 Postlar'), ('olx', '🛒 OLX'), ('stat', '📊 Statistika'),
-                  ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar')]
+                  ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar'),
+                  # MS3.2 (BUGUN56, 2026-10-08): rasm yuklash — har bo'limga o'z mavzusi. Shu mavzuga tashlangan rasm(lar)dan
+                  # chala e'lon yaratiladi va javobdagi tugma saytni o'sha bo'limda ochadi. Lichkadan — avvalgidek (Mobile).
+                  ('rasm_mobile', '📱 Rasm · Mobile'), ('rasm_pc', '💻 Rasm · PC'), ('rasm_camera', '📷 Rasm · Camera')]
+
+
+def rasm_yonalish(joy):
+    """Admin rasmi qaysi bo'limga: guruhning «Rasm · …» mavzusidan — o'sha yo'nalish; boshqa joydan — None (avvalgidek)."""
+    thread = getattr(joy, 'thread', None)
+    if not thread or not GURUH.get('id') or int(joy) != GURUH['id']:
+        return None
+    return next((k[5:] for k, _ in GURUH_MAVZULAR if k.startswith('rasm_') and GURUH.get(k) == thread), None)
 
 
 def guruh_oqi(qator):
@@ -174,7 +187,8 @@ req = _TgReq(req)
 
 
 def guruh_sozla(chat, forum, xabar_chat):
-    """/guruh (guruhda, admin): 5 mavzuni ochadi, GURUH ni xotirada yoqadi, env qatorini yozib beradi."""
+    """/guruh (guruhda, admin): mavzularni ochadi, GURUH ni xotirada yoqadi, env qatorini yozib beradi.
+    MS3.2: guruh allaqachon sozlangan bo'lsa — faqat YO'Q mavzular ochiladi (eskilari takrorlanmaydi)."""
     global GURUH
     if not forum:
         send_msg(xabar_chat, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: guruh sozlamalari → Topics → yoqing, "
@@ -183,8 +197,9 @@ def guruh_sozla(chat, forum, xabar_chat):
     if GURUH.get('id') == chat and all(GURUH.get(k) for k, _ in GURUH_MAVZULAR):
         g = GURUH
     else:
-        g = {'id': chat}
-        for k, nom in GURUH_MAVZULAR:
+        g = dict(GURUH) if GURUH.get('id') == chat else {'id': chat}
+        yangi = [(k, nom) for k, nom in GURUH_MAVZULAR if not g.get(k)]
+        for k, nom in yangi:
             try:
                 j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
             except Exception as e:
@@ -195,8 +210,9 @@ def guruh_sozla(chat, forum, xabar_chat):
                 return
             g[k] = j['result']['message_thread_id']
         GURUH = g
-        for k, nom in GURUH_MAVZULAR:
-            send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
+        for k, nom in yangi:
+            send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga rasm tashlang: chala e'lon shu bo'limga yaratiladi."
+                     if k.startswith('rasm_') else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
     send_msg(xabar_chat, "✅ Guruh tayyor — hozirdan xabarlar shu yerga keladi (bot qayta ishga tushguncha).\n"
                          "Doimiy bo'lishi uchun Render → Environment → <b>ADMIN_GURUH</b> = quyidagi qator "
                          "(bosib nusxalang), keyin Manual Deploy:\n"
@@ -1275,6 +1291,19 @@ def richtest(admin_chat, num):
 #  🔴 Eski 93 e'lon (id yo'q) hech qachon o'z-o'zidan postlanmaydi — faqat G11.4 (/hammasini_yubor).
 # ══════════════════════════════════════════════════════════════════════════
 POST_CHANNEL = os.environ.get('POST_CHANNEL_ID', TEST_CHANNEL)
+# MS3.1 (BUGUN56, 2026-10-08): yo'nalish → o'z kanali. «mobile, pc» e'lon IKKALA kanalga bir xil post bo'ladi.
+# env POST_KANALLAR = "mobile=@nuqta_tech_mobile pc=@nuqta_tech_PC camera=@nuqta_tech_camera" (yoki -100… raqam).
+# Env yo'q — hamma yo'nalish POST_CHANNEL'ga, bitta post (avvalgidek). Yozilmagan yo'nalish — POST_CHANNEL.
+# channel_message_id: «123» — eski (POST_CHANNEL'dagi bitta post) yoki «mobile:123 pc:45» — har kanaldagi post.
+# To'plam va katalog postlari — avvalgidek faqat POST_CHANNEL.
+POST_KANALLAR = {k.strip().lower(): v.strip() for k, _, v in
+                 (x.partition('=') for x in re.split(r'[\s,;]+', os.environ.get('POST_KANALLAR', '')) if '=' in x)
+                 if k.strip() and v.strip()}
+
+
+def post_kanal(yon):
+    """Yo'nalish posti qaysi kanalga (POST_KANALLAR → POST_CHANNEL)."""
+    return POST_KANALLAR.get(str(yon or '').strip().lower()) or POST_CHANNEL
 AVTO_POST_TURLAR = ('phone', 'camera')
 TOPLAM_TURLAR = ('accessory', 'case', 'part')
 TUR_NOMI = {'phone': ('📱', 'Smartfonlar', 'Смартфоны'), 'camera': ('📷', 'Kameralar', 'Камеры'),
@@ -1318,12 +1347,35 @@ def post_yonalish(elon, models_by_id, tanlangan=None, mid=None):
 
 
 def kanal_msg_id(elon):
-    """channel_message_id (Sheets'da matn/son) → int yoki None."""
-    try:
-        v = str((elon or {}).get('channel_message_id', '') or '').strip()
-        return int(float(v)) if v else None
-    except Exception:
-        return None
+    """channel_message_id (Sheets'da matn/son) → int yoki None. «mobile:123 pc:45» — birinchisi (asosiy post)."""
+    p = kanal_postlar(elon)
+    return p[0][2] if p else None
+
+
+def kanal_postlar(elon):
+    """channel_message_id → [(yo'nalish yoki None, kanal, mid)]. «123» → [(None, POST_CHANNEL, 123)];
+    «mobile:123 pc:45» → [('mobile', kanal, 123), ('pc', kanal, 45)] (MS3.1)."""
+    v = str((elon or {}).get('channel_message_id', '') or '').strip()
+    if not v:
+        return []
+    if ':' not in v:
+        try:
+            return [(None, POST_CHANNEL, int(float(v)))]
+        except Exception:
+            return []
+    out = []
+    for qism in re.split(r'[\s,;]+', v):
+        y, _, m = qism.partition(':')
+        if y.strip() and re.fullmatch(r'\d{1,12}', m.strip()):
+            out.append((y.strip().lower(), post_kanal(y), int(m)))
+    return out
+
+
+def kanal_id_matn(postlar):
+    """[(yo'nalish, mid)] → Sheets qiymati: bitta post POST_CHANNEL'da — 123 (eski ko'rinish), aks holda «mobile:123 pc:45»."""
+    if len(postlar) == 1 and post_kanal(postlar[0][0]) == POST_CHANNEL:
+        return int(postlar[0][1])
+    return ' '.join(f'{y}:{int(m)}' for y, m in postlar)
 
 
 def kop_donali(elon):
@@ -1363,12 +1415,14 @@ def _sheets_update(payload):
 
 
 def kanal_id_yoz(num, mid):
-    """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash."""
-    ok = _sheets_update({'num': int(num), 'channel_message_id': int(mid) if mid else ''})
+    """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash.
+    mid — son yoki «mobile:123 pc:45» matni (MS3.1)."""
+    qiymat = '' if not mid else (mid if isinstance(mid, str) and ':' in mid else int(mid))
+    ok = _sheets_update({'num': int(num), 'channel_message_id': qiymat})
     with _elon_cache_lock:
         e = _ELON_CACHE['by_num'].get(str(num))
         if e is not None:
-            e['channel_message_id'] = int(mid) if mid else ''
+            e['channel_message_id'] = qiymat
     if not ok:
         logger.error(f'kanal_id_yoz: №{num} id {mid} Sheets ga yozilmadi')
     return ok
@@ -1502,12 +1556,27 @@ def kanal_post(num, yonalish=None):
     if elon_status(elon) in ('deleted', 'waited'):
         return None, "chala yoki o'chirilgan e'lon postlanmaydi"
     yon = post_yonalish(elon, models, tanlangan=yonalish)
-    html = build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)
-    mid, xato = send_rich(POST_CHANNEL, html)
-    if not mid:
-        return None, xato
-    _POST_YON[int(mid)] = yon
-    kanal_id_yoz(num, mid)
+    # MS3.1: e'lonning har yo'nalishi o'z kanaliga (saytda tanlangani birinchi — asosiy post). Kanal bir xil — bitta post
+    yonlar = [yon] + [y for y in elon_yonalishlar(elon, models) if y in YON_KANAL and y != yon]
+    postlar, xatolar, kanallar = [], [], set()
+    for y in yonlar:
+        chat = post_kanal(y)
+        if chat in kanallar:
+            continue
+        kanallar.add(chat)
+        m, x = send_rich(chat, build_rich_html(elon, models, premium=False, belgi=True, yonalish=y))
+        if m:
+            postlar.append((y, int(m)))
+            _POST_YON[int(m)] = y
+        else:
+            xatolar.append(f'{chat}: {x}')
+            logger.error(f'kanal_post №{num} → {chat}: {x}')
+    if not postlar:
+        return None, '; '.join(xatolar)
+    mid = postlar[0][1]
+    kanal_id_yoz(num, kanal_id_matn(postlar))
+    if xatolar:
+        send_msg(admin_joy('post'), f"⚠️ №{num} ba'zi kanalga chiqmadi: <code>{html_escape('; '.join(xatolar))}</code>")
     # A26: e'lon kanalga chiqdi — OLX bo'limiga matn + belgili albom (fonda: sayt / buyruq javobi kutib qolmasin)
     threading.Thread(target=olx_albom, args=(num,), daemon=True).start()
     return mid, ''
@@ -1524,8 +1593,14 @@ def kanal_tahrir(num):
     if toplam_postmi(elon, models):
         return toplam_tahrir(mid)
     # A26: tahrirda ham suv belgisi (joyi o'zgargan bo'lsa — yangi joyda). editMessageText — bildirishnomasiz
-    return edit_rich(POST_CHANNEL, mid, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
-                                                        yonalish=post_yonalish(elon, models, mid=mid)))
+    # MS3.1: har kanaldagi posti (yo'nalishi o'ziniki); kollaj — asosiy post bo'yicha
+    natija = (True, '')
+    for y, chat, m in kanal_postlar(elon):
+        ok, xato = edit_rich(chat, m, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
+                                                      yonalish=y or post_yonalish(elon, models, mid=m)))
+        if not ok and natija[0]:
+            natija = (False, xato)
+    return natija
 
 
 def olx_albom(num, jim=False):
@@ -1574,10 +1649,18 @@ def kanal_ochir(num):
     if toplam_postmi(elon, models):
         kanal_id_yoz(num, None)
         return toplam_tahrir(mid)
-    ok, xato = delete_msg(POST_CHANNEL, mid)
-    if ok:
+    qoldi, xato = [], ''   # MS3.1: hamma kanaldagi posti; o'chmagani id'da qoladi
+    for y, chat, m in kanal_postlar(elon):
+        ok, x = delete_msg(chat, m)
+        if not ok:
+            qoldi.append((y, m))
+            xato = xato or x
+    if not qoldi:
         kanal_id_yoz(num, None)
-    return ok, xato
+        return True, ''
+    if qoldi[0][0] and len(qoldi) < len(kanal_postlar(elon)):
+        kanal_id_yoz(num, ' '.join(f'{y}:{m}' for y, m in qoldi))
+    return False, xato
 
 
 def kanal_yana_keldi(num, yonalish=None):
@@ -1588,7 +1671,8 @@ def kanal_yana_keldi(num, yonalish=None):
     mid = kanal_msg_id(elon)
     toplamda = bool(mid) and toplam_postmi(elon, models)
     if mid and not toplamda:
-        delete_msg(POST_CHANNEL, mid)   # o'chmasa ham yangisi ketadi
+        for _, chat, m in kanal_postlar(elon):   # MS3.1: hamma kanaldagisi
+            delete_msg(chat, m)   # o'chmasa ham yangisi ketadi
     yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
     if yangi and toplamda:
         toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
@@ -1764,9 +1848,16 @@ def post_ochir(mid):
     id bo'shlarini yuboradi). (True, 'N ta e'lon') / (False, sabab)."""
     mid = int(mid)
     items, _ = _mid_elonlar(mid, hammasi=True)
-    ok, xato = delete_msg(POST_CHANNEL, mid)
-    if not ok:
-        return False, xato
+    postlar = kanal_postlar(items[0]) if len(items) == 1 else []
+    if postlar and postlar[0][0]:
+        for _, chat, m in postlar:   # MS3.1: yo'nalish kanallaridagi hamma posti
+            ok, xato = delete_msg(chat, m)
+            if not ok:
+                return False, xato
+    else:
+        ok, xato = delete_msg(POST_CHANNEL, mid)
+        if not ok:
+            return False, xato
     _KOLLAJ.discard(mid)
     for e in items:
         kanal_id_yoz(int(float(e.get('num', 0) or 0)), None)
@@ -1808,8 +1899,7 @@ def post_korinish(mid, kollaj):
     if len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR:
         ok, xato = edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models, kollaj=kollaj))
     else:
-        ok, xato = edit_rich(POST_CHANNEL, mid, build_rich_html(items[0], models, premium=False, kollaj=kollaj, belgi=True,
-                                                                yonalish=post_yonalish(items[0], models, mid=mid)))
+        ok, xato = kanal_tahrir(int(float(items[0].get('num', 0) or 0)))   # MS3.1: hamma kanaldagi posti
     if not ok:
         (_KOLLAJ.add if eski else _KOLLAJ.discard)(mid)
     return ok, xato
@@ -2824,8 +2914,9 @@ def upload_to_imagekit(file_id):
         return tg_url  # fallback
 
 
-def create_bot_elon(file_ids):
-    """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets."""
+def create_bot_elon(file_ids, yonalish=None):
+    """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets.
+    yonalish (MS3.2) — Apps Script'ga ham boradi (hozir yozilmaydi — ustun yo'q; e'lon yo'nalishi modeldan)."""
     urls = []
     for fid in file_ids:
         u = upload_to_imagekit(fid)
@@ -2834,7 +2925,7 @@ def create_bot_elon(file_ids):
     if not urls:
         return None
     try:
-        payload = urllib.parse.quote(json.dumps({'images': urls}))
+        payload = urllib.parse.quote(json.dumps(dict({'images': urls}, **({'yonalish': yonalish} if yonalish else {}))))
         r = req.get(f'{SHEET_URL}?action=botCreateElon&data={payload}', timeout=20)
         res = r.json()
         return res if res.get('ok') else None
@@ -2849,20 +2940,8 @@ def finalize_photo_group(mgid, chat_id):
     if not grp:
         return
     file_ids = grp.get('file_ids', [])
-    res = create_bot_elon(file_ids)
-    if res:
-        num = res.get('num', '?')
-        cnt = res.get('images', len(file_ids))
-        send_msg(chat_id,
-            f"✅ Yangi elon yaratildi: <b>№{num}</b>\n"
-            f"📸 {cnt} ta rasm saqlandi.\n\n"
-            f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
-            keyboard={"inline_keyboard": [[{
-                "text": "🛠 Admin panel / Saytga kirish",
-                "web_app": {"url": SAYT_URL}
-            }]]})
-    else:
-        send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+    res = create_bot_elon(file_ids, grp.get('yonalish'))
+    _elon_tayyor_xabar(chat_id, res, (res or {}).get('images', len(file_ids)), grp.get('yonalish'))
 
 
 async def handle_konkurs_photo(chat_id, file_id, media_group_id=None):
@@ -2945,12 +3024,13 @@ def _save_konkurs_photos(chat_id, file_ids):
 
 async def handle_admin_photo(chat_id, file_id, media_group_id):
     """Admin rasm yuborsa — chala elon yaratadi.
-    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi."""
+    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi.
+    MS3.2: guruhning «Rasm · …» mavzusidan kelsa — e'lon o'sha bo'limniki (rasm_yonalish)."""
     if media_group_id:
         # Albom: rasmlarni yig'amiz, 2 sekund kutib, keyin bitta elon qilamiz
         grp = _photo_groups.get(media_group_id)
         if not grp:
-            grp = {'file_ids': [], 'chat_id': chat_id}
+            grp = {'file_ids': [], 'chat_id': chat_id, 'yonalish': rasm_yonalish(chat_id)}
             _photo_groups[media_group_id] = grp
         grp['file_ids'].append(file_id)
         # Oldingi taymer bo'lsa bekor qilamiz, yangisini o'rnatamiz
@@ -2968,19 +3048,25 @@ async def handle_admin_photo(chat_id, file_id, media_group_id):
 
 
 def _single_photo_elon(chat_id, file_id):
-    res = create_bot_elon([file_id])
-    if res:
-        num = res.get('num', '?')
-        send_msg(chat_id,
-            f"✅ Yangi elon yaratildi: <b>№{num}</b>\n"
-            f"📸 1 ta rasm saqlandi.\n\n"
-            f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
-            keyboard={"inline_keyboard": [[{
-                "text": "🛠 Admin panel / Saytga kirish",
-                "web_app": {"url": SAYT_URL}
-            }]]})
-    else:
+    yon = rasm_yonalish(chat_id)
+    _elon_tayyor_xabar(chat_id, create_bot_elon([file_id], yon), 1, yon)
+
+
+def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
+    """Chala e'lon yaratildi / xato — admin javobi. MS3.2: bo'lim mavzusidan — nomi va sayt o'sha bo'limda ochiladi (?p=y_pc)."""
+    if not res:
         send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+        return
+    num = res.get('num', '?')
+    bolim = f" · {YON_KANAL[yon][0]}" if yon in YON_KANAL else ''
+    send_msg(chat_id,
+        f"✅ Yangi elon yaratildi: <b>№{num}</b>{bolim}\n"
+        f"📸 {cnt} ta rasm saqlandi.\n\n"
+        f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+        keyboard={"inline_keyboard": [[{
+            "text": "🛠 Admin panel / Saytga kirish",
+            "web_app": {"url": SAYT_URL + (f'?p=y_{yon}' if yon in YON_KANAL else '')}
+        }]]})
 
 
 # ══════════════════════════════════════════════════════════════════════════
