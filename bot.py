@@ -2619,11 +2619,30 @@ def _kk_sovrinlar(k):
     return [str(x) for x in arr if str(x).strip()]
 
 
+def _kk_oz_matn(k, til, prize, end, sovrin):
+    """BUGUN125: admin Konkurs varag'iga o'zi yozgan matn (tarqatma_matni / tarqatma_matni_ru). Bo'sh — None (eski matn).
+    HTML sifatida emas, oddiy matn sifatida (escape) — <, & xato bermasin; o'rinbosarlar: {sovrin} {sovrinlar} {tugaydi} {bot}."""
+    oz = str(k.get('tarqatma_matni_ru' if til == 'ru' else 'tarqatma_matni') or '').strip()
+    if not oz:
+        return None
+    m = html_escape(oz).replace('\r\n', '\n')
+    vaqt = f"{_kk_vaqt(end)} ({'по Ташкенту' if til == 'ru' else 'Toshkent vaqti'})" if end else ''
+    for kalit, qiymat in (('{sovrin}', f"<b>{prize}</b>"), ('{sovrinlar}', "\n".join(sovrin)),
+                          ('{tugaydi}', vaqt), ('{bot}', f"@{BOT_USERNAME}")):
+        m = m.replace(kalit, qiymat)
+    return m
+
+
 def _kk_tarqatma_xabari(k, til):
-    """Konkurs e'loni (rebranding bilan) — eski botdan Mijozlar'ga. Tugma yangi botda konkursga olib boradi."""
+    """Konkurs e'loni (rebranding bilan) — eski botdan Mijozlar'ga. Tugma yangi botda konkursga olib boradi.
+    BUGUN125: Konkurs varag'ida o'z matni bo'lsa — o'sha (tugma baribir avtomatik qo'shiladi)."""
     prize = html_escape(str(k.get('prize') or ''))
     end = _parse_end_time(k.get('end_time'))
     sovrin = [f"{_kk_medal(i + 1)} {html_escape(p)}" for i, p in enumerate(_kk_sovrinlar(k))]
+    oz = _kk_oz_matn(k, til, prize, end, sovrin)
+    tugma = "🎁 Участвовать" if til == 'ru' else "🎁 Qatnashish"
+    if oz:
+        return oz, {"inline_keyboard": [[{"text": tugma, "url": f"https://t.me/{BOT_USERNAME}?start=konkurs"}]]}
     if til == 'ru':
         q = [f"🎉 Новость! Наш магазин теперь — <b>{html_escape(BREND)}</b>.", f"Наш новый бот: @{BOT_USERNAME}", "",
              f"🎁 <b>Конкурс!</b> Приз: <b>{prize}</b>"] + sovrin
@@ -2766,8 +2785,13 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
     prize = str(e.get('prize') or '')
     win_text = _kk_goliblar_matni(winners)
     if not e.get('already'):
+        # BUGUN125: g'olib bir qurilmadan boshqa akkaunt bilan kirgan bo'lsa — faqat adminga ⚠️ (kanalga emas)
+        ogoh = [f"⚠️ {_kk_medal(int(w.get('place') or 1))} {html_escape(str(w.get('ogohlantirish')))}"
+                for w in winners if w.get('ogohlantirish')]
+        ogoh_t = ("\n\n" + "\n".join(ogoh) + "\n(qayta tanlash — saytda «🎲 Qayta»)") if ogoh else ''
         await _kk_admin(f"🏁 <b>Konkurs tugadi</b> ({html_escape(sabab or manba)})\n🎁 {html_escape(prize)}\n"
-                        f"👥 Qatnashchi: {e.get('total', 0)}\n🏆 G'oliblar:\n{win_text}\n\n📨 Xabarlar yuborilmoqda…", joy)
+                        f"👥 Qatnashchi: {e.get('total', 0)}\n🏆 G'oliblar:\n{win_text}{ogoh_t}\n\n📨 Xabarlar yuborilmoqda…",
+                        joy)
 
     # 3) Shaxsiy xabarlar — navbatdan (har odamga bir marta)
     fids, urls = _kk_rasmlar(e)
@@ -2959,13 +2983,28 @@ async def konkurs_tarqat(k, kampaniya, ids, joy):
         _kk_qulflar.discard(qulf)
 
 
+async def konkurs_tarqat_test_kanal(k, joy):
+    """BUGUN125: sinov tarqatma — uz va ru matn TEST kanalga (yangi bot), mijozlar o'rniga. Rasm — mijozga
+    boradigani bilan bir xil (1-url), tugma — avtomatik. Admin — natijani ko'radi."""
+    if not TEST_CHANNEL:
+        await _kk_admin("⚠️ TEST kanal sozlanmagan (TEST_CHANNEL_ID) — faqat sizga keladi.", joy)
+        return
+    _, urls = _kk_rasmlar(k)
+    holat = []
+    for til in ('uz', 'ru'):
+        matn, mk = _kk_tarqatma_xabari(k, til)
+        h = await blok(_kk_kanal_post, matn, [[], urls[:1]], mk, TEST_CHANNEL)
+        holat.append(f"{til}: {'✅' if h == 'yuborildi' else '❌ ' + html_escape(str(h))}")
+    await _kk_admin(f"🧪 TEST kanal ({html_escape(TEST_CHANNEL)}) — {' · '.join(holat)}", joy)
+
+
 _KK_BUYRUQLAR = ('/konkursholat', '/konkurstugat', '/konkursbekor', '/konkursdavom', '/tarqatma')
 
 
 async def konkurs_buyruq(chat_id, text):
     """Admin buyruqlari (fonda):
       /konkursholat [id] · /konkurstugat <id> [hozir] · /konkursbekor <id> · /konkursdavom <id> [noaniq]
-      /tarqatma <id> sinov [user_id …] · /tarqatma <id> hammaga"""
+      /tarqatma <id> sinov (TEST kanal + admin) · /tarqatma <id> hammaga"""
     q = text.split()
     b = q[0].split('@')[0]
     kid = q[1] if len(q) > 1 else ''
@@ -3057,7 +3096,7 @@ async def konkurs_buyruq(chat_id, text):
         if b == '/tarqatma':
             tur = q[2] if len(q) > 2 else ''
             if tur not in ('sinov', 'hammaga'):
-                await _kk_admin("/tarqatma &lt;id&gt; sinov [user_id …] — 1–2 kishiga sinov\n"
+                await _kk_admin("/tarqatma &lt;id&gt; sinov — TEST kanalga va sizga (mijozlarga emas)\n"
                                 "/tarqatma &lt;id&gt; hammaga — Mijozlar'dagi hammaga (bir marta)", chat_id)
                 return
             if not ESKI_BOT_TOKEN:
@@ -3071,10 +3110,12 @@ async def konkurs_buyruq(chat_id, text):
                 return
             if tur == 'hammaga' and _kk_sinovmi(k.get('prize')):
                 await _kk_admin(f"❌ {ek} — sinov konkursi (nomi TEST bilan): «hammaga» yuborilmaydi. "
-                                f"Faqat: /tarqatma {ek} sinov [user_id …]", chat_id)
+                                f"Faqat: /tarqatma {ek} sinov", chat_id)
                 return
             if tur == 'sinov':
-                ids = [x for x in q[3:] if x.isdigit()] or [str(ADMIN_ID)]
+                # BUGUN125 (v90-1): sinov — TEST kanal + admin; mijoz user_id'lari qabul qilinmaydi (adashib ketmasin)
+                await konkurs_tarqat_test_kanal(k, chat_id)
+                ids = [str(ADMIN_ID)]
                 kampaniya = f'{kid}-sinov{int(time.time())}'
             else:
                 ids, kampaniya = None, f'{kid}-hammaga'
@@ -3230,6 +3271,9 @@ async def handle_phone(chat_id, phone, user):
     # E2: matn telefon raqamiga o'xshamasa — QABUL QILMAYMIZ va holatni
     # saqlab qolamiz (mijoz qayta urinsin). Ilgari «salom» ham raqam bo'lib
     # Sheets'ga tushardi.
+    if user_states.get(chat_id, {}).get('step') == 'captcha':
+        await _kk_captcha_tugma(chat_id)
+        return
     if not _phone_ok(phone):
         await blok(send_msg, chat_id,
             "📱 Bu telefon raqamiga o'xshamadi.\n"
@@ -3242,6 +3286,10 @@ async def handle_phone(chat_id, phone, user):
 
     state = user_states.pop(chat_id, {})
     if not state:
+        return
+    if state.get('step') == 'captcha':        # BUGUN125: raqam allaqachon olingan — tekshiruv tugmasini qayta beramiz
+        user_states[chat_id] = state
+        await _kk_captcha_tugma(chat_id)
         return
 
     if not await blok(is_member, chat_id):
@@ -3258,36 +3306,153 @@ async def handle_phone(chat_id, phone, user):
     if _ln:
         ism = (ism + ' ' + _ln).strip()
 
-    # ── DARROV javob: hech qanday Google so'rovini KUTMAYMIZ ──
-    # Mijoz raqam berishi bilan tasdiqlash xabarini yuboramiz.
-    await blok(req.post, f'{TG_API}/sendMessage', json={
-        'chat_id': chat_id,
-        'text': (
-            "📲 <b>Deyarli tayyor! / Почти готово!</b>\n\n"
-            "🇺🇿 Qatnashishni yakunlash uchun pastdagi tugmani bosing "
-            "va saytda \"✅ Tasdiqlash\"ni bosing 👇\n"
-            "🇷🇺 Чтобы завершить участие, нажмите кнопку ниже "
-            "и нажмите \"✅ Подтвердить\" на сайте 👇"
-        ),
-        'parse_mode': 'HTML',
-        'reply_markup': {
-            "inline_keyboard": [[{
-                "text": "✅ Saytda tasdiqlash / Подтвердить",
-                "web_app": {"url": SAYT_URL + '?p=konkurs'}
-            }]]
-        }
-    }, timeout=10)
+    # ── BUGUN125 (v97 a): raqam olindi, lekin HALI QATNASHMADI. Qatnashish — faqat Mini App'dagi oddiy tekshiruvdan
+    # (captcha) o'tgach, /konkurs/qatnash yozganda. Ilgari bu yerda darrov yozilib, saytdagi «Tasdiqlash» — faqat
+    # ko'rinish edi (hech narsani tekshirmasdi). Holat xotirada: bot qayta yonsa — mijoz raqamni qayta yuboradi.
+    user_states[chat_id] = {'step': 'captcha', 'konkurs_id': konkurs_id, 'prize': state.get('prize', ''),
+                            'user_id': user_id, 'username': username or '', 'ism': ism, 'phone': str(phone),
+                            'vaqt': time.time()}
+    await _kk_captcha_tugma(chat_id)
 
-    # ── FONDA: telefonni Sheets'ga yozamiz (g'olib aniqlash uchun ro'yxat). ──
-    # Mijoz allaqachon javob oldi, bu yozish orqada ketadi — kechikish sezilmaydi.
-    async def _save():
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                None, save_participant, konkurs_id, user_id, username, phone, ism)
+
+# ══ BUGUN125: Konkurs Mini App — captcha + qurilma belgisi ══
+# Oqim: raqam → «🧩 Tasdiqlash» (web_app, sayt/konkurs.html) → POST /konkurs/captcha (savol) → mijoz tanlaydi →
+# POST /konkurs/qatnash (javob + qurilma belgisi) → Apps Script joinKonkurs (kalit bilan) → faqat ok bo'lsa «qatnashdingiz».
+# Bir qurilmadan 2+ akkaunt — BLOKLANMAYDI (foydalanuvchi: «qisman ushlab qolamiz»): jadvalda ⚠️ + adminga ikkalasi.
+KONKURS_MINI_URL = SAYT_URL + 'konkurs.html'
+_KK_CAPTCHA_BELGI = (('🍎', 'olma', 'яблоко'), ('🚗', 'mashina', 'машина'), ('🐱', 'mushuk', 'кошка'),
+                     ('⚽', "to'p", 'мяч'), ('🌙', 'oy', 'луна'), ('🔑', 'kalit', 'ключ'), ('🎈', 'shar', 'шарик'),
+                     ('🐟', 'baliq', 'рыба'), ('📱', 'telefon', 'телефон'), ('⭐', 'yulduz', 'звезда'),
+                     ('🍌', 'banan', 'банан'), ('🏠', 'uy', 'дом'))
+KK_CAPTCHA_MIN_S = 1.5          # tezroq javob — odam emas
+KK_CAPTCHA_UMR_S = 600          # savol 10 daqiqa yaroqli
+KK_CAPTCHA_OTDI_S = 300         # o'tgan tekshiruv — 5 daqiqa (tarmoq xatosida «Qayta urinish» captcha'siz)
+KK_CAPTCHA_SOAT_MAX = 20        # bir akkauntga soatiga ko'pi bilan shuncha savol
+_kk_captcha = {}                # uid → {id, javob, vaqt, otdi}
+_kk_captcha_soni = {}           # uid → [oyna_boshi, soni]
+
+
+async def _kk_captcha_tugma(chat_id):
+    await blok(send_msg, chat_id,
+               "🧩 <b>Oxirgi qadam / Последний шаг</b>\n\n"
+               "🇺🇿 Pastdagi tugmani bosing va oddiy tekshiruvdan o'ting. "
+               "Tekshiruvdan o'tmaguncha qatnashish <b>hisoblanmaydi</b>.\n"
+               "🇷🇺 Нажмите кнопку ниже и пройдите простую проверку. "
+               "Без проверки участие <b>не засчитывается</b>.",
+               {"inline_keyboard": [[{"text": "🧩 Tasdiqlash / Подтвердить", "web_app": {"url": KONKURS_MINI_URL}}]]})
+
+
+def _kk_xesh(qiymat):
+    """Qurilma id / izi → qisqa HMAC (jadvalda xom qiymat turmaydi; tenglikni solishtirish uchun yetadi)."""
+    import hmac
+    import hashlib
+    v = re.sub(r'[^A-Za-z0-9_-]', '', str(qiymat or ''))[:128]
+    if len(v) < 8:
+        return ''
+    kalit = (API_KEY or BOT_TOKEN or 'kraken').encode()
+    return hmac.new(kalit, b'konkurs-qurilma:' + v.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _kk_qatnash_yoz(st, qurilma, iz):
+    """Apps Script joinKonkurs — kalit bilan (qurilma belgisi yoziladi). Javob dict yoki None (tarmoq / kalit yo'q)."""
+    data = json.dumps({'konkurs_id': str(st.get('konkurs_id') or ''), 'user_id': str(st.get('user_id') or ''),
+                       'username': st.get('username') or '', 'ism': st.get('ism') or '', 'phone': st.get('phone') or '',
+                       'qurilma': qurilma, 'qurilma_izi': iz}, ensure_ascii=False)
+    return _kk_sheet('joinKonkurs', timeout=15, data=data)
+
+
+def _kk_kim(username, ism, uid):
+    nom = html_escape(ism or '—')
+    return f"{nom} · {'@' + html_escape(username) if username else 'username yo‘q'} · <code>{html_escape(str(uid))}</code>"
+
+
+async def konkurs_captcha_endpoint(request):
+    """Mini App: yangi savol. Faqat raqam bergan (step=captcha) akkauntga."""
+    import secrets
+    import random
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'ok': False, 'sabab': 'imzo'}, status=401)
+        uid = int(uid)
+        st = user_states.get(uid) or {}
+        if st.get('step') != 'captcha':
+            return web.json_response({'ok': False, 'sabab': 'holat'})
+        now = time.time()
+        c = _kk_captcha.get(uid)
+        if c and c.get('otdi') and now - c['otdi'] <= KK_CAPTCHA_OTDI_S:
+            return web.json_response({'ok': True, 'id': c['id'], 'otdi': True, 'konkurs_id': str(st.get('konkurs_id'))})
+        oyna = _kk_captcha_soni.get(uid)
+        if not oyna or now - oyna[0] > 3600:
+            oyna = _kk_captcha_soni[uid] = [now, 0]
+        if oyna[1] >= KK_CAPTCHA_SOAT_MAX:
+            return web.json_response({'ok': False, 'sabab': 'kop'})
+        oyna[1] += 1
+        tanlov = random.sample(_KK_CAPTCHA_BELGI, 6)
+        maqsad = random.choice(tanlov)
+        variantlar = [{'t': secrets.token_hex(4), 'e': b[0]} for b in tanlov]
+        javob = variantlar[tanlov.index(maqsad)]['t']
+        cid = secrets.token_hex(6)
+        _kk_captcha[uid] = {'id': cid, 'javob': javob, 'vaqt': now, 'otdi': 0}
+        return web.json_response({'ok': True, 'id': cid, 'savol_uz': maqsad[1], 'savol_ru': maqsad[2],
+                                  'variantlar': variantlar, 'konkurs_id': str(st.get('konkurs_id'))})
+    except Exception as e:
+        logger.error(f'konkurs_captcha: {type(e).__name__}')
+        return web.json_response({'ok': False, 'sabab': 'xato'}, status=500)
+
+
+async def konkurs_qatnash_endpoint(request):
+    """Mini App: javob + qurilma belgisi → qatnashish. ok:true — FAQAT jadvalga yozilgach (yoki oldin yozilgan).
+    Xato / uzilish — ok:false, holat va o'tgan tekshiruv saqlanadi: mijoz «Qayta urinish» bosadi."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'ok': False, 'sabab': 'imzo'}, status=401)
+        uid = int(uid)
+        now = time.time()
+        c = _kk_captcha.get(uid)
+        if not c or c['id'] != str(data.get('id') or ''):
+            return web.json_response({'ok': False, 'sabab': 'captcha'})
+        if not c.get('otdi'):
+            if now - c['vaqt'] > KK_CAPTCHA_UMR_S or now - c['vaqt'] < KK_CAPTCHA_MIN_S \
+                    or str(data.get('javob') or '') != c['javob']:
+                _kk_captcha.pop(uid, None)            # har noto'g'ri javob — yangi savol
+                return web.json_response({'ok': False, 'sabab': 'notogri'})
+            c['otdi'] = now
+        elif now - c['otdi'] > KK_CAPTCHA_OTDI_S:
+            _kk_captcha.pop(uid, None)
+            return web.json_response({'ok': False, 'sabab': 'captcha'})
+        st = user_states.get(uid) or {}
+        if st.get('step') != 'captcha':
+            return web.json_response({'ok': False, 'sabab': 'holat'})
+        r = await blok(_kk_qatnash_yoz, st, _kk_xesh(data.get('qurilma')), _kk_xesh(data.get('iz')))
+        if not r:
+            return web.json_response({'ok': False, 'sabab': 'xato'})     # holat qoladi — qayta urinish
+        msg = r.get('msg')
+        if r.get('ok') or msg in ('already', 'yopiq'):        # yakuniy javob — holat tozalanadi
+            if user_states.get(uid, {}).get('step') == 'captcha':
+                user_states.pop(uid, None)
+            _kk_captcha.pop(uid, None)
+        if r.get('ok') or (msg == 'already' and r.get('sabab') != 'telefon'):
             _konkurs_cache['time'] = 0
-        except Exception as e:
-            logger.error(f'bg save_participant: {e}')
-    asyncio.create_task(_save())
+            await blok(send_msg, uid,
+                       "✅ <b>Siz konkursda qatnashyapsiz!</b>\nG'olib e'lon qilinganda xabar beramiz.\n\n"
+                       "✅ <b>Вы участвуете в розыгрыше!</b>\nСообщим, когда объявим победителя.")
+            if r.get('shubha'):
+                q = [f"⚠️ <b>Konkurs {html_escape(str(st.get('konkurs_id')))}: bir qurilmadan bir nechta akkaunt</b>",
+                     "(bloklanmadi — jadvalda «ogohlantirish» ustunida belgilandi)", "",
+                     f"🆕 Hozir kirgan: {_kk_kim(st.get('username'), st.get('ism'), st.get('user_id'))}"]
+                for x in r['shubha']:
+                    sabab = 'shu qurilma' if x.get('sabab') == 'qurilma' else "o'xshash qurilma, 5 daq ichida"
+                    q.append(f"👤 Avvalgi ({sabab}): {_kk_kim(x.get('username'), x.get('ism'), x.get('user_id'))}")
+                await _kk_admin("\n".join(q))
+            return web.json_response({'ok': True, 'already': not r.get('ok')})
+        return web.json_response({'ok': False, 'sabab': r.get('sabab') if msg == 'already' else (msg or 'xato')})
+    except Exception as e:
+        logger.error(f'konkurs_qatnash: {type(e).__name__}')
+        return web.json_response({'ok': False, 'sabab': 'xato'}, status=500)
 
 
 def send_konkurs_channel_post(chat_id, text, images, reply_markup):
@@ -4789,6 +4954,8 @@ async def main():
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/label', label_endpoint)
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
+    app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
+    app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
