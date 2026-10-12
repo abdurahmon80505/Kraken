@@ -4945,9 +4945,53 @@ async def cors_middleware(request, handler):
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
+_ESKI_UPD = {}   # eski bot update_id → vaqt (Telegram qayta yuborsa — bir marta javob)
+
+
+def _eski_bot_javob(upd):
+    """BUGUN145: eski botga yozgan / tugma bosgan odamga ESKI bot tokeni bilan yangi bot havolasi.
+    Nega: eski bot webhook'i ham /webhook ga kelardi — javob yangi token bilan ketib, yangi botga kirmaganlarga
+    yetmasdi (403), mijoz javobsiz qolardi (foydalanuvchi, 2026-10-12)."""
+    cq = upd.get('callback_query') or {}
+    msg = upd.get('message') or cq.get('message') or {}
+    chat = msg.get('chat') or {}
+    if chat.get('type') != 'private':
+        return
+    if cq.get('id'):
+        _kk_tg('answerCallbackQuery', {'callback_query_id': cq['id']}, token=ESKI_BOT_TOKEN, urinish=1)
+    havola = f'https://t.me/{BOT_USERNAME}'
+    m = re.match(r'^/start\s+([A-Za-z0-9_-]{1,64})$', (upd.get('message') or {}).get('text') or '')
+    if m:   # e'lon / konkurs havolasi — yangi botda o'sha joyga ochilsin
+        havola += f'?start={m.group(1)}'
+    matn = ('Assalomu alaykum! 👋\n\n'
+            f'Botimiz yangi manzilga ko\'chdi — <b>Nuqta tech</b>: @{BOT_USERNAME}\n\n'
+            'Pastdagi tugmani bosing va «Start» ni bosing — e\'lonlar, narxlar va savollar endi o\'sha yerda.')
+    mk = {'inline_keyboard': [[{'text': '👉 Yangi botga o\'tish', 'url': havola}]]}
+    _kk_tg('sendMessage', {'chat_id': chat.get('id'), 'text': matn, 'parse_mode': 'HTML', 'reply_markup': mk},
+           token=ESKI_BOT_TOKEN)
+
+
+async def eski_webhook(request):
+    """BUGUN145: eski bot webhook'i — darhol 200 (T1), javob fonda."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({'ok': True})
+    if isinstance(data, dict) and ESKI_BOT_TOKEN:
+        uid = data.get('update_id')
+        hozir = time.time()
+        if uid not in _ESKI_UPD:
+            _ESKI_UPD[uid] = hozir
+            for k in [k for k, v in _ESKI_UPD.items() if hozir - v > 3600]:
+                _ESKI_UPD.pop(k, None)
+            asyncio.create_task(blok(_eski_bot_javob, data))
+    return web.json_response({'ok': True})
+
+
 async def main():
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post('/webhook', webhook)
+    app.router.add_post('/webhook-eski', eski_webhook)   # BUGUN145: eski bot → yangi bot havolasi
     app.router.add_post('/notify', notify_endpoint)
     app.router.add_post('/konkurs_started', konkurs_started_endpoint)
     app.router.add_post('/reroll_notify', reroll_notify_endpoint)
@@ -4970,6 +5014,14 @@ async def main():
         # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
         r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook', 'allowed_updates': ALLOWED_UPDATES})
         logger.info(f'Webhook: {r.json()}')
+        if ESKI_BOT_TOKEN and ESKI_BOT_TOKEN != BOT_TOKEN:
+            # BUGUN145: eski bot o'z yo'liga — javobni eski token bilan beradi (yangi bot havolasi)
+            try:
+                r2 = req.post(f'https://api.telegram.org/bot{ESKI_BOT_TOKEN}/setWebhook', timeout=20,
+                              json={'url': f'{render_url}/webhook-eski', 'allowed_updates': ['message', 'callback_query']})
+                logger.info(f'Eski bot webhook: {r2.json()}')
+            except Exception as e:
+                logger.error(f'eski bot webhook: {type(e).__name__}')
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
