@@ -622,6 +622,20 @@ def get_stat(days=1):
         return None
 
 
+def get_haftalik():
+    """BUGUN139: haftalik hisobot matni — Apps Script quradi (AppScript.gs: getHaftalikMatn); trigger ham aynan shuni yuboradi."""
+    if not SHEET_URL:
+        return None
+    if not API_KEY:
+        return {'ok': False, 'msg': 'key_yoq'}
+    try:
+        r = req.get(f"{SHEET_URL}?action=haftalik&key={urllib.parse.quote(API_KEY)}", timeout=40)
+        return r.json()
+    except Exception as e:
+        logger.error(f'get_haftalik: {e}')
+        return None
+
+
 def build_stat_text(s):
     """Hisobotni admin o'qiydigan xabarga aylantiradi (HTML)."""
     kun = s.get('days', 1)
@@ -668,6 +682,13 @@ async def handle_stat(chat_id, text):
     Telegram buyruqni qayta yuboradi va hisobot ikki marta keladi.
     """
     parts = text.split()
+    if len(parts) > 1 and parts[1].lower() in ('hafta', 'haftalik'):   # BUGUN139: /stat hafta — dushanbadagi hisobotning o'zi
+        h = await blok(get_haftalik)
+        if h and h.get('ok') and h.get('matn'):
+            await blok(send_msg, chat_id, html_escape(h['matn']))
+        else:
+            await blok(send_msg, chat_id, "❌ Haftalik hisobotni olib bo'lmadi (Apps Script yangilanganmi? API_KEY bir xilmi?).")
+        return
     try:
         days = int(parts[1]) if len(parts) > 1 else 1
     except ValueError:
