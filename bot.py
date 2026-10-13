@@ -91,6 +91,11 @@ SUV_BELGI_OLCHAM = 0.15
 SUV_BELGI_CHET = 0.04
 SUV_BELGI_SHAFFOF = 50
 SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash bilan bir xil)
+# BUGUN148 §2: 2+ rasmli e'londa 1-rasmning o'ng yuqori burchagida «›››» belgisi (ImageKit matn layer'i, logo kabi usul —
+# resize'dan keyin `:` bilan). Foydalanuvchi: «postda odamlar 1-rasmni ko'rib, qolganini ko'rmasligi mumkin». uz/ru matn emas.
+KEYINGI_BELGI = os.environ.get('KEYINGI_BELGI', '1') != '0'
+KEYINGI_BELGI_LAYER = ('l-text,i-%E2%80%BA%E2%80%BA%E2%80%BA,fs-90,co-FFFFFF,bg-00000099,pa-22,r-40,'
+                       'lx-bw_mul_0.88,ly-bh_mul_0.015,l-end')
 
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
@@ -1168,9 +1173,21 @@ def rich_media(rasmlar, kollaj=False, rasm_src=None):
     return f'<tg-slideshow>{imgs}</tg-slideshow>'
 
 
+def keyingi_belgi(url):
+    """Tayyor ImageKit manzilga (`…?tr=…`) «›››» belgisi layer'ini qo'shadi. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi."""
+    if not KEYINGI_BELGI or 'ik.imagekit.io' not in url or '?tr=' not in url and '&tr=' not in url:
+        return url
+    return url + ':' + KEYINGI_BELGI_LAYER
+
+
 def belgi_src(elon):
-    """{toza rasm manzili: belgili manzil} — kanal postining rich rasmlari uchun (rich_media rasm_src)."""
-    return {t: belgili(t, j) for t, j in rasm_joylari(elon)}
+    """{toza rasm manzili: belgili manzil} — kanal postining rich rasmlari uchun (rich_media rasm_src).
+    BUGUN148: 2+ rasm bo'lsa 1-rasmga «›››» belgisi ham (keyingi_belgi)."""
+    joylar = rasm_joylari(elon)
+    src = {t: belgili(t, j) for t, j in joylar}
+    if len(joylar) >= 2:
+        src[joylar[0][0]] = keyingi_belgi(src[joylar[0][0]])
+    return src
 
 
 def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None):
@@ -4086,22 +4103,26 @@ def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
 #  🔴 TUZOQ: inline rich xabarda «Only previously uploaded files may be used» —
 #  ImageKit URL ishlamaydi, Telegram file_id kerak. Shu sabab rasm bir marta
 #  RASM_YUKLASH_CHAT ga ovozsiz yuboriladi, file_id olinadi, xabar DARROV
-#  o'chiriladi. file_id xotirada (restartda qayta yuklanadi). Hali yuklanmagan
+#  o'chiriladi. file_id Elonlar jadvalidagi `rasm_file_id` ustuniga ham yoziladi (BUGUN148) — restart / deploydan keyin
+#  qayta yuklanmaydi (jadvaldan olinadi). Hali yuklanmagan
 #  e'lon — oddiy rasm kartasi (_share_result) bilan chiqadi, keyingi so'rovda rich.
 #  Yuklash faqat inline so'rov kelganda boshlanadi (BotFather'da yoqilmaguncha jim).
-#  Ma'lumot — _ELON_CACHE (G10.3), jadvalga yozilmaydi.
+#  Ma'lumot — _ELON_CACHE (G10.3) + jadvaldagi file_id (rasm_file_id).
 # ══════════════════════════════════════════════════════════════════════════
 
 INLINE_SAHIFA = 50            # Telegram: bitta javobda ≤ 50 natija
 INLINE_KUTISH = 5.0           # rasm yuklanishini kutish (s) — so'ng tayyori rich, qolgani karta
 # BUGUN19 §1 (S130 = b + ovozsiz, 2026-09-26): rasm TEST kanalga yuklanadi (lichka toza qoladi).
-# Elonlar'da to'liq Telegram file_id saqlanmaydi (images — faqat ImageKit URL; nomidagi «AgACAgIA» —
-# file_id'ning 8 harfi, hamma rasmda bir xil) — shuning uchun jadvaldan olinmaydi (BUGUN19.md, S137).
+# BUGUN148 (2026-10-13, foydalanuvchi: «deploydan keyin qayta jo'natmasin, yozib qo'ysin sheets'da»): file_id Elonlar'ning
+# `rasm_file_id` ustuniga yoziladi — JSON {kalit: file_id}. Kalit: rasm URL'i (toza); 2+ rasmli e'londa 1-rasm «›››» belgili —
+# kalit `URL#b`. Kalit rasm manzili bilan bog'liq: rasm almashsa eski file_id o'zi tushib qoladi (jadvalga qayta yozilganda).
+# 🔴 Ombor botining file_id si bu botda ISHLAMAYDI — ko'chirilmaydi, Store boti o'zi yuklaydi.
 RASM_YUKLASH_CHAT = TEST_CHANNEL
 _RASM_ZAXIRA_CHAT = ADMIN_ID  # TEST kanal rad etsa (bot a'zo/admin emas, kanal yo'q) — lichka, ovozsiz (BUGUN16 yo'li)
 _RASM_CHAT = {'id': RASM_YUKLASH_CHAT}
 _RASM_XATO_KUTISH = 3600      # yuklanmagan rasm 1 soat qayta urinilmaydi
-_RASM_FID = {}                # rasm URL → Telegram file_id
+_RASM_FID = {}                # kalit (rasm URL / URL#b) → Telegram file_id
+_RASM_EGA = {}                # kalit → e'lon raqami (file_id ni jadvalga yozish uchun)
 _RASM_XATO = {}               # rasm URL → yuklanmagan vaqti
 _rasm_navbat = []             # yuklash navbati (URL)
 _rasm_kutilmoqda = set()      # navbatda yoki yuklanayotgan URL'lar
@@ -4210,17 +4231,70 @@ def _chat_xatosi(r):
                          'need administrator', 'have no rights', 'chat_write_forbidden'))
 
 
+def _fid_manba(kalit):
+    """Kalit → yuklanadigan manzil: `URL#b` — «›››» belgili 1-rasm, aks holda oddiy w-1600."""
+    if kalit.endswith('#b'):
+        return keyingi_belgi(_ik_olcham(kalit[:-2], 'w-1600,q-85'))
+    return _ik_olcham(kalit, 'w-1600,q-85')
+
+
+def inline_kalitlari(elon):
+    """E'lonning inline rasm kalitlari (≤10, tartib bilan): 2+ rasmda 1-rasm — belgili (`URL#b`)."""
+    rasmlar = images_of(elon)[:10]
+    if len(rasmlar) >= 2 and KEYINGI_BELGI:
+        rasmlar[0] += '#b'
+    return rasmlar
+
+
+def _fid_jadvaldan(elon):
+    """Jadvaldagi `rasm_file_id` dan HOZIRGI rasmlarga to'g'ri kelganlarini xotiraga oladi (almashgan rasmniki tashlanadi).
+    Qaytaradi: {kalit: file_id} — jadvaldagi (tozalangan) holat."""
+    xom = elon.get('rasm_file_id')
+    try:
+        d = json.loads(xom) if isinstance(xom, str) and xom.strip() else (xom if isinstance(xom, dict) else {})
+    except Exception:
+        d = {}
+    if not isinstance(d, dict):
+        d = {}
+    num = _num_int(elon)
+    qolgan = {}
+    for k in inline_kalitlari(elon):
+        _RASM_EGA[k] = num
+        if isinstance(d.get(k), str) and d[k]:
+            qolgan[k] = d[k]
+            _RASM_FID.setdefault(k, d[k])
+    return qolgan
+
+
+def _fid_saqla(kalitlar):
+    """Yangi yuklangan file_id larni e'lon qatoriga (`rasm_file_id`) yozadi. Faqat o'zgargan bo'lsa."""
+    for num in {_RASM_EGA.get(k) for k in kalitlar} - {None}:
+        with _elon_cache_lock:
+            elon = _ELON_CACHE['by_num'].get(str(num))
+        if not elon:
+            continue
+        hozir = {k: _RASM_FID[k] for k in inline_kalitlari(elon) if k in _RASM_FID}
+        if not hozir or hozir == _fid_jadvaldan(elon):
+            continue
+        qiymat = json.dumps(hozir, separators=(',', ':'))
+        if _sheets_update({'num': int(num), 'rasm_file_id': qiymat}):
+            with _elon_cache_lock:
+                elon['rasm_file_id'] = qiymat
+        else:
+            logger.error(f'rasm_file_id: №{num} jadvalga yozilmadi')
+
+
 def _rasm_yubor(guruh):
     """≤10 rasmni TEST kanalga (RASM_YUKLASH_CHAT) ovozsiz yuboradi, file_id'larni oladi, xabarlarni o'chiradi.
     Kanal chat sababli rad etsa — shu seans oxirigacha lichkaga (_RASM_ZAXIRA_CHAT), ovozsiz."""
     chat = _RASM_CHAT['id']
     if len(guruh) == 1:
-        r = _rasm_tg('sendPhoto', {'chat_id': chat, 'photo': _ik_olcham(guruh[0], 'w-1600,q-85'),
+        r = _rasm_tg('sendPhoto', {'chat_id': chat, 'photo': _fid_manba(guruh[0]),
                                    'disable_notification': True})
         xabarlar = [r.get('result')] if r.get('ok') else None
     else:
         r = _rasm_tg('sendMediaGroup', {'chat_id': chat, 'disable_notification': True,
-                                        'media': [{'type': 'photo', 'media': _ik_olcham(u, 'w-1600,q-85')} for u in guruh]})
+                                        'media': [{'type': 'photo', 'media': _fid_manba(u)} for u in guruh]})
         xabarlar = r.get('result') if r.get('ok') else None
     if not xabarlar and chat != _RASM_ZAXIRA_CHAT and _chat_xatosi(r):
         logger.error(f"inline rasm: {chat} rad etdi ({r.get('description')}) — endi lichkaga, ovozsiz")
@@ -4259,6 +4333,7 @@ def _rasm_ishchi_ish():
                 return
         try:
             _rasm_yubor(guruh)
+            _fid_saqla(guruh)
         except Exception as ex:
             logger.error(f'inline rasm ishchisi: {ex}')
             for u in guruh:
@@ -4307,7 +4382,9 @@ def inline_natija(elon, models):
     cond_uz, _cond_ru, _emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
     izoh = ' · '.join(x for x in ((f'{narx}$' if narx else ''), cond_uz, f'№{num}') if x)
 
-    if rasmlar and all(u in _RASM_FID for u in rasmlar):
+    kalitlar = inline_kalitlari(elon)
+    _fid_jadvaldan(elon)
+    if rasmlar and all(k in _RASM_FID for k in kalitlar):
         src = {u: f'tg://photo?id=r{i}' for i, u in enumerate(rasmlar)}
         return {
             'type': 'article',
@@ -4317,8 +4394,8 @@ def inline_natija(elon, models):
             'thumbnail_url': _ik_olcham(rasmlar[0], 'w-200,q-70'),
             'input_message_content': {'rich_message': {
                 'html': build_rich_html(elon, models, premium=False, rasm_src=src),
-                'media': [{'id': f'r{i}', 'media': {'type': 'photo', 'media': _RASM_FID[u]}}
-                          for i, u in enumerate(rasmlar)],
+                'media': [{'id': f'r{i}', 'media': {'type': 'photo', 'media': _RASM_FID[k]}}
+                          for i, k in enumerate(kalitlar)],
             }},
         }
     return _inline_karta(num, elon, model, sarlavha, izoh)
@@ -4382,7 +4459,9 @@ async def inline_javob(iq):
         sahifa = topildi[boshi:boshi + INLINE_SAHIFA]
         keyingi = str(boshi + INLINE_SAHIFA) if boshi + INLINE_SAHIFA < len(topildi) else ''
 
-        urls = [u for e in sahifa for u in images_of(e)[:10]]
+        for e in sahifa:
+            _fid_jadvaldan(e)       # jadvaldagi file_id — qayta yuklanmaydi (BUGUN148)
+        urls = [k for e in sahifa for k in inline_kalitlari(e)]
         rasm_navbatga(urls)
         oxiri = time.monotonic() + INLINE_KUTISH
         while any(u in _rasm_kutilmoqda for u in urls) and time.monotonic() < oxiri:
