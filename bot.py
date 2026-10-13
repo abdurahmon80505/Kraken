@@ -32,7 +32,8 @@ CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
 SAYT_URL = 'https://krakenmobileshop.netlify.app/'
 # Bot manzili (@username) — BITTA joy, kodda boshqa joyda yozilmaydi (2026-10-07, R1.4 b: yangi bot «Nuqta tech Store»
 # @nuqta_tech_store_bot). Tartib: Render env BOT_USERNAME (qo'lda) → bo'lmasa — BOT_TOKEN egasi (Telegram getMe, ishga
-# tushganda bir marta) → bo'lmasa — eski bot. Ya'ni chiqarish kuni Render'da faqat BOT_TOKEN almashadi, manzil o'zi to'g'rilanadi.
+# tushganda bir marta) → bo'lmasa — yangi bot nomi (BUGUN137: eski bot faqat yangisiga yo'naltiradi, zaxira nom ham yangisi).
+# Ya'ni chiqarish kuni Render'da faqat BOT_TOKEN almashadi, manzil o'zi to'g'rilanadi.
 def _bot_manzili():
     env = os.environ.get('BOT_USERNAME', '').strip().lstrip('@')
     if env:
@@ -45,7 +46,7 @@ def _bot_manzili():
             logger.error(f'getMe: {j}')
         except Exception as e:
             logger.error(f'getMe: {e}')
-    return 'kraken_mobile_shop_bot'
+    return 'nuqta_tech_store_bot'
 BOT_USERNAME = _bot_manzili()
 SHEET_URL = os.environ.get('SHEET_URL', '')
 # ADMIN_USERNAME — pastda, «ALOQA» blokida (2026-10-07)
@@ -2381,6 +2382,7 @@ def _kk_worker_nomi():
 KONKURS_WORKER = _kk_worker_nomi()
 # Tarqatma (konkurs e'loni Mijozlar'ga) — ESKI bot orqali: mijozlar yangi botga hali yozmagan, unga yozib bo'lmaydi.
 ESKI_BOT_TOKEN = os.environ.get('ESKI_BOT_TOKEN', '').strip()
+ESKI_BOT_USERNAME = 'kraken_mobile_shop_bot'
 
 
 def _parse_end_time(end_str):
@@ -2449,15 +2451,20 @@ _KK_BLOK_BELGI = ('blocked', 'deactivated', 'chat not found', 'peer_id_invalid',
                   'bot was kicked', "bot can't initiate")
 
 
-def _kk_tg(usul, payload, token=None, timeout=20, urinish=3):
+def _kk_tg(usul, payload, token=None, timeout=20, urinish=3, files=None):
     """Telegram so'rovi → (natija, javob). natija:
       'yuborildi' · 'bloklagan' (403 / foydalanuvchi yo'q) · 'xato' (Telegram aniq rad etdi — ketmadi) ·
       'noaniq' (tarmoq uzildi / 5xx — ketgan bo'lishi mumkin; QAYTA YUBORILMAYDI).
-    429 — Telegram aytgan retry_after kutilib, qayta (ilgari xabar jimgina yo'qolardi)."""
+    429 — Telegram aytgan retry_after kutilib, qayta (ilgari xabar jimgina yo'qolardi).
+    files — fayl yuklash (multipart; ichidagi fayl — bayt, qayta urinishda ham o'qiladi)."""
     url = f'https://api.telegram.org/bot{token}/{usul}' if token else f'{TG_API}/{usul}'
     for n in range(urinish):
         try:
-            r = req.post(url, json=payload, timeout=timeout)
+            if files:
+                r = req.post(url, data={k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
+                                        for k, v in payload.items()}, files=files, timeout=timeout)
+            else:
+                r = req.post(url, json=payload, timeout=timeout)
         except Exception as e:
             logger.error(f'konkurs tg {usul}: {type(e).__name__}')
             return 'noaniq', None
@@ -2941,6 +2948,19 @@ def _kk_kampaniya(s):
 
 async def konkurs_tarqat(k, kampaniya, ids, joy):
     """Konkurs e'loni — ESKI bot orqali Mijozlar'ga (navbat bilan; qayta chaqirilsa — qolganidan davom, takror yo'q)."""
+    _, urls = _kk_rasmlar(k)   # file_id — yangi botniki, eski bot yubora olmaydi; faqat url
+    matnlar = {'uz': _kk_tarqatma_xabari(k, 'uz'), 'ru': _kk_tarqatma_xabari(k, 'ru')}
+
+    def yubor(x):
+        matn, mk = matnlar.get(x.get('til'), matnlar['uz'])
+        return _kk_shaxsiy(x.get('user_id'), matn, mk, rasm=urls[:1], token=ESKI_BOT_TOKEN)
+
+    return await _kk_tarqat(kampaniya, ids, joy, yubor)
+
+
+async def _kk_tarqat(kampaniya, ids, joy, yubor):
+    """Tarqatma navbati (konkurs e'loni, rebrending): Mijozlar → «tarqatma» varag'i (bir kishiga bir marta), partiya bilan
+    yubor(x) → hisobot adminga. ids — faqat shu user_id'lar (sinov); None — Mijozlar'dagi hamma."""
     kampaniya = _kk_kampaniya(kampaniya)
     qulf = 'T:' + kampaniya
     if qulf in _kk_qulflar:
@@ -2956,13 +2976,6 @@ async def konkurs_tarqat(k, kampaniya, ids, joy):
             return 'xato'
         await _kk_admin(f"📣 Tarqatma <b>{kampaniya}</b>: {t.get('soni', 0)} kishi"
                         f"{' (davomi)' if t.get('already') else ''} — yuborilmoqda…", joy)
-        _, urls = _kk_rasmlar(k)   # file_id — yangi botniki, eski bot yubora olmaydi; faqat url
-        matnlar = {'uz': _kk_tarqatma_xabari(k, 'uz'), 'ru': _kk_tarqatma_xabari(k, 'ru')}
-
-        def yubor(x):
-            matn, mk = matnlar.get(x.get('til'), matnlar['uz'])
-            return _kk_shaxsiy(x.get('user_id'), matn, mk, rasm=urls[:1], token=ESKI_BOT_TOKEN)
-
         sanoq, holat = await _kk_navbat(
             lambda: _kk_sheet('tarqatmaOl', kampaniya=kampaniya, worker=KONKURS_WORKER, n=KONKURS_PARTIYA),
             lambda natija: _kk_sheet('tarqatmaNatija', kampaniya=kampaniya, worker=KONKURS_WORKER,
@@ -3017,7 +3030,10 @@ async def konkurs_buyruq(chat_id, text):
                 kid = str((await blok(get_konkurs) or {}).get('id') or '')
                 ek = html_escape(kid)
             if not kid:
-                await _kk_admin("Konkurs topilmadi. /konkursholat &lt;id&gt;", chat_id)
+                # BUGUN137: xato emas — konkurs hali ochilmagan (ilgari «Konkurs topilmadi» xatoga o'xshardi)
+                await _kk_admin("Hozir ochiq konkurs yo'q.\n"
+                                "Yangi konkurs — /konkurs yozing va sovrin rasmini yuboring (keyin Admin panelda "
+                                "to'ldirasiz).\nEski konkurs holati — /konkursholat &lt;id&gt;", chat_id)
                 return
             h = await _kk_sorov('konkursHolat', urinish=2, id=kid)
             if h is None or not h.get('ok'):
@@ -3122,6 +3138,103 @@ async def konkurs_buyruq(chat_id, text):
             await konkurs_tarqat(k, kampaniya, ids, chat_id)
     except Exception as e:
         logger.error(f'konkurs buyruq {b}: {type(e).__name__}')
+        await _kk_admin(f"⚠️ {html_escape(b)}: kutilmagan xato ({type(e).__name__})", chat_id)
+
+
+# ── BUGUN137: rebrending xabari — ESKI bot nomidan (mijozlar yangi botga hali yozmagan, faqat eski bot yoza oladi) ──
+# Matn — foydalanuvchiniki, HARFMA-HARF (BOSHQARUV/BER-2026-10-12-javoblar.md «Ilova»; testda solishtiriladi) — tuzatilmaydi.
+# Qalin va premium 👀 — entities bilan (parse_mode yo'q). Premium emoji Bot API orqali o'tadi (sinov 2026-10-12, (a) usul).
+REBREND_MATN = (
+    "👀Kraken Mobile endi — Nuqta tech!\n\n"
+    "📱Smartfonlarni ko’rish uchun yangi botimizga o’ting.\n"
+    "🎁 Shuningdek, saytimizda konkurs boshlandi! Ishtirok eting va sovg’alarni yutib oling.\n\n"
+    "🇷🇺 Kraken Mobile теперь — Nuqta Tech.\n\n"
+    "📱 Чтобы посмотреть смартфоны, переходите в наш новый бот \n"
+    "🎁 А ещё на нашем сайте стартовал конкурс! Участвуйте и выигрывайте призы."
+)
+REBREND_EMOJI_ID = '5210956306952758910'   # 👀 premium (foydalanuvchi bergan)
+REBREND_RASM = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rebrending.png')
+
+
+def _rebrend_entities():
+    def ent(tur, qism, **q):
+        i = REBREND_MATN.index(qism)
+        return dict(type=tur, offset=_utf16len(REBREND_MATN[:i]), length=_utf16len(qism), **q)
+    return [ent('custom_emoji', '👀', custom_emoji_id=REBREND_EMOJI_ID),
+            ent('bold', 'Kraken Mobile endi — Nuqta tech!'),
+            ent('bold', 'Kraken Mobile теперь — Nuqta Tech.')]
+
+
+REBREND_ENT = _rebrend_entities()
+REBREND_KB = {"inline_keyboard": [[{"text": "📱 Yangi botga o'tish", "url": f"https://t.me/{BOT_USERNAME}"}]]}
+_rebrend = {'bayt': None, 'fid': {}}   # rasm baytlari (bir marta o'qiladi) · token → file_id (bir marta yuklanadi)
+
+
+def _rebrend_yubor(chat_id, token):
+    """Bir odamga rebrending xabari: rasm + matn + tugma. Natija — _kk_tg kabi. Rasm birinchi marta fayl bilan
+    yuklanadi, keyin file_id bilan; rasm o'tmasa ('xato') — faqat matn ('noaniq' da ikkinchi xabar yo'q)."""
+    asos = {'chat_id': chat_id, 'caption': REBREND_MATN, 'caption_entities': REBREND_ENT, 'reply_markup': REBREND_KB}
+    fid = _rebrend['fid'].get(token)
+    if fid:
+        h, _ = _kk_tg('sendPhoto', dict(asos, photo=fid), token=token)
+    else:
+        if _rebrend['bayt'] is None:
+            try:
+                with open(REBREND_RASM, 'rb') as f:
+                    _rebrend['bayt'] = f.read()
+            except OSError:
+                _rebrend['bayt'] = b''
+        h = 'xato'
+        if _rebrend['bayt']:
+            h, j = _kk_tg('sendPhoto', asos, token=token, timeout=60,
+                          files={'photo': ('rebrending.png', _rebrend['bayt'], 'image/png')})
+            rasm = ((j or {}).get('result') or {}).get('photo') or []
+            if h == 'yuborildi' and rasm:
+                _rebrend['fid'][token] = rasm[-1].get('file_id')
+    if h != 'xato':
+        return h
+    h, _ = _kk_tg('sendMessage', {'chat_id': chat_id, 'text': REBREND_MATN, 'entities': REBREND_ENT,
+                                  'reply_markup': REBREND_KB}, token=token)
+    return h
+
+
+_REBREND_BUYRUQLAR = ('/forwardxabari', '/rebrending')
+
+
+async def rebrend_buyruq(chat_id, text):
+    """Admin buyruqlari (fonda) — rebrending xabari eski bot nomidan:
+      /forwardxabari — faqat sizning lichkangizga (ko'rib chiqish uchun)
+      /rebrending sinov — navbat orqali, faqat sizga (mijozlarga emas)
+      /rebrending hammaga — Mijozlar'dagi hammaga, har kishiga bir marta"""
+    q = text.split()
+    b = q[0].split('@')[0]
+    try:
+        if not ESKI_BOT_TOKEN:
+            await _kk_admin("❌ ESKI_BOT_TOKEN qo'yilmagan (Render env) — rebrending xabari eski bot orqali ketadi.",
+                            chat_id)
+            return
+        if b == '/forwardxabari':
+            h = await blok(_rebrend_yubor, ADMIN_ID, ESKI_BOT_TOKEN)
+            if h == 'yuborildi':
+                await _kk_admin(f"✅ Rebrending xabari @{ESKI_BOT_USERNAME} nomidan lichkangizga keldi — ko'ring.\n"
+                                f"Mijozlarga (hammaga): /rebrending hammaga", chat_id)
+            elif h == 'bloklagan':
+                await _kk_admin(f"Avval @{ESKI_BOT_USERNAME} ga /start bosing", chat_id)
+            else:
+                await _kk_admin(f"❌ Yuborilmadi ({html_escape(h)}) — birozdan keyin qayta /forwardxabari", chat_id)
+            return
+        tur = q[1] if len(q) > 1 else ''
+        if tur == 'sinov':
+            # mijoz user_id'lari qabul qilinmaydi — sinov faqat adminga (adashib ketmasin)
+            ids, kampaniya = [str(ADMIN_ID)], f'rebrending-sinov{int(time.time())}'
+        elif tur == 'hammaga':
+            ids, kampaniya = None, 'rebrending-hammaga'
+        else:
+            await _kk_admin(html_escape(rebrend_buyruq.__doc__.split(':', 1)[1].strip()), chat_id)
+            return
+        await _kk_tarqat(kampaniya, ids, chat_id, lambda x: _rebrend_yubor(x.get('user_id'), ESKI_BOT_TOKEN))
+    except Exception as e:
+        logger.error(f'rebrend buyruq {b}: {type(e).__name__}')
         await _kk_admin(f"⚠️ {html_escape(b)}: kutilmagan xato ({type(e).__name__})", chat_id)
 
 
@@ -4201,6 +4314,10 @@ async def handle_update(data):
         # BUGUN108: konkurs boshqaruvi (holat, tugatish, bekor, davom, tarqatma) — fonda
         if adm and text.split() and text.split()[0].split('@')[0] in _KK_BUYRUQLAR:
             asyncio.create_task(konkurs_buyruq(chat_id, text))
+            return
+        # BUGUN137: rebrending xabari (eski bot nomidan) — /forwardxabari, /rebrending sinov | hammaga — fonda
+        if adm and text.split() and text.split()[0].split('@')[0] in _REBREND_BUYRUQLAR:
+            asyncio.create_task(rebrend_buyruq(chat_id, text))
             return
 
         if text.startswith('/start'):
