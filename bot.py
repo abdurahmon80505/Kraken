@@ -2692,6 +2692,196 @@ async def _kk_admin(matn, joy=None):
     await blok(send_msg, joy or ADMIN_ID, matn)
 
 
+# ═══ BUGUN147: g'oliblar obunasi, kanaldan chiqish ogohlantirishi, yashirin oyna, /start bloki ═══
+def _kk_kanal(k):
+    """Shu konkurs uchun obuna talab qilinadigan kanal: sinov (TEST…/🧪) — TEST_CHANNEL, aks holda — CHANNEL."""
+    return TEST_CHANNEL if _kk_sinovmi((k or {}).get('prize')) else CHANNEL
+
+
+def _kk_kanal_havola(kanal):
+    k = str(kanal or '')
+    return f'https://t.me/{k.lstrip("@")}' if k.startswith('@') else CHANNEL_LINK
+
+
+def _kk_obunami(uid, kanal, urinish=3, oraliq=2):
+    """G'olib kanalga obunami: True / False / None (bilib bo'lmadi). 🔴 is_member tarmoq xatosida False qaytaradi —
+    bu yerda xato «obuna emas» EMAS (BUGUN147): faqat Telegram aniq holat (left / kicked) aytsa — False."""
+    for n in range(urinish):
+        try:
+            r = req.get(f'{TG_API}/getChatMember', params={'chat_id': kanal, 'user_id': uid}, timeout=10)
+            j = r.json()
+        except Exception as e:
+            logger.error(f'konkurs obuna: {type(e).__name__}')
+            j = None
+        if isinstance(j, dict) and j.get('ok') and isinstance(j.get('result'), dict):
+            return _azo(j['result'])
+        if n + 1 < urinish:
+            time.sleep(oraliq * (n + 1))
+    return None
+
+
+def _kk_yashirinmi(k):
+    """Konkurs oynasi yashirinmi (Script Property KONKURS_YASHIRIN). Maydon yo'q (eski Apps Script) — yashirin."""
+    return (k or {}).get('yashirin') is not False
+
+
+_kk_kalitli = set()   # yashirin konkursga «kalit» bilan (saytda logo 3 marta → ?start=konkurs_y) kelgan user_id'lar
+
+
+def _kk_korsatsinmi(k, uid):
+    """Begona yashirin konkursni ko'rmaydi; admin va kalit bilan kelgan — ko'radi."""
+    return not _kk_yashirinmi(k) or uid == ADMIN_ID or uid in _kk_kalitli
+
+
+def _kk_obunasiz_xabari(prize):
+    cap = (
+        f"😔 <b>Siz g'olib chiqdingiz, lekin kanalga obuna emassiz — sovg'a berilmaydi, qayta tanlaymiz.</b>\n"
+        f"🎁 {html_escape(prize)}\n\n"
+        f"😔 <b>Вы стали победителем, но не подписаны на канал — приз не выдаётся, мы выберем победителя заново.</b>"
+    )
+    return cap, {"inline_keyboard": [[{"text": "📢 Kanal / Канал", "url": CHANNEL_LINK}]]}
+
+
+async def _kk_obuna_tekshir(kid, e, joy):
+    """endKonkurs dan keyin, xabarlar va kanal postidan OLDIN: har g'olib kanalga obunami. Obuna emas (aniq) —
+    o'rniga boshqasi (konkursQaytaTanla — jadvalda, idempotent: restartda takrorlanmaydi, o'sha odam qayta tushmaydi).
+    Tekshirib bo'lmasa — g'olib QOLADI, adminga «tekshirib bo'lmadi». Qaytaradi (yakuniy g'oliblar, izohlar) yoki
+    None — tekshiruv yopilmadi (konkursObunaTugadi javob bermadi; xabarlar kutadi, admin /konkursdavom)."""
+    kanal = _kk_kanal(e)
+    izoh = []
+    for w in list(e.get('winners') or []):
+        try:
+            place = int(w.get('place') or 0)
+        except (TypeError, ValueError):
+            continue
+        md = _kk_medal(place)
+        joriy = w
+        for _ in range(30):
+            uid = str(joriy.get('user_id') or '')
+            ob = await blok(_kk_obunami, uid, kanal)
+            if ob is True:
+                break
+            if ob is None:
+                izoh.append(f"⚠️ {md} {winner_display(joriy)} — obunani tekshirib bo'lmadi (Telegram javob bermadi). "
+                            f"G'olib o'zgarmadi — o'zingiz tekshiring.")
+                break
+            r = await _kk_sorov('konkursQaytaTanla', id=kid, place=place, user_id=uid)
+            if r is None or not r.get('ok'):
+                izoh.append(f"⚠️ {md} {winner_display(joriy)} — obuna emas, lekin qayta tanlab bo'lmadi "
+                            f"({html_escape((r or {}).get('msg') or 'Apps Script javob bermadi')}). G'olib o'zgarmadi.")
+                break
+            if r.get('nomzod_yoq'):
+                izoh.append(f"⚠️ {md} {winner_display(joriy)} — obuna emas, boshqa nomzod qolmadi. G'olib o'zgarmadi.")
+                break
+            yangi = r.get('winner') or {}
+            if str(yangi.get('user_id') or '') == uid:
+                break
+            izoh.append(f"🔁 {md} {winner_display(r.get('old') or joriy)} — kanalga obuna emas → "
+                        f"yangi g'olib: {winner_display(yangi)}")
+            joriy = yangi
+        else:
+            izoh.append(f"⚠️ {md} — 30 marta qayta tanlandi, to'xtatildi. Hozirgi: {winner_display(joriy)}")
+    t = await _kk_sorov('konkursObunaTugadi', id=kid)
+    if t is None or not t.get('ok'):
+        await _kk_admin(f"⚠️ Konkurs <b>{html_escape(kid)}</b>: obuna tekshiruvini yopib bo'lmadi "
+                        f"({html_escape((t or {}).get('msg') or 'Apps Script javob bermadi')}) — xabarlar va kanal "
+                        f"posti hali ketmadi.\nDavom: /konkursdavom {html_escape(kid)}", joy)
+        return None
+    return t.get('winners') or [], izoh
+
+
+# Kanaldan chiqish: qatnashchilar ro'yxati — keshda (har chiqishda jadval so'ralmaydi), 5 daqiqada yangilanadi
+KK_IDS_UMR_S = 300
+_kk_ids = {'kid': None, 'ids': set(), 'vaqt': 0}
+_kk_chiqqan = set()   # (kid, uid) — shu jarayonda ogohlantirilgan (jadval javob bermasa ham ikkinchisi ketmaydi)
+_kk_ids_lock = threading.Lock()
+
+
+def _kk_qatnashchimi(kid, uid):
+    """True / False — keshdan; None — ro'yxat olinmadi (konkursChiqdi o'zi tekshiradi)."""
+    hozir = time.time()
+    with _kk_ids_lock:
+        if _kk_ids['kid'] == kid and hozir - _kk_ids['vaqt'] < KK_IDS_UMR_S:
+            return uid in _kk_ids['ids']
+    r = _kk_sheet('konkursQatnashIds', id=kid)
+    with _kk_ids_lock:
+        if r and r.get('ok'):
+            _kk_ids.update(kid=kid, ids={str(x) for x in (r.get('ids') or [])}, vaqt=hozir)
+            return uid in _kk_ids['ids']
+        if _kk_ids['kid'] == kid:
+            return uid in _kk_ids['ids'] or None
+    return None
+
+
+def _kk_qatnashchi_qosh(kid, uid):
+    with _kk_ids_lock:
+        if _kk_ids['kid'] == str(kid):
+            _kk_ids['ids'].add(str(uid))
+
+
+def _kk_chiqish_matni(kanal):
+    k = html_escape(kanal)
+    return (
+        f"⚠️ <b>Kanaldan chiqib ketdingiz</b> — konkursda g'olib chiqsangiz, sovg'a berilmaydi.\n"
+        f"Qaytib obuna bo'ling: {k}\n\n"
+        f"⚠️ <b>Вы вышли из канала</b> — если вы победите в конкурсе, приз не будет выдан.\n"
+        f"Подпишитесь снова: {k}"
+    ), {"inline_keyboard": [[{"text": "📢 Kanalga qaytish / Вернуться в канал", "url": _kk_kanal_havola(kanal)}]]}
+
+
+def kanal_chiqdi(cm):
+    """`chat_member`: konkurs qatnashchisi konkurs paytida kanaldan chiqdi → bot lichkasiga BIR MARTA ogohlantirish
+    (konkurs + odam bo'yicha; qaytib kirsa — hech narsa). Natija: 'yuborildi' | 'bloklagan' | 'xato' | 'noaniq' | ''.
+    Yuborilmasa — jim (faqat log)."""
+    if not isinstance(cm, dict):
+        return ''
+    eski, yangi = cm.get('old_chat_member') or {}, cm.get('new_chat_member') or {}
+    user = yangi.get('user') or {}
+    if user.get('is_bot') or not user.get('id') or not _azo(eski) or _azo(yangi):
+        return ''
+    k = get_konkurs()
+    if not _kk_aktivmi(k):
+        return ''
+    kanal = _kk_kanal(k)
+    if not _kanal_mos(cm.get('chat'), kanal):
+        return ''
+    kid, uid = str(k.get('id') or ''), str(user['id'])
+    if not kid or (kid, uid) in _kk_chiqqan or _kk_qatnashchimi(kid, uid) is False:
+        return ''
+    r = _kk_sheet('konkursChiqdi', id=kid, user_id=uid)
+    if r is not None and (not r.get('ok') or not r.get('qatnashchi')):
+        return ''
+    _kk_chiqqan.add((kid, uid))
+    if r is not None and not r.get('yangi'):
+        return ''   # avval ogohlantirilgan (bot qayta ishga tushgan bo'lsa ham — jadvalda belgi bor)
+    matn, mk = _kk_chiqish_matni(kanal)
+    h = _kk_shaxsiy(uid, matn, mk)
+    if h != 'yuborildi':
+        logger.warning(f'konkurs chiqish ogohlantirishi {uid}: {h}')
+    return h
+
+
+def _kk_start_blok(k):
+    """/start dan keyin (aktiv va ochiq konkurs bo'lsa): sovrin, tugash vaqti, «🎁 Qatnashish» tugmasi."""
+    prize = html_escape(str(k.get('prize') or ''))
+    end = _parse_end_time(k.get('end_time'))
+    sovrin = [f"{_kk_medal(i + 1)} {html_escape(p)}" for i, p in enumerate(_kk_sovrinlar(k))]
+    q = [f"🎁 <b>Konkurs! / Конкурс!</b>", f"Sovrin / Приз: <b>{prize}</b>"] + sovrin
+    if end:
+        q.append(f"⏰ Tugaydi / Завершится: {_kk_vaqt(end)} (Toshkent / по Ташкенту)")
+    q += ["", "Qatnashish uchun pastdagi tugmani bosing 👇", "Чтобы участвовать — нажмите кнопку ниже 👇"]
+    return "\n".join(q), {"inline_keyboard": [[{"text": "🎁 Qatnashish / Участвовать", "callback_data": "kk_qatnash"}]]}
+
+
+def konkurs_start_xabari(chat_id):
+    """Oddiy /start: aktiv va OCHIQ (yashirin emas) konkurs bo'lsa — konkurs bloki. Natija: 'yuborildi' | ''."""
+    k = get_konkurs()
+    if not _kk_aktivmi(k) or _kk_yashirinmi(k):
+        return ''
+    matn, mk = _kk_start_blok(k)
+    return _kk_shaxsiy(chat_id, matn, mk, rasm=(_kk_rasmlar(k)[0][:1] + _kk_rasmlar(k)[1][:1]))
+
+
 async def _kk_sorov(action, urinish=3, oraliq=5, **params):
     """_kk_sheet — bir necha urinish bilan. None — Apps Script javob bermadi."""
     for n in range(urinish):
@@ -2796,7 +2986,8 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
             return 'erta'
     elif st == 'ended':
         y = str(h.get('yetkazish') or '').split('|')[0]
-        if not tugat and manba != 'buyruq' and y in ('', 'tugadi', 'yoq') and h.get('kanal_post') != 'navbatda':
+        if not tugat and manba != 'buyruq' and y in ('', 'tugadi', 'yoq') and h.get('kanal_post') != 'navbatda' \
+                and str(h.get('obuna') or '').split('|')[0] != 'navbatda':
             return 'tugadi'   # yetkazadigan narsa yo'q
     else:
         if manba == 'buyruq':
@@ -2804,13 +2995,24 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
         return st or 'holat'
 
     # 2) Tugatish (idempotent: tugagan bo'lsa — saqlangan g'oliblar, qayta tanlanmaydi)
-    e = await _kk_sorov('endKonkurs', timeout=60, id=kid)
+    # BUGUN147: obuna=1 — g'oliblar obunasi tekshirilguncha jadval xabar navbati va kanal postini YOPIQ tutadi
+    e = await _kk_sorov('endKonkurs', timeout=60, id=kid, obuna='1')
     if e is None or not e.get('ok'):
         sabab_x = html_escape((e or {}).get('msg') or 'Apps Script javob bermadi')
         await _kk_admin(f"⚠️ Konkurs <b>{ek}</b>: tugatib bo'lmadi ({sabab_x}). Qayta: /konkurstugat {ek}", joy)
         return 'tugatilmadi'
     winners = e.get('winners') or []
     prize = str(e.get('prize') or '')
+    # 2b) BUGUN147: g'oliblar kanalga obunami — obuna emas → qayta tanlash (kanal postidan OLDIN)
+    obuna_izoh = []
+    if str(e.get('obuna') or '').split('|')[0] == 'navbatda':
+        t = await _kk_obuna_tekshir(kid, e, joy)
+        if t is None:
+            return 'obuna'
+        winners, obuna_izoh = t
+        if obuna_izoh:
+            await _kk_admin(f"🔎 <b>Konkurs {ek} — g'oliblar obunasi</b> ({html_escape(_kk_kanal(e))})\n"
+                            + "\n".join(obuna_izoh), joy)
     win_text = _kk_goliblar_matni(winners)
     if not e.get('already'):
         # BUGUN125: g'olib bir qurilmadan boshqa akkaunt bilan kirgan bo'lsa — faqat adminga ⚠️ (kanalga emas)
@@ -2832,6 +3034,8 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
             place = 0
         if place > 0:
             cap, mk = _kk_golib_xabari(place, x.get('prize') or prize)
+        elif x.get('obunasiz'):   # BUGUN147: g'olib edi, kanalga obuna emas — sovg'a berilmaydi
+            cap, mk = _kk_obunasiz_xabari(prize)
         else:
             cap, mk = _kk_maglub_xabari(prize, win_text)
         return _kk_shaxsiy(x.get('user_id'), cap, mk, rasm=bir_rasm)
@@ -2865,7 +3069,9 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
              f"❔ Noaniq: {x.get('noaniq', sanoq['noaniq'])}",
              f"⏳ Kutmoqda: {x.get('kutmoqda', 0)} · olingan, javobsiz: {x.get('olindi', 0)}",
              f"📢 Kanal: {html_escape(kp)}"]
-        if holat != 'tugadi':
+        if holat == 'obuna':
+            q.append(f"⚠️ Xabarlar obuna tekshiruvini kutmoqda. Davom: /konkursdavom {ek}")
+        elif holat != 'tugadi':
             q.append(f"⚠️ To'xtadi: {html_escape(holat)}. Davom: /konkursdavom {ek}")
         if x.get('xato'):
             q.append(f"Xatolarni qayta: /konkursdavom {ek}")
@@ -3032,18 +3238,38 @@ async def konkurs_tarqat_test_kanal(k, joy):
     await _kk_admin(f"🧪 TEST kanal ({html_escape(TEST_CHANNEL)}) — {' · '.join(holat)}", joy)
 
 
-_KK_BUYRUQLAR = ('/konkursholat', '/konkurstugat', '/konkursbekor', '/konkursdavom', '/tarqatma')
+_KK_BUYRUQLAR = ('/konkursholat', '/konkurstugat', '/konkursbekor', '/konkursdavom', '/tarqatma',
+                 '/konkursochiq', '/konkursyashir')
 
 
 async def konkurs_buyruq(chat_id, text):
     """Admin buyruqlari (fonda):
       /konkursholat [id] · /konkurstugat <id> [hozir] · /konkursbekor <id> · /konkursdavom <id> [noaniq]
-      /tarqatma <id> sinov (TEST kanal + admin) · /tarqatma <id> hammaga"""
+      /tarqatma <id> sinov (TEST kanal + admin) · /tarqatma <id> hammaga
+      /konkursochiq — konkurs oynasini hammaga ochadi · /konkursyashir — yana yashiradi"""
     q = text.split()
     b = q[0].split('@')[0]
     kid = q[1] if len(q) > 1 else ''
     ek = html_escape(kid)
     try:
+        if b in ('/konkursochiq', '/konkursyashir'):
+            # BUGUN147: yashirin oyna (Script Property KONKURS_YASHIRIN) — sayt banneri, Profil, /start bloki
+            r = await _kk_sorov('konkursYashirin', urinish=2, holat='0' if b == '/konkursochiq' else '1')
+            if r is None or not r.get('ok'):
+                await _kk_admin(f"❌ {html_escape((r or {}).get('msg') or 'Apps Script javob bermadi')}", chat_id)
+                return
+            _konkurs_cache['data'] = None
+            _konkurs_cache['time'] = 0
+            if r.get('yashirin'):
+                await _kk_admin("🙈 Konkurs oynasi <b>yashirin</b>: begona ko'rmaydi (saytda banner, Profil, "
+                                "/start xabari yo'q). Siz — ko'rasiz; saytda logoni 3 marta bossa — ochiladi.\n"
+                                "Hammaga ochish: /konkursochiq", chat_id)
+            else:
+                await _kk_admin("🔓 Konkurs oynasi <b>hammaga ochiq</b>: saytda banner va Profil'da 🎁, /start da "
+                                "konkurs xabari.\nSaytda 2 daqiqagacha eski holat turishi mumkin.\n"
+                                "Yana yashirish: /konkursyashir", chat_id)
+            return
+
         if b == '/konkursholat':
             if not kid:
                 _konkurs_cache['data'] = None
@@ -3076,6 +3302,9 @@ async def konkurs_buyruq(chat_id, text):
                 f"❌ {x.get('xato', 0)} · ❔ {x.get('noaniq', 0)} · ⏳ {x.get('kutmoqda', 0)} · olingan {x.get('olindi', 0)}",
                 f"📦 Yetkazish: {html_escape(str(h.get('yetkazish') or '—').split('|')[0])}",
                 f"📢 Kanal: {html_escape(str(h.get('kanal_post') or '—').split('|')[0])}",
+                f"🔎 G'oliblar obunasi: {html_escape(str(h.get('obuna') or '—').split('|')[0])} · "
+                f"obunasiz: {h.get('obunasiz', 0)} · kanaldan chiqqan: {h.get('chiqdi', 0)}",
+                f"🙈 Oyna: {'yashirin (/konkursochiq)' if h.get('yashirin', True) else 'hammaga ochiq (/konkursyashir)'}",
                 f"⏱ Taymer: {taymer}"]), chat_id)
             return
 
@@ -3148,6 +3377,11 @@ async def konkurs_buyruq(chat_id, text):
             if tur == 'hammaga' and _kk_sinovmi(k.get('prize')):
                 await _kk_admin(f"❌ {ek} — sinov konkursi (nomi TEST bilan): «hammaga» yuborilmaydi. "
                                 f"Faqat: /tarqatma {ek} sinov", chat_id)
+                return
+            if tur == 'hammaga' and _kk_yashirinmi(k):
+                # BUGUN147: yashirin konkurs e'loni mijozlarga ketsa — tugma bosgan odam konkursni ko'rmaydi
+                await _kk_admin(f"❌ Konkurs oynasi yashirin — «hammaga» yuborilmaydi.\n"
+                                f"Avval oching: /konkursochiq, keyin: /tarqatma {ek} hammaga", chat_id)
                 return
             if tur == 'sinov':
                 # BUGUN125 (v90-1): sinov — TEST kanal + admin; mijoz user_id'lari qabul qilinmaydi (adashib ketmasin)
@@ -3376,7 +3610,8 @@ def not_member_msg(chat_id):
 async def start_konkurs_flow(chat_id, user):
     # E1: Sheets va Telegram so'rovlari alohida ipda — event loop to'xtamaydi
     k = await blok(get_konkurs)
-    if not _kk_aktivmi(k):   # getKonkurs aktiv yo'q bo'lsa oxirgi TUGAGANINI qaytaradi (BUGUN108)
+    # getKonkurs aktiv yo'q bo'lsa oxirgi TUGAGANINI qaytaradi (BUGUN108). BUGUN147: yashirin — begonaga ham shu javob
+    if not _kk_aktivmi(k) or not _kk_korsatsinmi(k, user.get('id', chat_id)):
         await blok(send_msg, chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
         return
 
@@ -3571,6 +3806,7 @@ async def konkurs_qatnash_endpoint(request):
             _kk_captcha.pop(uid, None)
         if r.get('ok') or (msg == 'already' and r.get('sabab') != 'telefon'):
             _konkurs_cache['time'] = 0
+            _kk_qatnashchi_qosh(st.get('konkurs_id'), uid)   # BUGUN147: kanaldan chiqish keshiga darhol
             await blok(send_msg, uid,
                        "✅ <b>Siz konkursda qatnashyapsiz!</b>\nG'olib e'lon qilinganda xabar beramiz.\n\n"
                        "✅ <b>Вы участвуете в розыгрыше!</b>\nСообщим, когда объявим победителя.")
@@ -4196,6 +4432,7 @@ async def handle_update(data):
         # BUGUN6 §2: kanalga yangi a'zo → faqat o'ziga ko'rinadigan xush kelibsiz (fonda — T1)
         if data.get('chat_member'):
             asyncio.create_task(blok(kanal_xush_kelibsiz, data['chat_member']))
+            asyncio.create_task(blok(kanal_chiqdi, data['chat_member']))   # BUGUN147: qatnashchi kanaldan chiqdi
             return
 
         message = data.get('message', {})
@@ -4235,6 +4472,8 @@ async def handle_update(data):
             cq_id = cq.get('id')
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
                        json={'callback_query_id': cq_id}, timeout=5)
+            if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
+                await start_konkurs_flow(cq_chat, cq_user)
             if cq_data == 'check_member' and cq_chat:
                 if await blok(is_member, cq_chat):
                     await start_konkurs_flow(cq_chat, cq_user)
@@ -4344,10 +4583,15 @@ async def handle_update(data):
         if text.startswith('/start'):
             parts = text.split(' ', 1)
             deep = parts[1].strip() if len(parts) > 1 else ''
-            if deep == 'konkurs':
+            if deep in ('konkurs', 'konkurs_y'):
+                if deep == 'konkurs_y' and user.get('id'):   # BUGUN147: saytda logo 3 marta — yashirin konkursga kalit
+                    _kk_kalitli.add(user['id'])
                 await start_konkurs_flow(chat_id, user)
             else:
                 await blok(send_start, chat_id)
+                # BUGUN147: aktiv va ochiq konkurs bo'lsa — konkurs xabari (fonda, /start kechikmasin)
+                if message.get('chat', {}).get('type') == 'private':
+                    asyncio.create_task(blok(konkurs_start_xabari, chat_id))
 
         elif text == '/konkurs':
             # ADMIN: sovrin rasmi yig'ish rejimi (hech narsa demay rasm kutadi).
@@ -4364,6 +4608,10 @@ async def handle_update(data):
             k = await blok(get_konkurs)
             if not k or not k.get('id') or not _kk_aktivmi(k):
                 await blok(send_msg, chat_id, "😕 Hozirda aktiv konkurs yo'q.")
+            elif _kk_yashirinmi(k) and not _kk_sinovmi(k.get('prize')):
+                # BUGUN147: yashirin konkurs anonsi kanalga ketsa — tugma bosgan obunachi konkursni ko'rmaydi
+                await blok(send_msg, chat_id, "❌ Konkurs oynasi yashirin — anons kanalga yuborilmadi.\n"
+                                              "Avval oching: /konkursochiq, keyin qayta /konkursyuborish")
             else:
                 prize = html_escape(k.get('prize', 'Konkurs'))
                 # prizes: JSON array (["...","..."]) yoki vergulli matn
@@ -4500,7 +4748,7 @@ async def tiklash_holati(chat_id, user):
     if chat_id in user_states:
         return True
     k = await blok(get_konkurs)
-    if not k or not k.get('id') or not _kk_aktivmi(k):
+    if not k or not k.get('id') or not _kk_aktivmi(k) or not _kk_korsatsinmi(k, user.get('id', chat_id)):
         return False
     user_states[chat_id] = {
         'step': 'phone',
