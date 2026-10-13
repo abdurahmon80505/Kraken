@@ -2455,6 +2455,7 @@ def _kk_sheet(action, timeout=30, **params):
     eskisi noma'lum action'ga e'lonlar ro'yxatini qaytaradi, unda 'ok' yo'q).
     🔴 Xato matnida URL (key=…) bor — logga faqat xato turi yoziladi."""
     if not SHEET_URL or not API_KEY:
+        logger.error(f'konkurs sheet {action}: SHEET_URL yoki API_KEY env bo\'sh')
         return None
     p = {'action': action, 'callback': 'd', 'key': API_KEY}
     p.update({k: str(v) for k, v in params.items() if v is not None})
@@ -2462,6 +2463,11 @@ def _kk_sheet(action, timeout=30, **params):
         r = req.get(SHEET_URL, params=p, timeout=timeout)
         m = re.match(r'^d\((.*)\)\s*;?\s*$', (r.text or '').strip(), re.S)
         j = json.loads(m.group(1)) if m else None
+        # BUGUN147: jim None / «ruxsat» — logga (kalit va URL'siz): admin buyrug'i nega ishlamagani ko'rinsin
+        if not (isinstance(j, dict) and 'ok' in j):
+            logger.error(f'konkurs sheet {action}: javob {r.status_code}, JSONP emas ({len(r.text or "")} belgi)')
+        elif j.get('msg') == 'ruxsat':
+            logger.error(f'konkurs sheet {action}: ruxsat — Render API_KEY Apps Script API_KEY ga mos emas')
         return j if isinstance(j, dict) and 'ok' in j else None
     except Exception as e:
         logger.error(f'konkurs sheet {action}: {type(e).__name__}')
@@ -3251,6 +3257,7 @@ async def konkurs_buyruq(chat_id, text):
     b = q[0].split('@')[0]
     kid = q[1] if len(q) > 1 else ''
     ek = html_escape(kid)
+    logger.info(f'konkurs buyruq: {b} {kid}')
     try:
         if b in ('/konkursochiq', '/konkursyashir'):
             # BUGUN147: yashirin oyna (Script Property KONKURS_YASHIRIN) — sayt banneri, Profil, /start bloki
