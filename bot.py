@@ -4,6 +4,7 @@ import logging
 import asyncio
 import base64
 import functools
+import hashlib
 import json
 import urllib.parse
 import time
@@ -532,7 +533,7 @@ def get_products():
     if not SHEET_URL:
         return None, None
     try:
-        r = req.get(f"{SHEET_URL}?callback=d", timeout=15)
+        r = req.get(f"{SHEET_URL}?callback=d&fid=1", timeout=15)   # BUGUN148: fid=1 — rasm_file_id ham (sayt olmaydi)
         text = r.text.strip()
         data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
         # G12: seriyalar ham keshda — `mos` kodlarini (p9s, phone) nomga aylantirish uchun
@@ -592,8 +593,12 @@ def elon_cache_get(num):
 
 
 def elon_cache_put(elon):
-    """Sayt (admin) saqlagan e'lon — xotiradagi nusxa almashtiriladi."""
+    """Sayt (admin) saqlagan e'lon — xotiradagi nusxa almashtiriladi.
+    BUGUN148: sayt `rasm_file_id` ni olmaydi (Apps Script faqat botga beradi) — eskisi saqlanadi (bekorga qayta yozmaslik)."""
     with _elon_cache_lock:
+        eski = _ELON_CACHE['by_num'].get(str(elon['num']))
+        if eski and eski.get('rasm_file_id') and not elon.get('rasm_file_id'):
+            elon['rasm_file_id'] = eski['rasm_file_id']
         _ELON_CACHE['by_num'][str(elon['num'])] = elon
 
 
@@ -1275,18 +1280,24 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     )
 
 
-def send_rich(chat_id, html, disable_notification=False):
-    """sendRichMessage. (message_id, '') yoki (None, xato matni)."""
+def send_rich(chat_id, html, disable_notification=False, media=None, javob=None):
+    """sendRichMessage. (message_id, '') yoki (None, xato matni).
+    media — rich_message.media (BUGUN148: rasm file_id bilan, `tg://photo?id=rN`); javob (dict) — Telegram natijasi shunga."""
+    rich = {'html': html}
+    if media:
+        rich['media'] = media
     try:
         r = req.post(f'{TG_API}/sendRichMessage', json={
             'chat_id': chat_id,
-            'rich_message': {'html': html},
+            'rich_message': rich,
             'disable_notification': disable_notification,
         }, timeout=30).json()
     except Exception as ex:
         return None, f'tarmoq: {ex}'
     if not r.get('ok'):
         return None, str(r.get('description') or r)
+    if javob is not None and isinstance(r.get('result'), dict):
+        javob.update(r['result'])
     return (r.get('result') or {}).get('message_id'), ''
 
 
@@ -1471,15 +1482,20 @@ def kanal_id_yoz(num, mid):
     return ok
 
 
-def edit_rich(chat_id, message_id, html):
-    """editMessageText + rich_message. (True, '') / (False, xato). «not modified» — ok."""
+def edit_rich(chat_id, message_id, html, media=None, javob=None):
+    """editMessageText + rich_message. (True, '') / (False, xato). «not modified» — ok. media / javob — send_rich kabi."""
+    rich = {'html': html}
+    if media:
+        rich['media'] = media
     try:
         r = req.post(f'{TG_API}/editMessageText', json={
-            'chat_id': chat_id, 'message_id': int(message_id), 'rich_message': {'html': html},
+            'chat_id': chat_id, 'message_id': int(message_id), 'rich_message': rich,
         }, timeout=30).json()
     except Exception as ex:
         return False, f'tarmoq: {ex}'
     if r.get('ok'):
+        if javob is not None and isinstance(r.get('result'), dict):
+            javob.update(r['result'])
         return True, ''
     desc = str(r.get('description') or r)
     if 'not modified' in desc:
@@ -1590,6 +1606,61 @@ def istak_javob_yubor(admin_chat, message, manzil):
     return 'xato'
 
 
+def kanal_rich(elon, models, kollaj=False, yonalish=None):
+    """Kanal posti (html, media, manbalar). BUGUN148: hamma rasmning file_id'si ma'lum — `tg://photo?id=rN` + media
+    (Telegram rasmni qayta yuklamaydi); aks holda belgili manzillar (media=None)."""
+    _fid_jadvaldan(elon)
+    rasmlar = images_of(elon)[:10]
+    manbalar = kanal_manbalari(elon)
+    if kollaj:
+        rasmlar, manbalar = rasmlar[:4], manbalar[:4]
+    if rasmlar and len(set(rasmlar)) == len(rasmlar) and all(m in _URL_FID for m in manbalar):
+        src = {u: f'tg://photo?id=r{i}' for i, u in enumerate(rasmlar)}
+        media = [{'id': f'r{i}', 'media': {'type': 'photo', 'media': _URL_FID[m]}} for i, m in enumerate(manbalar)]
+        return (build_rich_html(elon, models, premium=False, rasm_src=src, kollaj=kollaj, yonalish=yonalish),
+                media, manbalar)
+    return build_rich_html(elon, models, premium=False, kollaj=kollaj, belgi=True, yonalish=yonalish), None, manbalar
+
+
+def rich_fidlar(natija):
+    """Rich xabar natijasidagi rasmlar file_id'si (tartib bilan, eng katta o'lcham)."""
+    fidlar = []
+
+    def yur(x):
+        if isinstance(x, dict):
+            if x.get('type') == 'photo' and isinstance(x.get('photo'), list) and x['photo']:
+                fidlar.append((x['photo'][-1] or {}).get('file_id'))
+                return
+            for v in x.values():
+                yur(v)
+        elif isinstance(x, list):
+            for v in x:
+                yur(v)
+    yur((natija or {}).get('rich_message') or {})
+    return fidlar
+
+
+def kanal_rich_yubor(num, elon, models, chat, message_id=None, kollaj=False, yonalish=None):
+    """Kanal posti — yangi (message_id=None: send_rich → (mid, xato)) yoki tahrir (edit_rich → (ok, xato)).
+    file_id rad etilsa — manzillar bilan qayta. Manzillar bilan ketsa — natijadagi file_id'lar olinadi, jadvalga yoziladi."""
+    html, media, manbalar = kanal_rich(elon, models, kollaj=kollaj, yonalish=yonalish)
+
+    def yubor(h, md, jv):
+        if message_id is None:
+            return send_rich(chat, h, media=md, javob=jv)
+        return edit_rich(chat, message_id, h, media=md, javob=jv)
+    javob = {}
+    natija = yubor(html, media, javob)
+    if not natija[0] and media:
+        logger.warning(f'kanal №{num} → {chat}: file_id rad etildi ({natija[1]}) — manzillar bilan')
+        html = build_rich_html(elon, models, premium=False, kollaj=kollaj, belgi=True, yonalish=yonalish)
+        media = None
+        natija = yubor(html, None, javob)
+    if natija[0] and not media and fid_olindi(num, manbalar, rich_fidlar(javob)):
+        fid_saqla_fonda(num)
+    return natija
+
+
 def kanal_post(num, yonalish=None):
     """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato).
     yonalish — saytda e'lon yuborilgan bo'lim (postdagi kanal shuniki; ALOQA 2026-10-07)."""
@@ -1607,7 +1678,7 @@ def kanal_post(num, yonalish=None):
         if chat in kanallar:
             continue
         kanallar.add(chat)
-        m, x = send_rich(chat, build_rich_html(elon, models, premium=False, belgi=True, yonalish=y))
+        m, x = kanal_rich_yubor(num, elon, models, chat, yonalish=y)
         if m:
             postlar.append((y, int(m)))
             _POST_YON[int(m)] = y
@@ -1639,8 +1710,8 @@ def kanal_tahrir(num):
     # MS3.1: har kanaldagi posti (yo'nalishi o'ziniki); kollaj — asosiy post bo'yicha
     natija = (True, '')
     for y, chat, m in kanal_postlar(elon):
-        ok, xato = edit_rich(chat, m, build_rich_html(elon, models, premium=False, kollaj=mid in _KOLLAJ, belgi=True,
-                                                      yonalish=y or post_yonalish(elon, models, mid=m)))
+        ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=mid in _KOLLAJ,
+                                    yonalish=y or post_yonalish(elon, models, mid=m))
         if not ok and natija[0]:
             natija = (False, xato)
     return natija
@@ -1660,16 +1731,30 @@ def olx_albom(num, jim=False):
             'chat_id': joy, 'text': olx_text, 'disable_notification': jim}, timeout=10).json()
         if not r.get('ok'):
             logger.error(f"olx_albom №{num} matn: {r.get('description')}")
-        rasmlar = [belgili(t, j) for t, j in rasm_joylari(elon)][:10]
+        rasmlar = albom_manbalari(elon)
         if not rasmlar:
             return bool(r.get('ok')), '' if r.get('ok') else str(r.get('description'))
-        if len(rasmlar) == 1:
-            r = req.post(f'{TG_API}/sendPhoto', json={
-                'chat_id': joy, 'photo': rasmlar[0], 'disable_notification': jim}, timeout=30).json()
-        else:
-            r = req.post(f'{TG_API}/sendMediaGroup', json={
-                'chat_id': joy, 'media': [{'type': 'photo', 'media': u} for u in rasmlar],
-                'disable_notification': jim}, timeout=60).json()
+        # BUGUN148: file_id'i ma'lum rasm — file_id bilan (qayta yuklanmaydi); rad etilsa — manzillar bilan qayta
+        _fid_jadvaldan(elon)
+        fidli = [_URL_FID.get(u, u) for u in rasmlar]
+        xabarlar = []
+        for urinish in ([fidli, rasmlar] if fidli != rasmlar else [rasmlar]):
+            if len(urinish) == 1:
+                r = req.post(f'{TG_API}/sendPhoto', json={
+                    'chat_id': joy, 'photo': urinish[0], 'disable_notification': jim}, timeout=30).json()
+                xabarlar = [r.get('result')] if r.get('ok') else []
+            else:
+                r = req.post(f'{TG_API}/sendMediaGroup', json={
+                    'chat_id': joy, 'media': [{'type': 'photo', 'media': u} for u in urinish],
+                    'disable_notification': jim}, timeout=60).json()
+                xabarlar = (r.get('result') or []) if r.get('ok') else []
+            if r.get('ok'):
+                break
+            if urinish is fidli:
+                logger.warning(f"olx_albom №{num}: file_id rad etildi ({r.get('description')}) — manzillar bilan")
+        if r.get('ok') and len(xabarlar) == len(rasmlar):
+            if fid_olindi(num, rasmlar, [_rasm_fid(x) for x in xabarlar]):
+                fid_saqla_fonda(num)
         if not r.get('ok'):
             xato = str(r.get('description') or r)
             logger.error(f'olx_albom №{num} albom: {xato}')
@@ -4123,6 +4208,8 @@ _RASM_CHAT = {'id': RASM_YUKLASH_CHAT}
 _RASM_XATO_KUTISH = 3600      # yuklanmagan rasm 1 soat qayta urinilmaydi
 _RASM_FID = {}                # kalit (rasm URL / URL#b) → Telegram file_id
 _RASM_EGA = {}                # kalit → e'lon raqami (file_id ni jadvalga yozish uchun)
+_URL_FID = {}                 # kanal / albom rasmi (yuklangan manzil) → file_id (BUGUN148 2-urinish)
+_fid_saqla_lock = threading.Lock()
 _RASM_XATO = {}               # rasm URL → yuklanmagan vaqti
 _rasm_navbat = []             # yuklash navbati (URL)
 _rasm_kutilmoqda = set()      # navbatda yoki yuklanayotgan URL'lar
@@ -4246,42 +4333,104 @@ def inline_kalitlari(elon):
     return rasmlar
 
 
-def _fid_jadvaldan(elon):
-    """Jadvaldagi `rasm_file_id` dan HOZIRGI rasmlarga to'g'ri kelganlarini xotiraga oladi (almashgan rasmniki tashlanadi).
-    Qaytaradi: {kalit: file_id} — jadvaldagi (tozalangan) holat."""
+def _fid_h(manba):
+    """Jadvaldagi kalit — yuklangan manzilning qisqa izi (manzil uzun: logo + belgi layer'lari; GET so'rovi sig'sin).
+    Manzil o'zgarsa (rasm almashdi, logo joyi, belgi) — iz ham o'zgaradi, eski file_id o'z-o'zidan tashlanadi."""
+    return hashlib.sha1(manba.encode('utf-8')).hexdigest()[:12]
+
+
+def kanal_manbalari(elon):
+    """Kanal posti rasmlari — Telegram yuklaydigan manzillar (logo; 2+ rasmda 1-si «›››» belgili), ≤10."""
+    src = belgi_src(elon)
+    return [src.get(u, u) for u in images_of(elon)[:10]]
+
+
+def albom_manbalari(elon):
+    """OLX albomi rasmlari — logo bilan, belgisiz, ≤10."""
+    return [belgili(t, j) for t, j in rasm_joylari(elon)][:10]
+
+
+def _fid_xom(elon):
+    """Jadvaldagi `rasm_file_id` — {iz: file_id}."""
     xom = elon.get('rasm_file_id')
     try:
         d = json.loads(xom) if isinstance(xom, str) and xom.strip() else (xom if isinstance(xom, dict) else {})
     except Exception:
         d = {}
-    if not isinstance(d, dict):
-        d = {}
+    return {k: v for k, v in d.items() if isinstance(v, str) and v} if isinstance(d, dict) else {}
+
+
+def _fid_jadvaldan(elon):
+    """Jadvaldagi `rasm_file_id` dan HOZIRGI rasmlarga (inline, kanal, albom) to'g'ri kelganlarini xotiraga oladi —
+    almashgan rasmniki tashlanadi. Qaytaradi: {iz: file_id} — jadvaldagi (tozalangan) holat."""
+    d = _fid_xom(elon)
     num = _num_int(elon)
     qolgan = {}
     for k in inline_kalitlari(elon):
         _RASM_EGA[k] = num
-        if isinstance(d.get(k), str) and d[k]:
-            qolgan[k] = d[k]
-            _RASM_FID.setdefault(k, d[k])
+        h = _fid_h(_fid_manba(k))
+        if h in d:
+            qolgan[h] = d[h]
+            _RASM_FID.setdefault(k, d[h])
+    for m in kanal_manbalari(elon) + albom_manbalari(elon):
+        h = _fid_h(m)
+        if h in d:
+            qolgan[h] = d[h]
+            _URL_FID.setdefault(m, d[h])
     return qolgan
 
 
-def _fid_saqla(kalitlar):
-    """Yangi yuklangan file_id larni e'lon qatoriga (`rasm_file_id`) yozadi. Faqat o'zgargan bo'lsa."""
-    for num in {_RASM_EGA.get(k) for k in kalitlar} - {None}:
+def _fid_hozir(elon):
+    """Xotiradagi hozirgi rasmlar file_id'si — {iz: file_id}."""
+    hozir = {}
+    for k in inline_kalitlari(elon):
+        if k in _RASM_FID:
+            hozir[_fid_h(_fid_manba(k))] = _RASM_FID[k]
+    for m in kanal_manbalari(elon) + albom_manbalari(elon):
+        if m in _URL_FID:
+            hozir[_fid_h(m)] = _URL_FID[m]
+    return hozir
+
+
+def fid_olindi(num, manbalar, fidlar):
+    """Kanal / albom yuborilgach Telegram bergan file_id'lar xotiraga. Soni mos kelmasa — olinmaydi. True — yangisi bor."""
+    if not manbalar or len(manbalar) != len(fidlar) or not all(fidlar):
+        return False
+    yangi = False
+    for m, f in zip(manbalar, fidlar):
+        if _URL_FID.get(m) != f:
+            _URL_FID[m] = f
+            yangi = True
+    return yangi
+
+
+def _fid_num_saqla(num):
+    """E'lon rasmlarining file_id'larini qatoriga (`rasm_file_id`) yozadi — faqat jadvaldagidan farq qilsa."""
+    with _fid_saqla_lock:
         with _elon_cache_lock:
             elon = _ELON_CACHE['by_num'].get(str(num))
         if not elon:
-            continue
-        hozir = {k: _RASM_FID[k] for k in inline_kalitlari(elon) if k in _RASM_FID}
-        if not hozir or hozir == _fid_jadvaldan(elon):
-            continue
+            return
+        _fid_jadvaldan(elon)
+        hozir = _fid_hozir(elon)
+        if not hozir or hozir == _fid_xom(elon):
+            return
         qiymat = json.dumps(hozir, separators=(',', ':'))
         if _sheets_update({'num': int(num), 'rasm_file_id': qiymat}):
             with _elon_cache_lock:
                 elon['rasm_file_id'] = qiymat
         else:
             logger.error(f'rasm_file_id: №{num} jadvalga yozilmadi')
+
+
+def fid_saqla_fonda(num):
+    threading.Thread(target=_fid_num_saqla, args=(num,), daemon=True).start()
+
+
+def _fid_saqla(kalitlar):
+    """Yangi yuklangan inline file_id larni e'lon qatoriga yozadi. Faqat o'zgargan bo'lsa."""
+    for num in {_RASM_EGA.get(k) for k in kalitlar} - {None}:
+        _fid_num_saqla(num)
 
 
 def _rasm_yubor(guruh):
