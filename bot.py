@@ -3789,7 +3789,7 @@ async def handle_phone(chat_id, phone, user):
 
 
 # ══ BUGUN125: Konkurs Mini App — captcha + qurilma belgisi ══
-# Oqim: raqam → «🧩 Tasdiqlash» (web_app, sayt/konkurs.html) → POST /konkurs/captcha (savol) → mijoz tanlaydi →
+# Oqim: raqam → «✅ Tasdiqlash» (web_app, sayt/konkurs.html) → POST /konkurs/captcha (savol) → mijoz tanlaydi →
 # POST /konkurs/qatnash (javob + qurilma belgisi) → Apps Script joinKonkurs (kalit bilan) → faqat ok bo'lsa «qatnashdingiz».
 # Bir qurilmadan 2+ akkaunt — BLOKLANMAYDI (foydalanuvchi: «qisman ushlab qolamiz»): jadvalda ⚠️ + adminga ikkalasi.
 KONKURS_MINI_URL = SAYT_URL + 'konkurs.html'
@@ -3807,10 +3807,10 @@ _kk_captcha_soni = {}           # uid → [oyna_boshi, soni]
 
 async def _kk_captcha_tugma(chat_id):
     await blok(send_msg, chat_id,
-               # BUGUN180 (foydalanuvchi, 2026-10-14, 3-band): matn aynan shu; tugma matni o'zgarmadi
+               # BUGUN180 (foydalanuvchi, 2026-10-14, 3-band): matn aynan shu; BUGUN190 (3-band): tugma emojisi 🧩 → ✅
                "⚡️ Oxirgi qadam — pastdagi tugmani bosing va saytda tasdiqlang.\n"
                "⚡️ Последний шаг — нажмите кнопку ниже и подтвердите участие на сайте.",
-               {"inline_keyboard": [[{"text": "🧩 Tasdiqlash / Подтвердить", "web_app": {"url": KONKURS_MINI_URL}}]]})
+               {"inline_keyboard": [[{"text": "✅ Tasdiqlash / Подтвердить", "web_app": {"url": KONKURS_MINI_URL}}]]})
 
 
 def _kk_xesh(qiymat):
