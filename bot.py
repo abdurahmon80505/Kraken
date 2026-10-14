@@ -2820,21 +2820,22 @@ def _kk_tarqatma_xabari(k, til):
 
 def _kk_yangibot_xabari(k, til):
     """BUGUN184 (v169/v170): yangi botga /start bosgan, lekin konkursda qatnashmaganlarga — YANGI bot orqali, bir marta.
-    Tugma — callback (ular allaqachon botda): bosilsa start_konkurs_flow (telefon so'rovi) boshlanadi."""
+    Tugma — callback (ular allaqachon botda): bosilsa start_konkurs_flow (telefon so'rovi) boshlanadi.
+    BUGUN190 (foydalanuvchi, 2026-10-14, B): 👋 → 🌚; tugma ikkala tilda «🎯 Qatnashish / Участвовать» — emoji bitta."""
     prize = html_escape(str(k.get('prize') or ''))
     end = _parse_end_time(k.get('end_time'))
     if til == 'ru':
-        q = ["👋 В связи с ребрендингом Nuqta Tech объявляет конкурс!", f"🎁 Приз: <b>{prize}</b>"]
+        q = ["🌚 В связи с ребрендингом Nuqta Tech объявляет конкурс!", f"🎁 Приз: <b>{prize}</b>"]
         if end:
             q.append(f"⏰ Завершится: {_kk_vaqt(end)} (по Ташкенту)")
         q += ["", "Чтобы участвовать — нажмите кнопку ниже 👇"]
-        tugma = "🎁 Участвовать"
+        tugma = "🎯 Qatnashish / Участвовать"
     else:
-        q = ["👋 Nuqta tech rebranding munosabati bilan konkurs e'lon qildi!", f"🎁 Sovrin: <b>{prize}</b>"]
+        q = ["🌚 Nuqta tech rebranding munosabati bilan konkurs e'lon qildi!", f"🎁 Sovrin: <b>{prize}</b>"]
         if end:
             q.append(f"⏰ Tugaydi: {_kk_vaqt(end)} (Toshkent vaqti)")
         q += ["", "Qatnashish uchun pastdagi tugmani bosing 👇"]
-        tugma = "🎁 Qatnashish"
+        tugma = "🎯 Qatnashish / Участвовать"
     return "\n".join(q), {"inline_keyboard": [[{"text": tugma, "callback_data": "kk_qatnash"}]]}
 
 
