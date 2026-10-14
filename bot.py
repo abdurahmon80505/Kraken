@@ -2576,6 +2576,28 @@ def _kk_sheet(action, timeout=30, **params):
         return None
 
 
+# BUGUN173 (2026-10-14): /start → Mijozlar.yangi_bot (yangi bot) yoki eski_bot (eski botga yozgan) — Apps Script botStart.
+# Birinchi vaqt yozadi (Apps Script qayta yozmaydi). Fonda: webhook kutmaydi; xato — faqat logda (xabar buzilmaydi).
+_MIJOZ_BOT_YOZILGAN = set()   # (kanal, user_id) — shu jarayonda yozilganlar: har /start'da Sheets'ga bormaslik uchun
+
+
+async def mijoz_bot_qayd(user, kanal):
+    """user — Telegram 'from' (id, username, first_name, language_code). kanal: 'yangi' | 'eski'."""
+    try:
+        uid = str((user or {}).get('id') or '')
+        if not uid or (kanal, uid) in _MIJOZ_BOT_YOZILGAN:
+            return
+        til = 'ru' if str(user.get('language_code') or '').lower().startswith('ru') else 'uz'
+        j = await blok(_kk_sheet, 'botStart', timeout=15, user_id=uid, kanal=kanal,
+                       username=user.get('username') or '', ism=user.get('first_name') or '', til=til)
+        if j and j.get('ok'):
+            if len(_MIJOZ_BOT_YOZILGAN) > 20000:
+                _MIJOZ_BOT_YOZILGAN.clear()
+            _MIJOZ_BOT_YOZILGAN.add((kanal, uid))
+    except Exception as e:
+        logger.error(f'mijoz bot qayd ({kanal}): {type(e).__name__}')
+
+
 _KK_BLOK_BELGI = ('blocked', 'deactivated', 'chat not found', 'peer_id_invalid', 'user not found',
                   'bot was kicked', "bot can't initiate")
 
@@ -2794,6 +2816,26 @@ def _kk_tarqatma_xabari(k, til):
         q += ["", "Qatnashish uchun pastdagi tugmani bosing 👇"]
         tugma = "🎁 Qatnashish"
     return "\n".join(q), {"inline_keyboard": [[{"text": tugma, "url": f"https://t.me/{BOT_USERNAME}?start=konkurs"}]]}
+
+
+def _kk_yangibot_xabari(k, til):
+    """BUGUN184 (v169/v170): yangi botga /start bosgan, lekin konkursda qatnashmaganlarga — YANGI bot orqali, bir marta.
+    Tugma — callback (ular allaqachon botda): bosilsa start_konkurs_flow (telefon so'rovi) boshlanadi."""
+    prize = html_escape(str(k.get('prize') or ''))
+    end = _parse_end_time(k.get('end_time'))
+    if til == 'ru':
+        q = ["👋 В связи с ребрендингом Nuqta Tech объявляет конкурс!", f"🎁 Приз: <b>{prize}</b>"]
+        if end:
+            q.append(f"⏰ Завершится: {_kk_vaqt(end)} (по Ташкенту)")
+        q += ["", "Чтобы участвовать — нажмите кнопку ниже 👇"]
+        tugma = "🎁 Участвовать"
+    else:
+        q = ["👋 Nuqta tech rebranding munosabati bilan konkurs e'lon qildi!", f"🎁 Sovrin: <b>{prize}</b>"]
+        if end:
+            q.append(f"⏰ Tugaydi: {_kk_vaqt(end)} (Toshkent vaqti)")
+        q += ["", "Qatnashish uchun pastdagi tugmani bosing 👇"]
+        tugma = "🎁 Qatnashish"
+    return "\n".join(q), {"inline_keyboard": [[{"text": tugma, "callback_data": "kk_qatnash"}]]}
 
 
 async def _kk_admin(matn, joy=None):
@@ -3281,21 +3323,32 @@ def _kk_kampaniya(s):
     return re.sub(r'[^A-Za-z0-9_-]', '', str(s or ''))[:60]
 
 
-async def konkurs_tarqat(k, kampaniya, ids, joy):
-    """Konkurs e'loni — ESKI bot orqali Mijozlar'ga (navbat bilan; qayta chaqirilsa — qolganidan davom, takror yo'q)."""
-    _, urls = _kk_rasmlar(k)   # file_id — yangi botniki, eski bot yubora olmaydi; faqat url
-    matnlar = {'uz': _kk_tarqatma_xabari(k, 'uz'), 'ru': _kk_tarqatma_xabari(k, 'ru')}
+async def konkurs_tarqat(k, kampaniya, ids, joy, yangibot=False):
+    """Konkurs e'loni — ESKI bot orqali Mijozlar'ga (navbat bilan; qayta chaqirilsa — qolganidan davom, takror yo'q).
+    yangibot (BUGUN184): yangi botga /start bosgan, konkursda qatnashmaganlarga — YANGI bot orqali (v169 matni)."""
+    fids, urls = _kk_rasmlar(k)   # file_id — yangi botniki: eski bot yubora olmaydi (faqat url), yangi bot — ikkalasini
+    if yangibot:
+        matnlar = {'uz': _kk_yangibot_xabari(k, 'uz'), 'ru': _kk_yangibot_xabari(k, 'ru')}
+        rasm = fids[:1] + urls[:1]
+    else:
+        matnlar = {'uz': _kk_tarqatma_xabari(k, 'uz'), 'ru': _kk_tarqatma_xabari(k, 'ru')}
+        rasm = urls[:1]
 
     def yubor(x):
         matn, mk = matnlar.get(x.get('til'), matnlar['uz'])
-        return _kk_shaxsiy(x.get('user_id'), matn, mk, rasm=urls[:1], token=ESKI_BOT_TOKEN)
+        return _kk_shaxsiy(x.get('user_id'), matn, mk, rasm=rasm, token=None if yangibot else ESKI_BOT_TOKEN)
 
-    return await _kk_tarqat(kampaniya, ids, joy, yubor)
+    # BUGUN173: 7:30 «hammaga» — yangi botga o'tganlar va shu konkursda qatnashganlar chetda (Apps Script tarqatmaTayyorla);
+    # BUGUN184: «yangibot» — aksincha: faqat yangi botga o'tgan, lekin qatnashmaganlar
+    return await _kk_tarqat(kampaniya, ids, joy, yubor, konkurs=None if ids else k.get('id'),
+                            rejim='yangibot' if yangibot and not ids else None)
 
 
-async def _kk_tarqat(kampaniya, ids, joy, yubor):
+async def _kk_tarqat(kampaniya, ids, joy, yubor, konkurs=None, rejim=None):
     """Tarqatma navbati (konkurs e'loni, rebrending): Mijozlar → «tarqatma» varag'i (bir kishiga bir marta), partiya bilan
-    yubor(x) → hisobot adminga. ids — faqat shu user_id'lar (sinov); None — Mijozlar'dagi hamma."""
+    yubor(x) → hisobot adminga. ids — faqat shu user_id'lar (sinov); None — Mijozlar'dagi hamma.
+    konkurs — faqat konkurs e'loni «hammaga» uchun (rebrending va sinov — None, filtr yo'q).
+    rejim — 'yangibot' (BUGUN184): konkurs bilan birga; aks holda — oddiy «hammaga» filtri."""
     kampaniya = _kk_kampaniya(kampaniya)
     qulf = 'T:' + kampaniya
     if qulf in _kk_qulflar:
@@ -3303,13 +3356,24 @@ async def _kk_tarqat(kampaniya, ids, joy, yubor):
         return 'band'
     _kk_qulflar.add(qulf)
     try:
+        if konkurs:
+            # BUGUN184: eski Apps Script «konkurs» / «rejim» parametrini bilmaydi — HAMMAGA, filtrsiz tayyorlab qo'yardi
+            # (va «tarqatma» varag'ida shu nom bilan qolardi). Yozishdan oldin (faqat o'qiydi) versiyani tekshiramiz.
+            h = await _kk_sorov('tarqatmaHolat', urinish=2, kampaniya=kampaniya)
+            kerak = rejim or 'konkurs'
+            if h is None or kerak not in (h.get('rejimlar') or []):
+                sabab = 'Apps Script javob bermadi' if h is None else "Apps Script eski versiya (deploy.js kerak)"
+                await _kk_admin(f"❌ Tarqatma boshlanmadi: {sabab}. Hech kimga yuborilmadi.", joy)
+                return 'xato'
         t = await _kk_sorov('tarqatmaTayyorla', urinish=2, kampaniya=kampaniya,
-                            ids=json.dumps([str(i) for i in ids]) if ids else None)
+                            ids=json.dumps([str(i) for i in ids]) if ids else None,
+                            konkurs=str(konkurs) if konkurs else None, rejim=rejim)
         if t is None or not t.get('ok'):
             await _kk_admin(f"❌ Tarqatma tayyorlanmadi: {html_escape((t or {}).get('msg') or 'Apps Script javob bermadi')}",
                             joy)
             return 'xato'
-        await _kk_admin(f"📣 Tarqatma <b>{kampaniya}</b>: {t.get('soni', 0)} kishi"
+        chetda = f" · chetda: {t['chetda']}" if t.get('chetda') else ''
+        await _kk_admin(f"📣 Tarqatma <b>{kampaniya}</b>: {t.get('soni', 0)} kishi{chetda}"
                         f"{' (davomi)' if t.get('already') else ''} — yuborilmoqda…", joy)
         sanoq, holat = await _kk_navbat(
             lambda: _kk_sheet('tarqatmaOl', kampaniya=kampaniya, worker=KONKURS_WORKER, n=KONKURS_PARTIYA),
@@ -3353,7 +3417,8 @@ _KK_BUYRUQLAR = ('/konkursholat', '/konkurstugat', '/konkursbekor', '/konkursdav
 async def konkurs_buyruq(chat_id, text):
     """Admin buyruqlari (fonda):
       /konkursholat [id] · /konkurstugat <id> [hozir] · /konkursbekor <id> · /konkursdavom <id> [noaniq]
-      /tarqatma <id> sinov (TEST kanal + admin) · /tarqatma <id> hammaga
+      /tarqatma <id> sinov (TEST kanal + admin) · /tarqatma <id> hammaga (eski bot, yangi botga o'tmaganlarga)
+      /tarqatma <id> yangibot (yangi bot: o'tgan, lekin qatnashmaganlarga) · /tarqatma <id> yangibotsinov (faqat adminga)
       /konkursochiq — konkurs oynasini hammaga ochadi · /konkursyashir — yana yashiradi"""
     q = text.split()
     b = q[0].split('@')[0]
@@ -3470,11 +3535,13 @@ async def konkurs_buyruq(chat_id, text):
 
         if b == '/tarqatma':
             tur = q[2] if len(q) > 2 else ''
-            if tur not in ('sinov', 'hammaga'):
+            if tur not in ('sinov', 'hammaga', 'yangibot', 'yangibotsinov'):
                 await _kk_admin("/tarqatma &lt;id&gt; sinov — TEST kanalga va sizga (mijozlarga emas)\n"
-                                "/tarqatma &lt;id&gt; hammaga — Mijozlar'dagi hammaga (bir marta)", chat_id)
+                                "/tarqatma &lt;id&gt; hammaga — eski bot: yangi botga o'tmaganlarga (bir marta)\n"
+                                "/tarqatma &lt;id&gt; yangibot — yangi bot: botga o'tgan, lekin qatnashmaganlarga (bir marta)\n"
+                                "/tarqatma &lt;id&gt; yangibotsinov — yangi bot matni faqat sizga", chat_id)
                 return
-            if not ESKI_BOT_TOKEN:
+            if tur in ('sinov', 'hammaga') and not ESKI_BOT_TOKEN:
                 await _kk_admin("❌ ESKI_BOT_TOKEN qo'yilmagan (Render env) — tarqatma eski bot orqali ketadi.", chat_id)
                 return
             _konkurs_cache['data'] = None
@@ -3483,23 +3550,30 @@ async def konkurs_buyruq(chat_id, text):
             if not k or str(k.get('id')) != kid or not _kk_aktivmi(k):
                 await _kk_admin(f"❌ Konkurs {ek} aktiv emas — tarqatma faqat ochiq konkursga.", chat_id)
                 return
-            if tur == 'hammaga' and _kk_sinovmi(k.get('prize')):
-                await _kk_admin(f"❌ {ek} — sinov konkursi (nomi TEST bilan): «hammaga» yuborilmaydi. "
-                                f"Faqat: /tarqatma {ek} sinov", chat_id)
+            if tur in ('hammaga', 'yangibot') and _kk_sinovmi(k.get('prize')):
+                await _kk_admin(f"❌ {ek} — sinov konkursi (nomi TEST bilan): «{tur}» yuborilmaydi. "
+                                f"Faqat: /tarqatma {ek} {'sinov' if tur == 'hammaga' else 'yangibotsinov'}", chat_id)
                 return
-            if tur == 'hammaga' and _kk_yashirinmi(k):
+            if tur in ('hammaga', 'yangibot') and _kk_yashirinmi(k):
                 # BUGUN147: yashirin konkurs e'loni mijozlarga ketsa — tugma bosgan odam konkursni ko'rmaydi
-                await _kk_admin(f"❌ Konkurs oynasi yashirin — «hammaga» yuborilmaydi.\n"
-                                f"Avval oching: /konkursochiq, keyin: /tarqatma {ek} hammaga", chat_id)
+                await _kk_admin(f"❌ Konkurs oynasi yashirin — «{tur}» yuborilmaydi.\n"
+                                f"Avval oching: /konkursochiq, keyin: /tarqatma {ek} {tur}", chat_id)
                 return
+            yangibot = tur in ('yangibot', 'yangibotsinov')
             if tur == 'sinov':
                 # BUGUN125 (v90-1): sinov — TEST kanal + admin; mijoz user_id'lari qabul qilinmaydi (adashib ketmasin)
                 await konkurs_tarqat_test_kanal(k, chat_id)
                 ids = [str(ADMIN_ID)]
                 kampaniya = f'{kid}-sinov{int(time.time())}'
+            elif tur == 'yangibotsinov':
+                # BUGUN184: yangi bot matni — faqat adminga (yangi bot orqali; admin unga /start bosgan)
+                ids = [str(ADMIN_ID)]
+                kampaniya = f'{kid}-yangibotsinov{int(time.time())}'
+            elif tur == 'yangibot':
+                ids, kampaniya = None, f'{kid}-yangibot'
             else:
                 ids, kampaniya = None, f'{kid}-hammaga'
-            await konkurs_tarqat(k, kampaniya, ids, chat_id)
+            await konkurs_tarqat(k, kampaniya, ids, chat_id, yangibot=yangibot)
     except Exception as e:
         logger.error(f'konkurs buyruq {b}: {type(e).__name__}')
         await _kk_admin(f"⚠️ {html_escape(b)}: kutilmagan xato ({type(e).__name__})", chat_id)
@@ -4816,6 +4890,9 @@ async def handle_update(data):
             return
 
         if text.startswith('/start'):
+            # BUGUN173: yangi botga /start → Mijozlar.yangi_bot (fonda; 7:30 konkurs e'lonidan chetda qoladi)
+            if message.get('chat', {}).get('type') == 'private':
+                asyncio.create_task(mijoz_bot_qayd(user, 'yangi'))
             parts = text.split(' ', 1)
             deep = parts[1].strip() if len(parts) > 1 else ''
             if deep in ('konkurs', 'konkurs_y'):
@@ -5606,6 +5683,11 @@ async def eski_webhook(request):
             for k in [k for k, v in _ESKI_UPD.items() if hozir - v > 3600]:
                 _ESKI_UPD.pop(k, None)
             asyncio.create_task(blok(_eski_bot_javob, data))
+            # BUGUN173: eski botga yozgan — Mijozlar.eski_bot (fonda; javob bilan birga emas)
+            kim = data.get('message') or data.get('callback_query') or {}
+            chat = kim.get('chat') or (kim.get('message') or {}).get('chat') or {}
+            if chat.get('type') == 'private':
+                asyncio.create_task(mijoz_bot_qayd(kim.get('from'), 'eski'))
     return web.json_response({'ok': True})
 
 
