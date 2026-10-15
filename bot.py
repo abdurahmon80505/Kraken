@@ -426,6 +426,20 @@ YON_POST_MATN = {
 }
 
 
+# ── BUGUN213 §6b: BETA TESTER — env SINOVCHI_IDS («1367350290», bo'sh joy / vergul bilan) ──
+# Sinovchi: (1) haqiqiy yo'nalish kanallariga (YON_KANAL) qo'shilganda o'sha kanalning xush kelibsizi (ephemeral, faqat unga);
+# boshqa odamlarga o'zgarmaydi (XUSH_KANALLAR); (2) yashirin konkursni ko'radi va qatnasha oladi (admin kabi).
+SINOVCHI_IDS = frozenset(int(x) for x in os.environ.get('SINOVCHI_IDS', '').replace(',', ' ').split() if x.strip().isdigit())
+
+
+def yon_kanal_kaliti(chat):
+    """Update'dagi chat YON_KANAL dagi qaysi yo'nalish kanali ('mobile' | 'pc' | 'camera') yoki ''."""
+    for kalit, (_, manzil) in YON_KANAL.items():
+        if _kanal_mos(chat, '@' + manzil):
+            return kalit
+    return ''
+
+
 def send_bot_hub(chat_id):
     """Oddiy /start — «Nuqta tech'ga xush kelibsiz, qaysi yo'nalish» + 3 tugma. Qayta /start — yana chiqadi."""
     try:
@@ -493,10 +507,13 @@ def xush_kimga(cm):
 
     Faqat XUSH_KANALLAR; faqat YANGI qo'shilgan (a'zo emas → oddiy a'zo); bot emas. Chiqib ketish, admin qilib
     tayinlash, huquq o'zgarishi — xush kelibsiz emas."""
-    if not isinstance(cm, dict) or not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL,)):
+    if not isinstance(cm, dict):
         return None
     yangi = cm.get('new_chat_member') or {}
     user = yangi.get('user') or {}
+    if not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL,)) and not (
+            user.get('id') in SINOVCHI_IDS and yon_kanal_kaliti(cm.get('chat'))):   # BUGUN213 §6b
+        return None
     if user.get('is_bot') or not user.get('id'):
         return None
     if _azo(cm.get('old_chat_member')) or yangi.get('status') not in ('member', 'restricted') or not _azo(yangi):
@@ -504,7 +521,7 @@ def xush_kimga(cm):
     return user['id']
 
 
-def xush_yubor(chat_id, uid, hub=False):
+def xush_yubor(chat_id, uid, hub=False, yon=''):
     """Kanal ichida faqat `uid` ga ko'rinadigan rasm + matn + tugma. (True, '') yoki (False, xato matni).
     hub=True (B38) — tech kanal: rasmsiz matn + 3 yo'nalish tugmasi (HUB_KB)."""
     maydon = {
@@ -518,8 +535,13 @@ def xush_yubor(chat_id, uid, hub=False):
         maydon = dict(maydon, reply_markup=HUB_KB)
         maydon['text'] = HUB_MATN
         del maydon['caption']
+    elif yon:   # BUGUN213 §6b: sinovchi, haqiqiy yo'nalish kanali — o'sha yo'nalishning posti, rasmsiz
+        maydon = dict(maydon, text=YON_POST_MATN[yon], reply_markup={"inline_keyboard": [[{
+            "text": START_KB["inline_keyboard"][0][0]["text"],
+            "url": f"https://t.me/{BOT_USERNAME}?startapp=y_{yon}"}]]})
+        del maydon['caption']
     try:
-        if hub:
+        if hub or yon:
             j = req.post(f'{TG_API}/sendMessage', json=maydon, timeout=30).json()
         elif _xush['file_id']:
             j = req.post(f'{TG_API}/sendPhoto', json=dict(maydon, photo=_xush['file_id']), timeout=30).json()
@@ -531,7 +553,7 @@ def xush_yubor(chat_id, uid, hub=False):
     except Exception as ex:
         return False, f'tarmoq: {ex}'
     if not j.get('ok'):
-        if not hub:
+        if not hub and not yon:
             _xush['file_id'] = ''   # file_id eskirgan bo'lishi mumkin — keyingi safar rasm qayta yuklanadi
         return False, str(j.get('description') or j)
     res = j.get('result') or {}
@@ -561,7 +583,10 @@ def kanal_xush_kelibsiz(cm):
         _xush['yuborilgan'][(chat.get('id'), uid)] = hozir
         if len(_xush['yuborilgan']) > 5000:
             _xush['yuborilgan'] = {k: t for k, t in _xush['yuborilgan'].items() if hozir - t < 3600}
-    ok, xato = xush_yubor(chat.get('id'), uid, hub=_kanal_mos(chat, TECH_KANAL))   # B38: tech kanal — hub
+    yon = ''
+    if uid in SINOVCHI_IDS and not any(_kanal_mos(chat, k) for k in XUSH_KANALLAR + (TECH_KANAL,)):
+        yon = yon_kanal_kaliti(chat)   # BUGUN213 §6b: sinovchi — haqiqiy yo'nalish kanalida
+    ok, xato = xush_yubor(chat.get('id'), uid, hub=_kanal_mos(chat, TECH_KANAL), yon=yon)   # B38: tech kanal — hub
     kanal = html_escape('@' + chat['username'] if chat.get('username') else str(chat.get('id', '')))
     if ok:
         logger.info(f'xush kelibsiz: {uid} -> {kanal}')
@@ -2926,7 +2951,7 @@ _kk_kalitli = set()   # yashirin konkursga «kalit» bilan (saytda logo 3 marta 
 
 def _kk_korsatsinmi(k, uid):
     """Begona yashirin konkursni ko'rmaydi; admin va kalit bilan kelgan — ko'radi."""
-    return not _kk_yashirinmi(k) or uid == ADMIN_ID or uid in _kk_kalitli
+    return not _kk_yashirinmi(k) or uid == ADMIN_ID or uid in _kk_kalitli or uid in SINOVCHI_IDS   # BUGUN213 §6b
 
 
 def _kk_obunasiz_xabari(prize):
@@ -3072,7 +3097,7 @@ def _kk_start_blok(k):
 def konkurs_start_xabari(chat_id):
     """Oddiy /start: aktiv va OCHIQ (yashirin emas) konkurs bo'lsa — konkurs bloki. Natija: 'yuborildi' | ''."""
     k = get_konkurs()
-    if not _kk_aktivmi(k) or _kk_yashirinmi(k):
+    if not _kk_aktivmi(k) or (_kk_yashirinmi(k) and chat_id not in SINOVCHI_IDS):   # BUGUN213 §6b: sinovchi yashirinni ham ko'radi
         return ''
     matn, mk = _kk_start_blok(k)
     return _kk_shaxsiy(chat_id, matn, mk, rasm=(_kk_rasmlar(k)[0][:1] + _kk_rasmlar(k)[1][:1]))
