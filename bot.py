@@ -30,7 +30,7 @@ TEST_CHANNEL = os.environ.get('TEST_CHANNEL_ID', '@Kraken_mobile_test')
 # CHANNEL'dan username va link (a'zolik tugmalari uchun — test kanalga ham mos)
 CHANNEL_USERNAME = CHANNEL.lstrip('@')
 CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
-SAYT_URL = 'https://krakenmobileshop.netlify.app/'
+SAYT_URL = 'https://nuqtatech-store.netlify.app/'
 # Bot manzili (@username) — BITTA joy, kodda boshqa joyda yozilmaydi (2026-10-07, R1.4 b: yangi bot «Nuqta tech Store»
 # @nuqta_tech_store_bot). Tartib: Render env BOT_USERNAME (qo'lda) → bo'lmasa — BOT_TOKEN egasi (Telegram getMe, ishga
 # tushganda bir marta) → bo'lmasa — yangi bot nomi (BUGUN137: eski bot faqat yangisiga yo'naltiradi, zaxira nom ham yangisi).
@@ -4884,6 +4884,9 @@ async def handle_update(data):
             # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin lichkasi)
             if cq_data.startswith(('kollaj:', 'slayd:')) and cq_adm:
                 asyncio.create_task(blok(kollaj_almashtir, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
+            # BUGUN208: «🔓 Bronni bekor qilish» (faqat admin lichkasi)
+            if cq_data.startswith('bron_och:') and cq_adm:
+                asyncio.create_task(bron_bekor_tugma(cq_chat, cq_data))
             # B34: «🗑 Postni o'chirish» (faqat admin lichkasi)
             if cq_data.startswith('pochir') and cq_adm:
                 asyncio.create_task(blok(post_ochir_tugma, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
@@ -5620,7 +5623,158 @@ _BUYURTMA_KORILGAN = {}      # (uid, buyurtma_id) → vaqt
 _BUYURTMA_SONI = {}           # uid → [vaqtlar]
 
 
-def _buyurtma_matn(uid, elon, model, order, ism, tel, manzil, kurs):
+# BUGUN208: yashirin bron. Mijoz to'liq to'ldirib «To'lovga o'tish» bosganda (shu /buyurtma) e'lon shu mijozga bron
+# bo'ladi; boshqa mijoz «Sotib olish» ni bossa sayt /bron_tekshir dan so'raydi — javob FAQAT bron: true/false (kim ekani
+# saytga qaytmaydi), admin esa xabar oladi. Saqlash: xotira + BRON_FAYL (Render qayta ishga tushsa / deploy bo'lsa diskdagi
+# fayl ham o'chadi — bronlar yo'qoladi; doimiy saqlash Apps Script'ni talab qiladi, YAKUN'da yozilgan).
+BRON_MUDDAT_S = int(os.environ.get('BRON_MUDDAT_S', '0') or 0)   # 0 = admin bekor qilmaguncha turadi
+BRON_FAYL = os.environ.get('BRON_FAYL', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bron_holat.json'))
+_BRON = {}              # e'lon raqami → {'uid', 'order', 'ts'}
+_BRON_OGOH = {}         # (uid, num) → oxirgi ogohlantirish vaqti (takror xabar bo'lmasin)
+
+
+def _bron_yuklash():
+    try:
+        with open(BRON_FAYL, encoding='utf-8') as f:
+            d = json.load(f)
+        for num, v in d.items():
+            if isinstance(v, dict) and v.get('uid') and v.get('order'):
+                _BRON[str(num)] = {'uid': int(v['uid']), 'order': str(v['order']), 'ts': float(v.get('ts', 0))}
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.error(f'bron yuklash: {e}')
+
+
+def _bron_saqlash():
+    try:
+        with open(BRON_FAYL, 'w', encoding='utf-8') as f:
+            json.dump(_BRON, f)
+    except Exception as e:
+        logger.error(f'bron saqlash: {e}')
+
+
+def _bron_olish(num):
+    """E'lon bronini qaytaradi (muddati o'tgan bo'lsa o'chiradi); yo'q bo'lsa None."""
+    b = _BRON.get(str(num))
+    if b and BRON_MUDDAT_S and time.time() - b['ts'] > BRON_MUDDAT_S:
+        _BRON.pop(str(num), None)
+        _bron_saqlash()
+        return None
+    return b
+
+
+def _bron_qoy(num, uid, order):
+    _BRON[str(num)] = {'uid': uid, 'order': order, 'ts': time.time()}
+    _bron_saqlash()
+
+
+def _init_data_user(init_data):
+    """Imzosi to'g'ri initData dan Telegram foydalanuvchi ma'lumoti (ism, username, id); aks holda None."""
+    uid = check_init_data(init_data)
+    if not uid:
+        return None
+    try:
+        u = json.loads(dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True)).get('user', '{}'))
+    except Exception:
+        u = {}
+    return {'id': uid, 'ism': ' '.join(x for x in (u.get('first_name'), u.get('last_name')) if x) or str(uid),
+            'username': u.get('username') or ''}
+
+
+def _bron_mijoz_matn(u):
+    """Admin aloqaga chiqishi uchun: ism, @username yoki profil havolasi."""
+    if u.get('username'):
+        havola = '@' + html_escape(u['username'])
+    else:
+        havola = '<a href="tg://user?id=%s">profil</a>' % u['id']
+    return f"{html_escape(u['ism'])} · {havola}"
+
+
+def _bron_ogoh_yubor(num, ikkinchi, sabab):
+    """Fon oqimida: adminga «e'lon bron, 2-mijoz keldi». ikkinchi — _init_data_user() natijasi.
+    Bir mijoz bir e'lon uchun 10 daqiqada bir marta ogohlantiradi."""
+    b = _BRON.get(str(num)) or {}
+    hozir = time.time()
+    if hozir - _BRON_OGOH.get((ikkinchi['id'], str(num)), 0) < 600:
+        return
+    _BRON_OGOH[(ikkinchi['id'], str(num))] = hozir
+    matn = (f"⚠️ №{html_escape(num)} — 2-mijoz {sabab}, e'lon bron\n"
+            f"1-buyurtma №{html_escape(b.get('order', '—'))}, soat {_kk_vaqt(b.get('ts', hozir))}\n\n"
+            f"👤 2-mijoz: {_bron_mijoz_matn(ikkinchi)}\n"
+            f"1-mijoz olmasa — shu odamga o'zingiz aloqaga chiqasiz.")
+    klava = {'inline_keyboard': [
+        [{'text': '2-mijozga yozish', 'url': f"tg://user?id={ikkinchi['id']}"}],
+        [{'text': '🔓 Bronni bekor qilish', 'callback_data': f"bron_och:{num}:{b.get('order', '')}"}]]}
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava}, timeout=10).json()
+        if not r.get('ok'):
+            logger.error(f"bron ogoh: {r.get('description')}")
+    except Exception as e:
+        logger.error(f'bron ogoh: {e}')
+
+
+async def bron_tekshir_endpoint(request):
+    """Sayt «Sotib olish» bosilganda: e'lon boshqa mijoz tomonidan bron qilinganmi. Javob — FAQAT {'bron': bool}.
+    Bron bo'lsa admin 2-mijoz ma'lumoti bilan xabar oladi. Imzosiz / xato — xato qaytadi (sayt oynani baribir ochadi)."""
+    try:
+        data = await request.json()
+        u = _init_data_user(data.get('initData', ''))
+        if not u:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        num = str(data.get('num', '') or '').strip()
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        b = _bron_olish(num)
+        if not b or b['uid'] == u['id']:
+            return web.json_response({'bron': False})
+        asyncio.get_event_loop().run_in_executor(None, _bron_ogoh_yubor, num, u, "«Sotib olish» ni bosdi")
+        return web.json_response({'bron': True})
+    except Exception as e:
+        logger.error(f'bron_tekshir_endpoint: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
+async def bron_bekor_tugma(chat_id, cq_data):
+    """Admin «🔓 Bronni bekor qilish» tugmasi: bron_och:<num>:<order>. Bron boshqa buyurtmaga o'tgan bo'lsa tegmaydi."""
+    try:
+        _, num, order = (cq_data.split(':', 2) + ['', ''])[:3]
+        b = _BRON.get(num)
+        if b and (not order or b['order'] == order):
+            _BRON.pop(num, None)
+            _bron_saqlash()
+            matn = f"🔓 №{num} — bron bekor qilindi, e'lon hammaga ochiq."
+        elif b:
+            matn = f"ℹ️ №{num} — bron boshqa buyurtmada (№{b['order']}); tegilmadi."
+        else:
+            matn = f"ℹ️ №{num} — bron allaqachon yo'q."
+        await blok(send_msg, chat_id, matn)
+    except Exception as e:
+        logger.error(f'bron_bekor_tugma: {e}')
+
+
+_BUYURTMA_TUR = {'yandex': ('🚕', 'Yandex Go'), 'emu': ('📮', 'EMU'), 'bts': ('📦', 'BTS')}
+
+
+def _buyurtma_joy_matn(joy):
+    """📍 qatori. Yandex Go — Yandex xarita havolasi (koordinatadan bot o'zi yasaydi); EMU / BTS — mijoz yozgan filial matni
+    («📍 EMU: Samarqand, Qo'shko'pir filiali»; BUGUN207 — oldin Yandex havolasi edi).
+    joy = {'tur', 'lat', 'lon', 'manzil'}; turi yo'q (eski sayt) — erkin matn manzil.
+    Havola yo'q (Yandex Go'da sayt kalitsiz ishlagan) — «joy belgilanmagan»: mijozdan telefon orqali so'raladi."""
+    tur = joy.get('tur')
+    if tur not in _BUYURTMA_TUR:
+        return html_escape(joy.get('manzil') or '—')
+    e, nom = _BUYURTMA_TUR[tur]
+    if tur == 'yandex':
+        if joy.get('lat') is None:
+            return f'{e} {nom} — joy belgilanmagan'
+        havola = f"https://yandex.uz/maps/?pt={joy['lon']},{joy['lat']}&z=17&l=map"
+        return f'{e} {nom} — <a href="{havola}">Yandex xaritada ochish</a>'
+    return f"{nom}: {html_escape(joy.get('manzil') or '—')}"
+
+
+def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs):
     """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi)."""
     nom = elon_nomi(elon, model, 'uz') or f"E'lon №{elon.get('num', '')}"
     xotira = str(elon.get('storage') or '').strip()
@@ -5636,13 +5790,13 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, manzil, kurs):
             f"💵 {html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n\n"
             f"👤 {html_escape(ism)}\n"
             f"📞 {html_escape(tel)}\n"
-            f"📍 {html_escape(manzil)}\n\n"
+            f"📍 {_buyurtma_joy_matn(joy)}\n\n"
             f"⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
             f"kelmasa — telefon qiling.\n"
             f"🕒 {_kk_vaqt(time.time())}")
 
 
-def _buyurtma_yubor(uid, num, order, ism, tel, manzil, kurs):
+def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs):
     """Fon oqimida. (ok, sabab) qaytaradi."""
     elon, models = elon_cache_get(num)
     if not elon:
@@ -5650,9 +5804,10 @@ def _buyurtma_yubor(uid, num, order, ism, tel, manzil, kurs):
     if elon_status(elon) in ('deleted', 'waited', 'sold'):
         return False, 'yopiq'
     model = (models or {}).get(str(elon.get('specId', '') or ''), {})
-    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, manzil, kurs)
+    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs)
     # Mijozga yozish tugmasi — tg://user?id (mijoz admin bilan avval yozishgan bo'lsa ochiladi)
-    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]}
+    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}],
+                                 [{'text': '🔓 Bronni bekor qilish', 'callback_data': f'bron_och:{num}:{order}'}]]}
     try:
         r = req.post(f'{TG_API}/sendMessage', json={
             'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
@@ -5686,7 +5841,30 @@ async def buyurtma_endpoint(request):
         order = str(data.get('order', '') or '').strip().upper()
         ism = re.sub(r'\s+', ' ', str(data.get('name', '') or '')).strip()
         tel = re.sub(r'[^\d+ ()-]', '', str(data.get('phone', '') or '')).strip()
-        manzil = re.sub(r'[ \t]+', ' ', str(data.get('address', '') or '')).strip()
+        tur = str(data.get('tur', '') or '').strip()
+        joy = {'tur': tur if tur in _BUYURTMA_TUR else ''}
+        if tur == 'yandex':
+            # Koordinata (bo'lsa): faqat son, dunyo chegarasida — Yandex havolasini bot o'zi yasaydi (mijoz matni havolaga tushmaydi)
+            if data.get('lat') is not None or data.get('lon') is not None:
+                try:
+                    lat, lon = float(data.get('lat')), float(data.get('lon'))
+                except Exception:
+                    return web.json_response({'error': 'Joy notogri'}, status=400)
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    return web.json_response({'error': 'Joy notogri'}, status=400)
+                joy.update(lat=round(lat, 6), lon=round(lon, 6))
+        elif tur in ('emu', 'bts'):
+            # BUGUN207: mijoz filialni oddiy matn bilan yozadi («Samarqand, Qo'shko'pir filiali») — faqat uzunligi tekshiriladi
+            manzil = re.sub(r'[\x00-\x1f\x7f\s]+', ' ', str(data.get('manzil', '') or '')).strip()
+            if not (1 <= len(manzil) <= 150):
+                return web.json_response({'error': 'Filial notogri'}, status=400)
+            joy['manzil'] = manzil
+        else:
+            # eski sayt (tur yo'q) — erkin matn manzil
+            manzil = re.sub(r'[ \t]+', ' ', str(data.get('address', '') or '')).strip()
+            if not (1 <= len(manzil) <= 300):
+                return web.json_response({'error': 'Maydon notogri'}, status=400)
+            joy['manzil'] = manzil
         try:
             kurs = int(float(data.get('kurs', 0) or 0))
         except Exception:
@@ -5695,7 +5873,7 @@ async def buyurtma_endpoint(request):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
             return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
-        if not (1 <= len(ism) <= 60) or not (1 <= len(manzil) <= 300):
+        if not (1 <= len(ism) <= 60):
             return web.json_response({'error': 'Maydon notogri'}, status=400)
         if len(re.sub(r'\D', '', tel)) < 9 or len(tel) > 25:
             return web.json_response({'error': 'Telefon notogri'}, status=400)
@@ -5710,10 +5888,18 @@ async def buyurtma_endpoint(request):
         _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
         loop = asyncio.get_event_loop()
         ok, sabab = await loop.run_in_executor(
-            None, _buyurtma_yubor, uid, num, order, ism, tel, manzil, kurs)
+            None, _buyurtma_yubor, uid, num, order, ism, tel, joy, kurs)
         if not ok:
             return web.json_response({'error': sabab}, status=502)
         _BUYURTMA_KORILGAN[(uid, order)] = hozir
+        # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
+        # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
+        b = _bron_olish(num)
+        if not b or b['uid'] == uid:
+            _bron_qoy(num, uid, order)
+        else:
+            ikkinchi = {'id': uid, 'ism': ism, 'username': (_init_data_user(data.get('initData', '')) or {}).get('username', '')}
+            loop.run_in_executor(None, _bron_ogoh_yubor, num, ikkinchi, f"buyurtma berdi (№{order})")
         for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
             _BUYURTMA_KORILGAN.pop(k, None)
         return web.json_response({'ok': True})
@@ -5910,6 +6096,7 @@ async def eski_webhook(request):
 
 
 async def main():
+    _bron_yuklash()   # BUGUN208
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/webhook-eski', eski_webhook)   # BUGUN145: eski bot → yangi bot havolasi
@@ -5919,6 +6106,7 @@ async def main():
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/label', label_endpoint)
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
+    app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
     app.router.add_post('/buyurtma', buyurtma_endpoint)   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
