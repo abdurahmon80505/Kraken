@@ -3342,7 +3342,8 @@ async def konkurs_tarqat(k, kampaniya, ids, joy, yangibot=False):
 
 async def _kk_tarqat(kampaniya, ids, joy, yubor, konkurs=None, rejim=None):
     """Tarqatma navbati (konkurs e'loni, rebrending): Mijozlar → «tarqatma» varag'i (bir kishiga bir marta), partiya bilan
-    yubor(x) → hisobot adminga. ids — faqat shu user_id'lar (sinov); None — Mijozlar'dagi hamma.
+    yubor(x) → hisobot adminga. ids — faqat shu user_id'lar (sinov); None — botga yozgani ma'lum hamma (BUGUN185:
+    Mijozlar + KonkursQatnashchilari, Istaklar, Korishlar, Qidiruvlar — takrorsiz).
     konkurs — faqat konkurs e'loni «hammaga» uchun (rebrending va sinov — None, filtr yo'q).
     rejim — 'yangibot' (BUGUN184): konkurs bilan birga; aks holda — oddiy «hammaga» filtri."""
     kampaniya = _kk_kampaniya(kampaniya)
@@ -3369,8 +3370,15 @@ async def _kk_tarqat(kampaniya, ids, joy, yubor, konkurs=None, rejim=None):
                             joy)
             return 'xato'
         chetda = f" · chetda: {t['chetda']}" if t.get('chetda') else ''
+        # BUGUN185: «hammaga» — Mijozlar + boshqa varaqlardagi user_id (takrorsiz); har varaqdan nechta — faqat son
+        manba = ''
+        if isinstance(t.get('manbalar'), dict):
+            manba = "\nManbalar (bir odam bir nechtasida bo'lishi mumkin): " + " · ".join(
+                f"{html_escape(str(k))} {html_escape(str(v))}" for k, v in t['manbalar'].items())
+        elif not ids and not t.get('already'):
+            manba = "\n⚠️ Apps Script eski versiya — faqat Mijozlar varag'idan (deploy.js kerak)."
         await _kk_admin(f"📣 Tarqatma <b>{kampaniya}</b>: {t.get('soni', 0)} kishi{chetda}"
-                        f"{' (davomi)' if t.get('already') else ''} — yuborilmoqda…", joy)
+                        f"{' (davomi)' if t.get('already') else ''} — yuborilmoqda…{manba}", joy)
         sanoq, holat = await _kk_navbat(
             lambda: _kk_sheet('tarqatmaOl', kampaniya=kampaniya, worker=KONKURS_WORKER, n=KONKURS_PARTIYA),
             lambda natija: _kk_sheet('tarqatmaNatija', kampaniya=kampaniya, worker=KONKURS_WORKER,
@@ -3639,7 +3647,7 @@ async def rebrend_buyruq(chat_id, text):
     """Admin buyruqlari (fonda) — rebrending xabari eski bot nomidan:
       /forwardxabari — faqat sizning lichkangizga (ko'rib chiqish uchun)
       /rebrending sinov — navbat orqali, faqat sizga (mijozlarga emas)
-      /rebrending hammaga — Mijozlar'dagi hammaga, har kishiga bir marta"""
+      /rebrending hammaga — botga yozgani ma'lum hammaga (Mijozlar + boshqa varaqlar), har kishiga bir marta"""
     q = text.split()
     b = q[0].split('@')[0]
     try:
