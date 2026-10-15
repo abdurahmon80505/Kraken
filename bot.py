@@ -404,7 +404,7 @@ HUB_KB = {"inline_keyboard": [[{"text": t, "url": f"https://t.me/{u}"} for t, u 
 # BUGUN213: @nuqta_tech KANALIGA qo'shilganda (ephemeral) — foydalanuvchining o'z namunasi (aynan). Botdagi oddiy /start esa
 # HUB_MATN + callback tugmalar (BOT_HUB_KB) — ikkala joy alohida.
 KANAL_HUB_MATN = (
-    '<tg-emoji emoji-id="5343667643893198683">⚡️</tg-emoji> <b>Nuqta tech kanaliga xush kelibsiz!</b>\n'
+    '<tg-emoji emoji-id="5344058361363082545">⚡️</tg-emoji> <b>Nuqta tech kanaliga xush kelibsiz!</b>\n'
     "Yangiliklar, video obzorlar va yangi kelgan mahsulotlar — shu yerda.\n\n"
     "<b>Добро пожаловать в Nuqta tech!</b>\n"
     "Новости, видеообзоры и новинки — здесь.\n\n"
