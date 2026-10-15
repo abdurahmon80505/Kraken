@@ -427,8 +427,8 @@ YON_POST_MATN = {
 
 
 # ── BUGUN213 §6b: BETA TESTER — env SINOVCHI_IDS («1367350290», bo'sh joy / vergul bilan) ──
-# Sinovchi: (1) haqiqiy yo'nalish kanallariga (YON_KANAL) qo'shilganda o'sha kanalning xush kelibsizi (ephemeral, faqat unga);
-# boshqa odamlarga o'zgarmaydi (XUSH_KANALLAR); (2) yashirin konkursni ko'radi va qatnasha oladi (admin kabi).
+# Faqat KONKURS: sinovchi yashirin konkursni ko'radi va qatnasha oladi (admin kabi). Kanal xush kelibsizi — HAMMA uchun
+# (foydalanuvchi 17:35: «hamma uchun yoqaver unda welcome textlarni») — sinovchiga bog'liq emas.
 SINOVCHI_IDS = frozenset(int(x) for x in os.environ.get('SINOVCHI_IDS', '').replace(',', ' ').split() if x.strip().isdigit())
 
 
@@ -511,9 +511,8 @@ def xush_kimga(cm):
         return None
     yangi = cm.get('new_chat_member') or {}
     user = yangi.get('user') or {}
-    if not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL,)) and not (
-            user.get('id') in SINOVCHI_IDS and yon_kanal_kaliti(cm.get('chat'))):   # BUGUN213 §6b
-        return None
+    if not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL,)) and not yon_kanal_kaliti(cm.get('chat')):
+        return None   # BUGUN213: uchala yo'nalish kanali (YON_KANAL) — HAR KIMGA o'z xush kelibsizi
     if user.get('is_bot') or not user.get('id'):
         return None
     if _azo(cm.get('old_chat_member')) or yangi.get('status') not in ('member', 'restricted') or not _azo(yangi):
@@ -583,9 +582,7 @@ def kanal_xush_kelibsiz(cm):
         _xush['yuborilgan'][(chat.get('id'), uid)] = hozir
         if len(_xush['yuborilgan']) > 5000:
             _xush['yuborilgan'] = {k: t for k, t in _xush['yuborilgan'].items() if hozir - t < 3600}
-    yon = ''
-    if uid in SINOVCHI_IDS and not any(_kanal_mos(chat, k) for k in XUSH_KANALLAR + (TECH_KANAL,)):
-        yon = yon_kanal_kaliti(chat)   # BUGUN213 §6b: sinovchi — haqiqiy yo'nalish kanalida
+    yon = '' if _kanal_mos(chat, TECH_KANAL) else yon_kanal_kaliti(chat)   # BUGUN213: yo'nalish kanali — o'z yo'nalishi posti
     ok, xato = xush_yubor(chat.get('id'), uid, hub=_kanal_mos(chat, TECH_KANAL), yon=yon)   # B38: tech kanal — hub
     kanal = html_escape('@' + chat['username'] if chat.get('username') else str(chat.get('id', '')))
     if ok:
