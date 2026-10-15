@@ -401,6 +401,56 @@ HUB_MATN = (
     f"🇷🇺 <b>Добро пожаловать в {BREND}!</b> Выберите направление 👇"
 )
 HUB_KB = {"inline_keyboard": [[{"text": t, "url": f"https://t.me/{u}"} for t, u in HUB_YONALISHLAR]]}
+# ── BUGUN213: ODDIY /start (payload yo'q, lichka) → HUB_MATN + 3 tugma (callback, sayt ochmaydi) → tanlangan yo'nalish posti ──
+# Foydalanuvchi (2026-10-15): «botga linksiz to'g'ridan-to'g'ri start bosgan odamga kelsin va 3 tasidan bittasini tanlasa
+# o'sha yo'nalishning postini yuborsin». Maxsus havolali /start (?start=<payload>) — eskicha (3 yo'nalish chiqmaydi, kasha bo'lmasin).
+# Tartib: PC · Kamera · Smartfon. Post matni — tanlangan yo'nalish; tugma — saytni o'sha yo'nalishda ochadi (?p=y_<yo'nalish>).
+BOT_HUB_TARTIB = (('pc', '💻 PC'), ('camera', '📷 Kamera'), ('mobile', '📱 Smartfon'))
+BOT_HUB_KB = {"inline_keyboard": [[{"text": t, "callback_data": f"yon:{k}"} for k, t in BOT_HUB_TARTIB]]}
+YON_POST_MATN = {
+    'mobile': (
+        "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
+        "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
+        "🇷🇺 <b>Добро пожаловать! Мы разместили все наши смартфоны на этом сайте. "
+        "Это удобнее, чем канал — обязательно загляните.</b>"),
+    'camera': (
+        "🇺🇿 <b>Xush kelibsiz! Biz barcha kameralarimizni ushbu saytga joyladik. "
+        "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
+        "🇷🇺 <b>Добро пожаловать! Мы разместили все наши камеры на этом сайте. "
+        "Это удобнее, чем канал — обязательно загляните.</b>"),
+    'pc': (
+        "🇺🇿 <b>Xush kelibsiz! Biz barcha kompyuterlarimizni ushbu saytga joyladik. "
+        "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
+        "🇷🇺 <b>Добро пожаловать! Мы разместили все наши компьютеры на этом сайте. "
+        "Это удобнее, чем канал — обязательно загляните.</b>"),
+}
+
+
+def send_bot_hub(chat_id):
+    """Oddiy /start — «Nuqta tech'ga xush kelibsiz, qaysi yo'nalish» + 3 tugma. Qayta /start — yana chiqadi."""
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id, 'text': HUB_MATN, 'parse_mode': 'HTML', 'reply_markup': BOT_HUB_KB,
+        }, timeout=10)
+        if r.status_code == 200 and r.json().get('ok'):
+            return
+        logger.error(f'bot hub: {r.text[:200]}')
+    except Exception as e:
+        logger.error(f'bot hub: {e}')
+    send_start(chat_id)   # zaxira: eski /start — mijoz baribir saytga kira oladi
+
+
+def yonalish_post(chat_id, yon):
+    """3 yo'nalishdan biri bosildi — o'sha yo'nalishning xush kelibsiz posti + saytni shu yo'nalishda ochadigan tugma."""
+    if yon not in YON_POST_MATN:
+        return
+    kb = {"inline_keyboard": [[{
+        "text": START_KB["inline_keyboard"][0][0]["text"],
+        "web_app": {"url": SAYT_URL + f'?p=y_{yon}'},
+    }]]}
+    send_msg(chat_id, YON_POST_MATN[yon], kb)
+
+
 XUSH_RASM =os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
 XUSH_MATN = (
     "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
@@ -4785,6 +4835,8 @@ async def handle_update(data):
                        json={'callback_query_id': cq_id}, timeout=5)
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
+            if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
+                await blok(yonalish_post, cq_chat, cq_data[4:])
             if cq_data == 'check_member' and cq_chat:
                 if await blok(is_member, cq_chat):
                     await start_konkurs_flow(cq_chat, cq_user)
@@ -4902,7 +4954,11 @@ async def handle_update(data):
                     _kk_kalitli.add(user['id'])
                 await start_konkurs_flow(chat_id, user)
             else:
-                await blok(send_start, chat_id)
+                # BUGUN213: payload YO'Q + lichka → 3 yo'nalish; maxsus havolali (?start=<payload>) — eskicha, 3 yo'nalishsiz
+                if not deep and message.get('chat', {}).get('type') == 'private':
+                    await blok(send_bot_hub, chat_id)
+                else:
+                    await blok(send_start, chat_id)
                 # BUGUN147: aktiv va ochiq konkurs bo'lsa — konkurs xabari (fonda, /start kechikmasin)
                 if message.get('chat', {}).get('type') == 'private':
                     asyncio.create_task(blok(konkurs_start_xabari, chat_id))
