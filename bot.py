@@ -391,16 +391,25 @@ XUSH_KANALLAR = tuple(os.environ.get('XUSH_KANALLAR', '').split()) or (TEST_CHAN
 # env TECH_KANAL_ID (@nuqta_tech yoki -100…) — bo'sh bo'lsa hub o'chiq. Yo'nalish kanallari manzili — yuqoridagi YON_KANAL
 # (env KANAL_MOBILE / KANAL_CAMERA / KANAL_PC); sukut — K10 manzillari. Sinov: TECH_KANAL_ID = TEST kanal.
 TECH_KANAL = os.environ.get('TECH_KANAL_ID', '').strip()
-HUB_YONALISHLAR = (
-    ('📱 Smartfon', YON_KANAL['mobile'][1]),
-    ('📷 Kamera', YON_KANAL['camera'][1]),
+HUB_YONALISHLAR = (   # BUGUN213: tartib PC · Kamera · Smartfon (foydalanuvchi)
     ('💻 PC', YON_KANAL['pc'][1]),
+    ('📷 Kamera', YON_KANAL['camera'][1]),
+    ('📱 Smartfon', YON_KANAL['mobile'][1]),
 )
 HUB_MATN = (
     f"🇺🇿 <b>{BREND}'ga xush kelibsiz!</b> Qaysi yo'nalish kerak — tanlang 👇\n\n"
     f"🇷🇺 <b>Добро пожаловать в {BREND}!</b> Выберите направление 👇"
 )
 HUB_KB = {"inline_keyboard": [[{"text": t, "url": f"https://t.me/{u}"} for t, u in HUB_YONALISHLAR]]}
+# BUGUN213: @nuqta_tech KANALIGA qo'shilganda (ephemeral) — foydalanuvchining o'z namunasi (aynan). Botdagi oddiy /start esa
+# HUB_MATN + callback tugmalar (BOT_HUB_KB) — ikkala joy alohida.
+KANAL_HUB_MATN = (
+    "<b>Nuqta tech kanaliga xush kelibsiz!</b>\n"
+    "Yangiliklar, video obzorlar va yangi kelgan mahsulotlar — shu yerda.\n\n"
+    "<b>Добро пожаловать в Nuqta tech!</b>\n"
+    "Новости, видеообзоры и новинки — здесь.\n\n"
+    "Sizni nima qiziqtiradi? / Что вам интересно? 👇"
+)
 # ── BUGUN213: ODDIY /start (payload yo'q, lichka) → HUB_MATN + 3 tugma (callback, sayt ochmaydi) → tanlangan yo'nalish posti ──
 # Foydalanuvchi (2026-10-15): «botga linksiz to'g'ridan-to'g'ri start bosgan odamga kelsin va 3 tasidan bittasini tanlasa
 # o'sha yo'nalishning postini yuborsin». Maxsus havolali /start (?start=<payload>) — eskicha (3 yo'nalish chiqmaydi, kasha bo'lmasin).
@@ -532,7 +541,7 @@ def xush_yubor(chat_id, uid, hub=False, yon=''):
     }
     if hub:
         maydon = dict(maydon, reply_markup=HUB_KB)
-        maydon['text'] = HUB_MATN
+        maydon['text'] = KANAL_HUB_MATN
         del maydon['caption']
     elif yon:   # BUGUN213 §6b: sinovchi, haqiqiy yo'nalish kanali — o'sha yo'nalishning posti, rasmsiz
         maydon = dict(maydon, text=YON_POST_MATN[yon], reply_markup={"inline_keyboard": [[{
