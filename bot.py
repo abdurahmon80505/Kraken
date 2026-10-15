@@ -5526,6 +5526,115 @@ async def share_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+# BUGUN171: «Sotib olish» — mijoz manzilini kiritishi bilan adminga darhol xabar.
+# Bot Sheets'ga YOZMAYDI (buyurtma ro'yxati yo'q — faqat xabar); takror yuborishdan
+# himoya — xotirada (qayta ishga tushsa tozalanadi, zarari yo'q: eng ko'pi bitta takror xabar).
+_BUYURTMA_KORILGAN = {}      # (uid, buyurtma_id) → vaqt
+_BUYURTMA_SONI = {}           # uid → [vaqtlar]
+
+
+def _buyurtma_matn(uid, elon, model, order, ism, tel, manzil, kurs):
+    """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi)."""
+    nom = elon_nomi(elon, model, 'uz') or f"E'lon №{elon.get('num', '')}"
+    xotira = str(elon.get('storage') or '').strip()
+    rang = clean_color(elon.get('color') or '')
+    sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
+    usd = _narx_son(elon)
+    narx = f'{usd:g}$' if usd is not None else '—'
+    # so'm — 1 000 gacha yaxlit (to'lov sahifasidagi summa bilan bir xil bo'lsin: mijoz ko'rgan = admin ko'rgan)
+    som = (f"{int(round(usd * kurs / 1000.0)) * 1000:,}".replace(',', ' ') + " so'm") if usd is not None else '—'
+    kurs_s = f'{kurs:,}'.replace(',', ' ')
+    return (f"🛒 <b>Yangi buyurtma</b> №{html_escape(order)}\n\n"
+            f"📱 <b>{html_escape(sarlavha)}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
+            f"💵 {html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n\n"
+            f"👤 {html_escape(ism)}\n"
+            f"📞 {html_escape(tel)}\n"
+            f"📍 {html_escape(manzil)}\n\n"
+            f"⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
+            f"kelmasa — telefon qiling.\n"
+            f"🕒 {_kk_vaqt(time.time())}")
+
+
+def _buyurtma_yubor(uid, num, order, ism, tel, manzil, kurs):
+    """Fon oqimida. (ok, sabab) qaytaradi."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return False, 'topilmadi'
+    if elon_status(elon) in ('deleted', 'waited', 'sold'):
+        return False, 'yopiq'
+    model = (models or {}).get(str(elon.get('specId', '') or ''), {})
+    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, manzil, kurs)
+    # Mijozga yozish tugmasi — tg://user?id (mijoz admin bilan avval yozishgan bo'lsa ochiladi)
+    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]}
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
+        }, timeout=10).json()
+    except Exception as e:
+        logger.error(f'buyurtma sendMessage: {e}')
+        return False, 'tarmoq'
+    if not r.get('ok'):
+        logger.error(f"buyurtma sendMessage: {r.get('description')}")
+        return False, 'telegram'
+    return True, ''
+
+
+async def buyurtma_endpoint(request):
+    """Sayt «Sotib olish» → manzil kiritilgach shu yerga yuboradi → admin botda xabar oladi.
+
+    Bu yo'l HAMMA mijoz uchun (ADMIN_ID tekshiruvi yo'q). Himoya:
+      1) initData imzosi — so'rov Mini App ichidan kelganini isbotlaydi (imzosiz — 401)
+      2) num faqat raqam; narx/nom e'londan olinadi — mijoz yuborgan narxga ishonilmaydi
+      3) maydon uzunligi cheklangan; bitta mijozga 10 daqiqada 5 ta buyurtma
+      4) bir xil buyurtma raqami ikkinchi marta xabar yubormaydi
+    Xato bo'lsa sayt baribir to'lov sahifasiga o'tadi (mijoz to'xtab qolmaydi) —
+    xabar bormagan bo'lsa chek paneli orqali admin baribir biladi.
+    """
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        num = str(data.get('num', '') or '').strip()
+        order = str(data.get('order', '') or '').strip().upper()
+        ism = re.sub(r'\s+', ' ', str(data.get('name', '') or '')).strip()
+        tel = re.sub(r'[^\d+ ()-]', '', str(data.get('phone', '') or '')).strip()
+        manzil = re.sub(r'[ \t]+', ' ', str(data.get('address', '') or '')).strip()
+        try:
+            kurs = int(float(data.get('kurs', 0) or 0))
+        except Exception:
+            kurs = 0
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
+            return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
+        if not (1 <= len(ism) <= 60) or not (1 <= len(manzil) <= 300):
+            return web.json_response({'error': 'Maydon notogri'}, status=400)
+        if len(re.sub(r'\D', '', tel)) < 9 or len(tel) > 25:
+            return web.json_response({'error': 'Telefon notogri'}, status=400)
+        if not (1000 <= kurs <= 100000):
+            return web.json_response({'error': 'Kurs notogri'}, status=400)
+        hozir = time.time()
+        if (uid, order) in _BUYURTMA_KORILGAN:
+            return web.json_response({'ok': True, 'takror': True})
+        oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
+        if len(oxirgilar) >= 5:
+            return web.json_response({'error': 'Juda ko\'p'}, status=429)
+        _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
+        loop = asyncio.get_event_loop()
+        ok, sabab = await loop.run_in_executor(
+            None, _buyurtma_yubor, uid, num, order, ism, tel, manzil, kurs)
+        if not ok:
+            return web.json_response({'error': sabab}, status=502)
+        _BUYURTMA_KORILGAN[(uid, order)] = hozir
+        for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
+            _BUYURTMA_KORILGAN.pop(k, None)
+        return web.json_response({'ok': True})
+    except Exception as e:
+        logger.error(f'buyurtma_endpoint: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def elon_changed_endpoint(request):
     """G10.3: sayt (admin) e'lonni saqlaganda shu yerga yuboradi — bot xotirasi yangilanadi.
 
@@ -5723,6 +5832,7 @@ async def main():
     app.router.add_post('/publish', publish_endpoint)
     app.router.add_post('/label', label_endpoint)
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
+    app.router.add_post('/buyurtma', buyurtma_endpoint)   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
