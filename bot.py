@@ -5161,8 +5161,18 @@ def send_reroll_notify(data):
     sabab_ru = html_escape(data.get('sabab_ru', ''))
     old_ism = html_escape(old.get('ism', '') or 'mijoz')
 
+    # BUGUN163: sinov belgisi — konkurs sovrini (konkurs_nomi) yoki g'olib sovrini «TEST…/🧪» (_kk_sinovmi).
+    # Konkurs sovrini (konkurs_nomi) bo'sh/yo'q — haqiqiy ekani tasdiqlanmagan: xavfsiz tomon — sinov kabi (kanalga ketmaydi).
+    nomi_xom = str(data.get('konkurs_nomi') or '').strip()
+    sinov = _kk_sinovmi(nomi_xom) or _kk_sinovmi(data.get('sovga'))
+    ishonchsiz = sinov or not nomi_xom
+    admin_uid = str(ADMIN_ID)
+
     # ── (A) ESKI g'olibga — endi g'olib emas (kanal button) ──
     old_uid = str(old.get('user_id', '') or '')
+    if old_uid and ishonchsiz and old_uid != admin_uid:
+        logger.info(f'reroll old {old_uid}: sinov/ishonchsiz — mijozga yuborilmadi')
+        old_uid = ''
     if old_uid:
         try:
             a_text = (
@@ -5187,6 +5197,9 @@ def send_reroll_notify(data):
 
     # ── (B) YANGI g'olibga — tabrik (admin button) ──
     new_uid = str(new.get('user_id', '') or '')
+    if new_uid and ishonchsiz and new_uid != admin_uid:
+        logger.info(f'reroll new {new_uid}: sinov/ishonchsiz — mijozga yuborilmadi')
+        new_uid = ''
     if new_uid:
         try:
             b_text = (
@@ -5220,8 +5233,15 @@ def send_reroll_notify(data):
             f"по причине: {sabab_ru}.\n"
             f"🏆 Новый победитель: {new_disp}"
         )
+        # sinov — TEST kanal; haqiqiy (tasdiqlangan) — asosiy kanal; tasdiqlanmagan — faqat admin lichkasi
+        if sinov:
+            c_chat = TEST_CHANNEL or ADMIN_ID     # TEST kanal sozlanmagan bo'lsa — jimgina yo'qolmasin, adminga
+        elif nomi_xom:
+            c_chat = CHANNEL
+        else:
+            c_chat = ADMIN_ID
         req.post(f'{TG_API}/sendMessage', json={
-            'chat_id': CHANNEL, 'text': c_text, 'parse_mode': 'HTML',
+            'chat_id': c_chat, 'text': c_text, 'parse_mode': 'HTML',
             'reply_markup': {"inline_keyboard": [[{
                 "text": "🛍 Do'kon / Магазин",
                 "url": f"https://t.me/{BOT_USERNAME}?startapp"}]]}
