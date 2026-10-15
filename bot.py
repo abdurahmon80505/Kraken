@@ -2779,19 +2779,14 @@ def _kk_tarqatma_xabari(k, til):
     tugma = "🎁 Участвовать" if til == 'ru' else "🎁 Qatnashish"
     if oz:
         return oz, {"inline_keyboard": [[{"text": tugma, "url": f"https://t.me/{BOT_USERNAME}?start=konkurs"}]]}
+    # BUGUN180 (foydalanuvchi, 2026-10-14, 4-band): eski botdan — yangi botga hali o'tmaganlarga; matn aynan shu
     if til == 'ru':
-        q = [f"🎉 Новость! Наш магазин теперь — <b>{html_escape(BREND)}</b>.", f"Наш новый бот: @{BOT_USERNAME}", "",
-             f"🎁 <b>Конкурс!</b> Приз: <b>{prize}</b>"] + sovrin
-        if end:
-            q.append(f"⏰ Завершится: {_kk_vaqt(end)} (по Ташкенту)")
-        q += ["", "Чтобы участвовать — нажмите кнопку ниже 👇"]
+        q = ["🌚 Вы всё ещё не перешли в бот? Там уже стартовал конкурс",
+             "🎁 Чтобы участвовать — нажмите кнопку ниже 👇"]
         tugma = "🎁 Участвовать"
     else:
-        q = [f"🎉 Yangilik! Do'konimiz endi — <b>{html_escape(BREND)}</b>.", f"Yangi botimiz: @{BOT_USERNAME}", "",
-             f"🎁 <b>Konkurs!</b> Sovrin: <b>{prize}</b>"] + sovrin
-        if end:
-            q.append(f"⏰ Tugaydi: {_kk_vaqt(end)} (Toshkent vaqti)")
-        q += ["", "Qatnashish uchun pastdagi tugmani bosing 👇"]
+        q = ["🌚 Siz hali ham botga o'tmadingizmi? U yerda allaqachon konkursga start berildi",
+             "🎁 Qatnashish uchun pastdagi tugmani bosing 👇"]
         tugma = "🎁 Qatnashish"
     return "\n".join(q), {"inline_keyboard": [[{"text": tugma, "url": f"https://t.me/{BOT_USERNAME}?start=konkurs"}]]}
 
@@ -3794,7 +3789,7 @@ async def handle_phone(chat_id, phone, user):
 
 
 # ══ BUGUN125: Konkurs Mini App — captcha + qurilma belgisi ══
-# Oqim: raqam → «🧩 Tasdiqlash» (web_app, sayt/konkurs.html) → POST /konkurs/captcha (savol) → mijoz tanlaydi →
+# Oqim: raqam → «✅ Tasdiqlash» (web_app, sayt/konkurs.html) → POST /konkurs/captcha (savol) → mijoz tanlaydi →
 # POST /konkurs/qatnash (javob + qurilma belgisi) → Apps Script joinKonkurs (kalit bilan) → faqat ok bo'lsa «qatnashdingiz».
 # Bir qurilmadan 2+ akkaunt — BLOKLANMAYDI (foydalanuvchi: «qisman ushlab qolamiz»): jadvalda ⚠️ + adminga ikkalasi.
 KONKURS_MINI_URL = SAYT_URL + 'konkurs.html'
@@ -3812,12 +3807,10 @@ _kk_captcha_soni = {}           # uid → [oyna_boshi, soni]
 
 async def _kk_captcha_tugma(chat_id):
     await blok(send_msg, chat_id,
-               "🧩 <b>Oxirgi qadam / Последний шаг</b>\n\n"
-               "🇺🇿 Pastdagi tugmani bosing va oddiy tekshiruvdan o'ting. "
-               "Tekshiruvdan o'tmaguncha qatnashish <b>hisoblanmaydi</b>.\n"
-               "🇷🇺 Нажмите кнопку ниже и пройдите простую проверку. "
-               "Без проверки участие <b>не засчитывается</b>.",
-               {"inline_keyboard": [[{"text": "🧩 Tasdiqlash / Подтвердить", "web_app": {"url": KONKURS_MINI_URL}}]]})
+               # BUGUN180 (foydalanuvchi, 2026-10-14, 3-band): matn aynan shu; BUGUN190 (3-band): tugma emojisi 🧩 → ✅
+               "⚡️ Oxirgi qadam — pastdagi tugmani bosing va saytda tasdiqlang.\n"
+               "⚡️ Последний шаг — нажмите кнопку ниже и подтвердите участие на сайте.",
+               {"inline_keyboard": [[{"text": "✅ Tasdiqlash / Подтвердить", "web_app": {"url": KONKURS_MINI_URL}}]]})
 
 
 def _kk_xesh(qiymat):
