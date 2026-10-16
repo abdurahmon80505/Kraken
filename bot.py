@@ -425,7 +425,19 @@ KANAL_HUB_MATN = (
 # o'sha yo'nalishning postini yuborsin». Maxsus havolali /start (?start=<payload>) — eskicha (3 yo'nalish chiqmaydi, kasha bo'lmasin).
 # Tartib: PC · Kamera · Smartfon. Post matni — tanlangan yo'nalish; tugma — saytni o'sha yo'nalishda ochadi (?p=y_<yo'nalish>).
 BOT_HUB_TARTIB = (('pc', '💻 PC'), ('camera', '📷 Kamera'), ('mobile', '📱 Smartfon'))
-BOT_HUB_KB = {"inline_keyboard": [[{"text": t, "callback_data": f"yon:{k}"} for k, t in BOT_HUB_TARTIB]]}
+# BUGUN224 (foydalanuvchi, 2026-10-16): «oradagi smartfonlarni shu yerga joyladik qismi shart emas, bo'limni bosganda darhol
+# sayt ochilaversin» — tugma endi web_app (sayt o'sha yo'nalishda), oraliq post yo'q. Eski xabarlardagi `yon:` tugmasi
+# (callback) — eskicha ishlayveradi (yonalish_post). «Smartfonlarni saytga joyladik» matni — faqat kanal welcome'ida (XUSH_MATN).
+BOT_HUB_KB = {"inline_keyboard": [[{"text": t, "web_app": {"url": SAYT_URL + f'?p=y_{k}'}} for k, t in BOT_HUB_TARTIB]]}
+# Yo'nalish havolasi (?start=mobile | y_mobile …) — hub emas, o'sha yo'nalishni ochadigan bitta tugma
+YON_PAYLOAD = {p: k for k, _ in BOT_HUB_TARTIB for p in (k, f'y_{k}')}
+YON_TUGMA = {'mobile': '📱 Smartfonlar / Смартфоны', 'camera': '📷 Kameralar / Камеры', 'pc': '💻 Kompyuterlar / Компьютеры'}
+
+
+def send_yon_tugma(chat_id, yon):
+    """?start=<yo'nalish> — o'sha yo'nalishda saytni ochadigan bitta web_app tugma (oraliq matnsiz)."""
+    send_msg(chat_id, "👇", {"inline_keyboard": [[{
+        "text": YON_TUGMA[yon], "web_app": {"url": SAYT_URL + f'?p=y_{yon}'}}]]})
 YON_POST_MATN = {
     'mobile': (
         "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
@@ -5109,7 +5121,10 @@ async def handle_update(data):
                 await start_konkurs_flow(chat_id, user)
             else:
                 # BUGUN213: payload YO'Q + lichka → 3 yo'nalish; maxsus havolali (?start=<payload>) — eskicha, 3 yo'nalishsiz
-                if not deep and message.get('chat', {}).get('type') == 'private':
+                # BUGUN224: ?start=mobile | y_mobile (kanal havolasi) — o'sha yo'nalishni ochadigan bitta tugma
+                if deep in YON_PAYLOAD and message.get('chat', {}).get('type') == 'private':
+                    await blok(send_yon_tugma, chat_id, YON_PAYLOAD[deep])
+                elif not deep and message.get('chat', {}).get('type') == 'private':
                     await blok(send_bot_hub, chat_id)
                 else:
                     await blok(send_start, chat_id)
@@ -5726,6 +5741,17 @@ async def share_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
+        nums_xom = data.get('nums') or []
+        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        qolgan_nums = []
+        for n in nums_xom:
+            n = str(n or '').strip()
+            if not re.fullmatch(r'\d{1,6}', n):
+                return web.json_response({'error': 'Nomer notogri'}, status=400)
+            if n != num and n not in qolgan_nums:
+                qolgan_nums.append(n)
         loop = asyncio.get_event_loop()
         mid, sabab = await loop.run_in_executor(None, save_prepared_share, uid, num)
         if not mid:
@@ -5846,6 +5872,17 @@ async def bron_tekshir_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
+        nums_xom = data.get('nums') or []
+        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        qolgan_nums = []
+        for n in nums_xom:
+            n = str(n or '').strip()
+            if not re.fullmatch(r'\d{1,6}', n):
+                return web.json_response({'error': 'Nomer notogri'}, status=400)
+            if n != num and n not in qolgan_nums:
+                qolgan_nums.append(n)
         b = _bron_olish(num)
         if not b or b['uid'] == u['id']:
             return web.json_response({'bron': False})
@@ -5894,20 +5931,33 @@ def _buyurtma_joy_matn(joy):
     return f"{nom}: {html_escape(joy.get('manzil') or '—')}"
 
 
-def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs):
-    """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi)."""
+def _buyurtma_sarlavha(elon, model):
     nom = elon_nomi(elon, model, 'uz') or f"E'lon №{elon.get('num', '')}"
     xotira = str(elon.get('storage') or '').strip()
     rang = clean_color(elon.get('color') or '')
-    sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
-    usd = _narx_son(elon)
+    return nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
+
+
+def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=()):
+    """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi).
+    BUGUN224: qolgan — savatdan sotib olishda qolgan tovarlar [(elon, model), …]; narx — hammasining jami."""
+    qatorlar = [(elon, model)] + list(qolgan)
+    narxlar = [_narx_son(e) for e, _ in qatorlar]
+    usd = None if any(n is None for n in narxlar) else sum(narxlar)
     narx = f'{usd:g}$' if usd is not None else '—'
     # so'm — 1 000 gacha yaxlit (to'lov sahifasidagi summa bilan bir xil bo'lsin: mijoz ko'rgan = admin ko'rgan)
     som = (f"{int(round(usd * kurs / 1000.0)) * 1000:,}".replace(',', ' ') + " so'm") if usd is not None else '—'
     kurs_s = f'{kurs:,}'.replace(',', ' ')
+    if len(qatorlar) == 1:
+        tovar = f"📱 <b>{html_escape(_buyurtma_sarlavha(elon, model))}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
+    else:
+        tovar = f"🧺 <b>Savatdan — {len(qatorlar)} ta tovar:</b>\n" + ''.join(
+            f"{i}. <b>{html_escape(_buyurtma_sarlavha(e, m))}</b> · №{html_escape(e.get('num', ''))}"
+            f" · {html_escape(f'{n:g}$' if n is not None else '—')}\n"
+            for i, ((e, m), n) in enumerate(zip(qatorlar, narxlar), 1))
     return (f"🛒 <b>Yangi buyurtma</b> №{html_escape(order)}\n\n"
-            f"📱 <b>{html_escape(sarlavha)}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
-            f"💵 {html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n\n"
+            + tovar +
+            f"💵 {'Jami ' if len(qatorlar) > 1 else ''}{html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n\n"
             f"👤 {html_escape(ism)}\n"
             f"📞 {html_escape(tel)}\n"
             f"📍 {_buyurtma_joy_matn(joy)}\n\n"
@@ -5916,18 +5966,25 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs):
             f"🕒 {_kk_vaqt(time.time())}")
 
 
-def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs):
-    """Fon oqimida. (ok, sabab) qaytaradi."""
+def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs, qolgan_nums=()):
+    """Fon oqimida. (ok, sabab) qaytaradi. BUGUN224: qolgan_nums — savatdagi boshqa tovarlar (topilmagan / yopiq — tushib qoladi)."""
     elon, models = elon_cache_get(num)
     if not elon:
         return False, 'topilmadi'
     if elon_status(elon) in ('deleted', 'waited', 'sold'):
         return False, 'yopiq'
     model = (models or {}).get(str(elon.get('specId', '') or ''), {})
-    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs)
+    qolgan = []
+    for n in qolgan_nums:
+        e, ms = elon_cache_get(n)
+        if e and elon_status(e) not in ('deleted', 'waited', 'sold'):
+            qolgan.append((e, (ms or {}).get(str(e.get('specId', '') or ''), {})))
+    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan)
     # Mijozga yozish tugmasi — tg://user?id (mijoz admin bilan avval yozishgan bo'lsa ochiladi)
-    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}],
-                                 [{'text': '🔓 Bronni bekor qilish', 'callback_data': f'bron_och:{num}:{order}'}]]}
+    bron_nums = [num] + [str(e.get('num', '')) for e, _ in qolgan]
+    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]] + [
+        [{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
+          'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]}
     try:
         r = req.post(f'{TG_API}/sendMessage', json={
             'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
@@ -5991,6 +6048,17 @@ async def buyurtma_endpoint(request):
             kurs = 0
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
+        nums_xom = data.get('nums') or []
+        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        qolgan_nums = []
+        for n in nums_xom:
+            n = str(n or '').strip()
+            if not re.fullmatch(r'\d{1,6}', n):
+                return web.json_response({'error': 'Nomer notogri'}, status=400)
+            if n != num and n not in qolgan_nums:
+                qolgan_nums.append(n)
         if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
             return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
         if not (1 <= len(ism) <= 60):
@@ -6008,24 +6076,46 @@ async def buyurtma_endpoint(request):
         _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
         loop = asyncio.get_event_loop()
         ok, sabab = await loop.run_in_executor(
-            None, _buyurtma_yubor, uid, num, order, ism, tel, joy, kurs)
+            None, _buyurtma_yubor, uid, num, order, ism, tel, joy, kurs, qolgan_nums)
         if not ok:
             return web.json_response({'error': sabab}, status=502)
         _BUYURTMA_KORILGAN[(uid, order)] = hozir
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
-        b = _bron_olish(num)
-        if not b or b['uid'] == uid:
-            _bron_qoy(num, uid, order)
-        else:
-            ikkinchi = {'id': uid, 'ism': ism, 'username': (_init_data_user(data.get('initData', '')) or {}).get('username', '')}
-            loop.run_in_executor(None, _bron_ogoh_yubor, num, ikkinchi, f"buyurtma berdi (№{order})")
+        for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
+            b = _bron_olish(bn)
+            if not b or b['uid'] == uid:
+                _bron_qoy(bn, uid, order)
+            else:
+                ikkinchi = {'id': uid, 'ism': ism,
+                            'username': (_init_data_user(data.get('initData', '')) or {}).get('username', '')}
+                loop.run_in_executor(None, _bron_ogoh_yubor, bn, ikkinchi, f"buyurtma berdi (№{order})")
         for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
             _BUYURTMA_KORILGAN.pop(k, None)
         return web.json_response({'ok': True})
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
+
+
+async def kirish_holat_endpoint(request):
+    """BUGUN224: sayt (bot ichida ochilganda) — shu Telegram akkaunt aktiv konkursda raqam yuborib qatnashganmi.
+    Ha bo'lsa sayt profilni «kirgan» qiladi (qayta «Kirish» so'ralmaydi). Javobda raqam YO'Q — faqat {kirgan: bool}.
+    Himoya: initData imzosi (imzosiz — 401); qatnashchilar ro'yxati — 5 daqiqalik keshdan (_kk_qatnashchimi)."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        k = await blok(get_konkurs)
+        kid = str((k or {}).get('id') or '')
+        if not kid:
+            return web.json_response({'kirgan': False})
+        r = await blok(_kk_qatnashchimi, kid, str(uid))
+        return web.json_response({'kirgan': bool(r)})
+    except Exception as e:
+        logger.error(f'kirish_holat_endpoint: {e}')
+        return web.json_response({'kirgan': False})
 
 
 async def elon_changed_endpoint(request):
@@ -6047,6 +6137,17 @@ async def elon_changed_endpoint(request):
         num = str(elon.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
+        nums_xom = data.get('nums') or []
+        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        qolgan_nums = []
+        for n in nums_xom:
+            n = str(n or '').strip()
+            if not re.fullmatch(r'\d{1,6}', n):
+                return web.json_response({'error': 'Nomer notogri'}, status=400)
+            if n != num and n not in qolgan_nums:
+                qolgan_nums.append(n)
         elon['num'] = int(num)
         with _elon_cache_lock:
             eski = _ELON_CACHE['by_num'].get(num)
@@ -6087,6 +6188,17 @@ async def kanal_post_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
+        nums_xom = data.get('nums') or []
+        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        qolgan_nums = []
+        for n in nums_xom:
+            n = str(n or '').strip()
+            if not re.fullmatch(r'\d{1,6}', n):
+                return web.json_response({'error': 'Nomer notogri'}, status=400)
+            if n != num and n not in qolgan_nums:
+                qolgan_nums.append(n)
         amal = str(data.get('amal', 'post'))
         yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
         if amal == 'yana':
@@ -6227,7 +6339,8 @@ async def main():
     app.router.add_post('/label', label_endpoint)
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
     app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
-    app.router.add_post('/buyurtma', buyurtma_endpoint)   # BUGUN171: «Sotib olish» — adminga darhol xabar
+    app.router.add_post('/buyurtma', buyurtma_endpoint)
+    app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
