@@ -4001,6 +4001,37 @@ def _kk_kim(username, ism, uid):
     return f"{nom} · {'@' + html_escape(username) if username else 'username yo‘q'} · <code>{html_escape(str(uid))}</code>"
 
 
+# BUGUN220 (foydalanuvchi, 2026-10-16): «qatnashyapsiz» xabari oxirida konkurs SHARTLARI — keyin «ogohlantirilmagandik»
+# demasin. Matn — foydalanuvchi tasdiqlagan (saytdagi «Tasdiqlandi» oynasida ham aynan shu: sayt/js/11-konkurs.js).
+# Til — Mini App initData'dagi language_code (imzolangan): ru / uz bo'lsa — faqat o'sha til, bilinmasa — ikkalasi.
+_KK_QATNASH_MATN = {
+    'uz': ("✅ <b>Siz konkursda qatnashyapsiz!</b>\nG'olib e'lon qilinganda xabar beramiz.\n\n"
+           "📋 <b>Shartlar:</b>\n"
+           "• 1 kishi — 1 akkaunt. Bir telefondan bir nechta akkaunt bilan qatnashganlar g'oliblikdan chiqariladi.\n"
+           "• G'olib e'lon qilinguncha kanaldan chiqmang — chiqsangiz, sovg'a berilmaydi."),
+    'ru': ("✅ <b>Вы участвуете в розыгрыше!</b>\nСообщим, когда объявим победителя.\n\n"
+           "📋 <b>Условия:</b>\n"
+           "• 1 человек — 1 аккаунт. Участники с нескольких аккаунтов на одном телефоне исключаются из числа победителей.\n"
+           "• Не выходите из канала до объявления победителя — иначе приз не выдаётся."),
+}
+
+
+def _kk_init_til(init_data):
+    """initData → 'uz' | 'ru' | None (bilinmaydi). Imzo oldin check_init_data'da tekshirilgan."""
+    try:
+        got = dict(urllib.parse.parse_qsl(init_data or '', keep_blank_values=True))
+        kod = str(json.loads(got.get('user') or '{}').get('language_code') or '').lower()
+    except Exception:
+        return None
+    return 'ru' if kod.startswith('ru') else 'uz' if kod.startswith('uz') else None
+
+
+def _kk_qatnash_matn(til):
+    if til in _KK_QATNASH_MATN:
+        return _KK_QATNASH_MATN[til]
+    return _KK_QATNASH_MATN['uz'] + '\n\n' + _KK_QATNASH_MATN['ru']
+
+
 async def konkurs_captcha_endpoint(request):
     """Mini App: yangi savol. Faqat raqam bergan (step=captcha) akkauntga."""
     import secrets
@@ -4073,9 +4104,7 @@ async def konkurs_qatnash_endpoint(request):
         if r.get('ok') or (msg == 'already' and r.get('sabab') != 'telefon'):
             _konkurs_cache['time'] = 0
             _kk_qatnashchi_qosh(st.get('konkurs_id'), uid)   # BUGUN147: kanaldan chiqish keshiga darhol
-            await blok(send_msg, uid,
-                       "✅ <b>Siz konkursda qatnashyapsiz!</b>\nG'olib e'lon qilinganda xabar beramiz.\n\n"
-                       "✅ <b>Вы участвуете в розыгрыше!</b>\nСообщим, когда объявим победителя.")
+            await blok(send_msg, uid, _kk_qatnash_matn(_kk_init_til(data.get('initData'))))
             if r.get('shubha'):
                 q = [f"⚠️ <b>Konkurs {html_escape(str(st.get('konkurs_id')))}: bir qurilmadan bir nechta akkaunt</b>",
                      "(bloklanmadi — jadvalda «ogohlantirish» ustunida belgilandi)", "",
