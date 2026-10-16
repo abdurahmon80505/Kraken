@@ -3946,6 +3946,7 @@ async def handle_phone(chat_id, phone, user):
     state = user_states.pop(chat_id, {})
     if not state:
         return
+    _mijoz_tel_qosh(chat_id, phone, 'konkurs')   # BUGUN225: konkursda olingan raqam — profildagi akkaunt raqami
     if state.get('step') == 'captcha':        # BUGUN125: raqam allaqachon olingan — tekshiruv tugmasini qayta beramiz
         user_states[chat_id] = state
         await _kk_captcha_tugma(chat_id)
@@ -6018,6 +6019,10 @@ async def buyurtma_endpoint(request):
         order = str(data.get('order', '') or '').strip().upper()
         ism = re.sub(r'\s+', ' ', str(data.get('name', '') or '')).strip()
         tel = re.sub(r'[^\d+ ()-]', '', str(data.get('phone', '') or '')).strip()
+        # BUGUN225: mijoz profildagi saqlangan raqamni tanlasa sayt faqat 'tel_id' yuboradi (raqam saytda ochiq turmaydi)
+        tel_id = str(data.get('tel_id', '') or '').strip()
+        if tel_id:
+            tel = (_mijoz_ol(uid).get('tels') or {}).get(tel_id, '') if tel_id in _MIJOZ_TEL_TURLAR else ''
         tur = str(data.get('tur', '') or '').strip()
         joy = {'tur': tur if tur in _BUYURTMA_TUR else ''}
         if tur == 'yandex':
@@ -6080,6 +6085,8 @@ async def buyurtma_endpoint(request):
         if not ok:
             return web.json_response({'error': sabab}, status=502)
         _BUYURTMA_KORILGAN[(uid, order)] = hozir
+        # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
+        await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
         for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
@@ -6096,6 +6103,196 @@ async def buyurtma_endpoint(request):
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
+
+
+
+# ══ BUGUN225: mijoz profili — 2 ta raqam (akkaunt · yetkazish) va «Buyurtmalarim» ══
+# Raqam saytga HECH QACHON to'liq chiqmaydi: /mijoz_holat faqat niqoblangan ko'rinishini («+998 ** *** 45 67») qaytaradi; sotib
+# olishda sayt 'tel_id' ('akkaunt' | 'dostavka') yuboradi, bot to'liq raqamni o'zi oladi. Raqam qachon olinadi: konkursda (botda
+# «Raqamni ulashish» — handle_phone) va «Sotib olish» bosilganda (/buyurtma). Saqlash: xotira + MIJOZ_FAYL (bron kabi: Render
+# qayta ishga tushsa fayl o'chadi — doimiy saqlash Apps Script'ni talab qiladi; eng ko'pi bilan mijoz raqamini qayta yozadi).
+MIJOZ_FAYL = os.environ.get('MIJOZ_FAYL', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mijoz_holat.json'))
+_MIJOZ_TEL_TURLAR = ('akkaunt', 'dostavka')
+_MIJOZ = {}             # str(uid) → {'tels': {'akkaunt': '+998…', 'dostavka': '…'}, 'buyurtma': [ {order, ts, holat, …} ]}
+_MIJOZ_LOCK = threading.RLock()
+MIJOZ_BUYURTMA_MAX = 30   # bitta mijozda saqlanadigan oxirgi buyurtmalar soni
+
+
+def _mijoz_yuklash():
+    try:
+        with open(MIJOZ_FAYL, encoding='utf-8') as f:
+            d = json.load(f)
+        for k, v in d.items():
+            if isinstance(v, dict):
+                _MIJOZ[str(k)] = {'tels': dict(v.get('tels') or {}), 'buyurtma': list(v.get('buyurtma') or [])}
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.error(f'mijoz yuklash: {e}')
+
+
+def _mijoz_saqlash():
+    try:
+        with open(MIJOZ_FAYL, 'w', encoding='utf-8') as f:
+            json.dump(_MIJOZ, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f'mijoz saqlash: {e}')
+
+
+def _mijoz_ol(uid):
+    return _MIJOZ.get(str(uid)) or {'tels': {}, 'buyurtma': []}
+
+
+def _mijoz_ochiq(uid):
+    m = _MIJOZ.get(str(uid))
+    if m is None:
+        m = _MIJOZ[str(uid)] = {'tels': {}, 'buyurtma': []}
+    return m
+
+
+def _tel_norm(tel):
+    """Taqqoslash uchun: faqat raqamlar, oxirgi 9 tasi (+998 / 998 / 8 farqi yo'qoladi)."""
+    r = re.sub(r'\D', '', str(tel or ''))
+    return r[-9:] if len(r) >= 9 else r
+
+
+def _tel_niqob(tel):
+    """'+998 90 123 45 67' → '+998 ** *** 45 67' (oxirgi 4 raqam ochiq). Boshqa shakl — oxirgi 4 raqamdan boshqasi '*'."""
+    r = re.sub(r'\D', '', str(tel or ''))
+    if len(r) < 5:
+        return '***'
+    if len(r) == 12 and r.startswith('998'):
+        return f'+998 ** *** {r[-4:-2]} {r[-2:]}'
+    return '*' * (len(r) - 4) + ' ' + r[-4:]
+
+
+def _mijoz_tel_qosh(uid, tel, manba):
+    """Raqamni profilga yozadi. manba 'konkurs' — akkaunt raqami (Telegram'dan olingan, almashtiriladi);
+    manba 'sotib' — akkaunt yo'q bo'lsa akkaunt; bo'lsa va boshqa raqam bo'lsa — yetkazish raqami (yangisi eskisini almashtiradi)."""
+    tel = str(tel or '').strip()
+    if len(re.sub(r'\D', '', tel)) < 9:
+        return
+    with _MIJOZ_LOCK:
+        t = _mijoz_ochiq(uid)['tels']
+        if manba == 'konkurs':
+            t['akkaunt'] = tel
+            if _tel_norm(t.get('dostavka')) == _tel_norm(tel):
+                t.pop('dostavka', None)
+        elif not t.get('akkaunt'):
+            t['akkaunt'] = tel
+        elif _tel_norm(t['akkaunt']) != _tel_norm(tel):
+            t['dostavka'] = tel
+        _mijoz_saqlash()
+
+
+def _mijoz_tovarlar(num, qolgan_nums):
+    """[{num, nom, narx}] — e'lonlar serverdagi keshdan (mijoz yuborganiga ishonilmaydi)."""
+    res = []
+    for n in [num] + list(qolgan_nums):
+        elon, models = elon_cache_get(n)
+        if not elon:
+            continue
+        model = (models or {}).get(str(elon.get('specId', '') or ''), {})
+        res.append({'num': str(elon.get('num', n)), 'nom': _buyurtma_sarlavha(elon, model), 'narx': _narx_son(elon)})
+    return res
+
+
+def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy):
+    """/buyurtma muvaffaqiyatli bo'lgach (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi."""
+    try:
+        _mijoz_tel_qosh(uid, tel, 'sotib')
+        tovar = _mijoz_tovarlar(num, qolgan_nums)
+        narxlar = [x['narx'] for x in tovar]
+        with _MIJOZ_LOCK:
+            m = _mijoz_ochiq(uid)
+            if any(b.get('order') == order for b in m['buyurtma']):
+                return
+            m['buyurtma'].insert(0, {
+                'order': order, 'ts': time.time(), 'holat': 'kutilmoqda', 'tovar': tovar,
+                'jami': None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
+                'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel})
+            del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
+            _mijoz_saqlash()
+    except Exception as e:
+        logger.error(f'mijoz_buyurtma_yoz: {e}')
+
+
+async def mijoz_holat_endpoint(request):
+    """BUGUN225: profil — niqoblangan raqamlar (akkaunt / yetkazish) va «Buyurtmalarim» ro'yxati. initData imzosi shart (401).
+    Javobda to'liq raqam, ism, joy YO'Q."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        with _MIJOZ_LOCK:
+            m = _mijoz_ol(uid)
+            tels = [{'id': k, 'niqob': _tel_niqob(m['tels'][k])} for k in _MIJOZ_TEL_TURLAR if m['tels'].get(k)]
+            buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
+                         'tur': b.get('tur', ''), 'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx')}
+                                                            for x in (b.get('tovar') or [])]}
+                        for b in m['buyurtma']]
+        return web.json_response({'ok': True, 'tels': tels, 'buyurtma': buyurtma})
+    except Exception as e:
+        logger.error(f'mijoz_holat_endpoint: {e}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+def _bekor_adminga(uid, b, bosh_nums):
+    """Fon oqimida: adminga «❌ mijoz bekor qildi»."""
+    try:
+        tovar = ''.join(f"{i}. {html_escape(x.get('nom') or '—')} · №{html_escape(x.get('num') or '')}\n"
+                        for i, x in enumerate(b.get('tovar') or [], 1))
+        matn = (f"❌ <b>Mijoz buyurtmani bekor qildi</b> №{html_escape(b.get('order', ''))}\n\n{tovar}\n"
+                f"👤 {html_escape(b.get('ism', '') or '—')}\n📞 {html_escape(b.get('tel', '') or '—')}\n"
+                f"🔓 Bron bekor: {', '.join('№' + html_escape(n) for n in bosh_nums) or '—'}\n"
+                f"🕒 {_kk_vaqt(time.time())}")
+        r = req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML',
+            'reply_markup': {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]},
+        }, timeout=10).json()
+        if not r.get('ok'):
+            logger.error(f"bekor adminga: {r.get('description')}")
+    except Exception as e:
+        logger.error(f'bekor adminga: {e}')
+
+
+async def buyurtma_bekor_endpoint(request):
+    """BUGUN225: mijoz «Buyurtmalarim» da «Bekor qilish» bosdi. Faqat o'z buyurtmasi, faqat «kutilmoqda» holatida.
+    Bron (shu buyurtmaniki) bekor bo'ladi, adminga «❌ mijoz bekor qildi». Takror bosish — zarari yo'q (ikkinchi xabar ketmaydi)."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        order = str(data.get('order', '') or '').strip().upper()
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
+            return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
+        with _MIJOZ_LOCK:
+            b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+            if not b:
+                return web.json_response({'error': 'Topilmadi'}, status=404)
+            if b.get('holat') == 'bekor':
+                return web.json_response({'ok': True, 'holat': 'bekor', 'takror': True})
+            if b.get('holat') != 'kutilmoqda':
+                return web.json_response({'error': 'Bekor qilib bolmaydi'}, status=409)
+            b['holat'] = 'bekor'
+            b['bekor_ts'] = time.time()
+            _mijoz_saqlash()
+        bosh = []
+        for x in (b.get('tovar') or []):
+            n = str(x.get('num') or '')
+            br = _BRON.get(n)
+            if br and br.get('order') == order and br.get('uid') == uid:
+                _BRON.pop(n, None)
+                bosh.append(n)
+        if bosh:
+            _bron_saqlash()
+        asyncio.get_event_loop().run_in_executor(None, _bekor_adminga, uid, b, bosh)
+        return web.json_response({'ok': True, 'holat': 'bekor'})
+    except Exception as e:
+        logger.error(f'buyurtma_bekor_endpoint: {e}')
+        return web.json_response({'error': 'xato'}, status=500)
 
 
 async def kirish_holat_endpoint(request):
@@ -6329,6 +6526,7 @@ async def eski_webhook(request):
 
 async def main():
     _bron_yuklash()   # BUGUN208
+    _mijoz_yuklash()  # BUGUN225
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/webhook-eski', eski_webhook)   # BUGUN145: eski bot → yangi bot havolasi
@@ -6340,6 +6538,8 @@ async def main():
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
     app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
     app.router.add_post('/buyurtma', buyurtma_endpoint)
+    app.router.add_post('/mijoz_holat', mijoz_holat_endpoint)   # BUGUN225: profil — niqoblangan raqamlar + Buyurtmalarim
+    app.router.add_post('/buyurtma_bekor', buyurtma_bekor_endpoint)   # BUGUN225: mijoz buyurtmani bekor qildi
     app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
