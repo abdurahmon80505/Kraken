@@ -340,9 +340,14 @@ def send_msg(chat_id, text, keyboard=None):
     if keyboard:
         payload['reply_markup'] = keyboard
     try:
-        req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
+        r = req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
     except Exception as e:
         logger.error(f'sendMessage: {e}')
+        return False
+    try:
+        return bool(r.json().get('ok'))   # BUGUN233: /konkurs/boshla — xabar mijozga yetdimi (botni boshlamagan — 403)
+    except Exception:
+        return False
 
 
 # /start javobi. E7: animatsiya file_id kodga qotirilgan — u o'chib ketsa
@@ -3923,7 +3928,7 @@ async def handle_tozala(chat_id, text):
 
 
 def not_member_msg(chat_id):
-    send_msg(chat_id,
+    return send_msg(chat_id,
         "❗ <b>Konkursda qatnashish uchun kanalga a'zo bo'ling!</b>\n"
         "❗ <b>Для участия подпишитесь на канал!</b>",
         keyboard={"inline_keyboard": [
@@ -3932,16 +3937,16 @@ def not_member_msg(chat_id):
         ]})
 
 async def start_konkurs_flow(chat_id, user):
+    """/start konkurs, «Qatnashish» tugmasi va saytdan (/konkurs/boshla, BUGUN233) — bitta yo'l.
+    Natija: (holat, yetdi) — holat 'ok' | 'yopiq' | 'obuna'; yetdi — xabar mijozga bordimi (botni boshlamagan — yo'q)."""
     # E1: Sheets va Telegram so'rovlari alohida ipda — event loop to'xtamaydi
     k = await blok(get_konkurs)
     # getKonkurs aktiv yo'q bo'lsa oxirgi TUGAGANINI qaytaradi (BUGUN108). BUGUN147: yashirin — begonaga ham shu javob
     if not _kk_aktivmi(k) or not _kk_korsatsinmi(k, user.get('id', chat_id)):
-        await blok(send_msg, chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
-        return
+        return 'yopiq', await blok(send_msg, chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
 
     if not await blok(is_member, chat_id):
-        await blok(not_member_msg, chat_id)
-        return
+        return 'obuna', await blok(not_member_msg, chat_id)
 
     user_states[chat_id] = {
         'step': 'phone',
@@ -3951,7 +3956,7 @@ async def start_konkurs_flow(chat_id, user):
         'username': user.get('username', ''),
     }
 
-    await blok(send_msg, chat_id,
+    return 'ok', await blok(send_msg, chat_id,
         f"🎁 <b>{html_escape(k.get('prize','Sovrin'))}</b>\n\n"
         f"🇺🇿 Konkursda qatnashish uchun telefon raqamingizni ulashing 👇\n"
         f"🇷🇺 Чтобы участвовать в розыгрыше, поделитесь номером телефона 👇",
@@ -4177,6 +4182,48 @@ async def konkurs_qatnash_endpoint(request):
     except Exception as e:
         logger.error(f'konkurs_qatnash: {type(e).__name__}')
         return web.json_response({'ok': False, 'sabab': 'xato'}, status=500)
+
+
+# ── BUGUN233: «Konkursda qatnashish» — saytdan to'g'ridan-to'g'ri (eski Telegram ?start= ni yubormaydi) ──
+_kk_boshla_vaqt = {}   # user_id → oxirgi so'rov vaqti (ikki marta bosilsa — xabar bir marta)
+KK_BOSHLA_ORALIQ = 5
+
+
+async def konkurs_boshla_endpoint(request):
+    """POST /konkurs/boshla {initData, kalit?} → /start konkurs bilan bir xil yo'l (obuna tekshiruvi bilan).
+    Javob: {ok, sabab: ''|'yopiq'|'obuna'|'yetmadi'|'imzo'|'xato', xabar: xabar mijozga yetdimi}.
+    xabar=false bo'lsa sayt eski ?start=konkurs havolasiga o'tadi."""
+    try:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        init_data = str(data.get('initData') or '')
+        uid = check_init_data(init_data)
+        if not uid:
+            return web.json_response({'ok': False, 'sabab': 'imzo', 'xabar': False}, status=401)
+        try:
+            u = json.loads(dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True)).get('user') or '{}')
+        except Exception:
+            u = {}
+        user = {'id': uid, 'username': u.get('username') or '', 'first_name': u.get('first_name') or '',
+                'language_code': u.get('language_code') or ''}
+        hozir = time.time()
+        if hozir - _kk_boshla_vaqt.get(uid, 0) < KK_BOSHLA_ORALIQ:
+            return web.json_response({'ok': True, 'sabab': '', 'xabar': True, 'takror': True})
+        _kk_boshla_vaqt[uid] = hozir
+        if data.get('kalit'):   # BUGUN147: yashirin konkurs — ?start=konkurs_y bilan bir xil kalit
+            _kk_kalitli.add(uid)
+        holat, yetdi = await start_konkurs_flow(uid, user)
+        if yetdi:
+            asyncio.create_task(mijoz_bot_qayd(user, 'yangi'))   # BUGUN173 — /start kabi (xabar yetdi = bot ochiq)
+        else:
+            _kk_boshla_vaqt.pop(uid, None)   # eski havola bilan qayta urinish to'silmasin
+        sabab = holat if holat != 'ok' else ('' if yetdi else 'yetmadi')
+        return web.json_response({'ok': holat == 'ok' and bool(yetdi), 'sabab': sabab, 'xabar': bool(yetdi)})
+    except Exception as e:
+        logger.error(f'konkurs_boshla: {type(e).__name__}')
+        return web.json_response({'ok': False, 'sabab': 'xato', 'xabar': False}, status=500)
 
 
 # ── BUGUN226 (foydalanuvchi, 2026-10-16): konkursda har 20 yangi ishtirokchida adminga «🎁 Konkursda 40 kishi».
@@ -6833,6 +6880,7 @@ async def main():
     app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
+    app.router.add_post('/konkurs/boshla', konkurs_boshla_endpoint)     # BUGUN233: eski Telegram — ?start= siz
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
