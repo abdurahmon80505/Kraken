@@ -9,6 +9,7 @@ import json
 import urllib.parse
 import time
 import threading
+import concurrent.futures
 from aiohttp import web
 import requests as req
 
@@ -105,6 +106,15 @@ user_states = {}
 # {media_group_id: {'file_ids': [...], 'task': asyncio_handle}}
 _photo_groups = {}
 # (_single_photo_lock olib tashlandi — E7: hech qayerda o'qilmasdi)
+# BUGUN222 (2026-10-15: ketma-ket rasmlardan 37 e'lon — 6 tasiga takror raqam, 2 rasm yo'qoldi, №253 da aralash):
+#  · admin rasmlaridan e'lon ochish — BITTA navbatda (1 ish ipi): albom = bitta e'lon, e'lonlar ketma-ket ochiladi.
+#    Ilgari har albom / rasm o'z ipida bir vaqtda botCreateElon ni chaqirardi.
+#  · _photo_qulf — _photo_groups ga (event loop ipi qo'shadi, navbat ipi oladi) bir vaqtda tegilmasin.
+#  · getFile / yuklab olish / ImageKit — vaqt tugasa yoki server xatosi bo'lsa 3 marta qayta (1, 2, 4 s).
+ALBOM_KUTISH = 2.0
+RASM_QAYTA_KUTISH = (1, 2, 4)
+_photo_qulf = threading.Lock()
+_elon_navbat = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='elon-navbat')
 
 # ── ELON YUBORISH ─────────────────────────────────────────
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
@@ -4165,72 +4175,147 @@ def send_konkurs_channel_post(chat_id, text, images, reply_markup):
         }, timeout=10)
 
 
+def _maxfiy(e):
+    """Xato matni — BOT_TOKEN siz (requests xatosida URL bo'ladi: /bot<token>/getFile, /file/bot<token>/…)."""
+    t = str(e)
+    return t.replace(BOT_TOKEN, '***') if BOT_TOKEN else t
+
+
+def _qayta_urin(nom, fn, kutish=None):
+    """BUGUN222: fn() — xato (vaqt tugadi, ulanish uzildi…) yoki None bo'lsa, RASM_QAYTA_KUTISH oraliqlari bilan qayta.
+    Boshqa har qanday qiymat (bo'sh satr ham — «qayta urinish foyda bermaydi») darrov qaytadi. Oxiri ham bo'lmasa — None."""
+    kutish = RASM_QAYTA_KUTISH if kutish is None else kutish
+    for urinish in range(len(kutish) + 1):
+        try:
+            v = fn()
+            if v is not None:
+                return v
+            sabab = "bo'sh javob"
+        except Exception as e:
+            sabab = _maxfiy(e)
+        if urinish < len(kutish):
+            logger.warning(f'{nom}: {sabab} — {urinish + 1}-urinish, {kutish[urinish]} s dan keyin qayta')
+            time.sleep(kutish[urinish])
+        else:
+            logger.error(f"{nom}: {sabab} — {urinish + 1} urinishdan keyin ham bo'lmadi")
+    return None
+
+
 def tg_file_url(file_id):
-    """Telegram file_id dan yuklab olinadigan URL qaytaradi."""
-    try:
-        fi = req.get(f'{TG_API}/getFile?file_id={file_id}', timeout=10).json()
+    """Telegram file_id dan yuklab olinadigan URL qaytaradi. BUGUN222: vaqt tugasa / 5xx / 429 — qayta urinadi
+    (2026-10-15: «getFile Read timed out» — 2 rasm yo'qolgan); Telegram «ok: false» desa — darrov ''."""
+    def bir():
+        r = req.get(f'{TG_API}/getFile?file_id={file_id}', timeout=10)
+        if r.status_code == 429 or r.status_code >= 500:
+            raise RuntimeError(f'HTTP {r.status_code}')
+        fi = r.json()
         if fi.get('ok'):
             fp = fi['result']['file_path']
             return f'https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}'
-    except Exception as e:
-        logger.error(f'getFile: {e}')
-    return ''
+        logger.error(f"getFile: {fi.get('description')}")
+        return ''
+    return _qayta_urin('getFile', bir) or ''
 
 
 def upload_to_imagekit(file_id):
-    """Telegram file_id'ni yuklab olib, ImageKit'ga yuboradi. Barqaror URL qaytaradi.
-    Xato bo'lsa — Telegram URL'iga qaytadi (fallback)."""
+    """Telegram file_id'ni yuklab olib, ImageKit'ga yuboradi. Barqaror URL qaytaradi, bo'lmasa — ''.
+    BUGUN222: har qadam (getFile, yuklab olish, ImageKit) — 3 marta qayta urinish; 0 baytli fayl — xato (e'longa
+    qo'shilmaydi, 2026-10-15 №253). Telegram URL'iga «fallback» OLIB TASHLANDI: unda BOT_TOKEN bor (jadvalga, saytga
+    chiqardi) va havola ~1 soatda o'ladi — e'londa keyin buzuq rasm qolardi. Endi admin «N-rasm yuklanmadi» xabarini oladi."""
     tg_url = tg_file_url(file_id)
     if not tg_url:
         return ''
-    try:
-        # 1) Telegram'dan rasmni yuklab olamiz
+
+    # 1) Telegram'dan rasmni yuklab olamiz
+    def yuklab_ol():
         img = req.get(tg_url, timeout=20)
-        if img.status_code != 200:
-            return tg_url
-        # 2) ImageKit'ga yuklaymiz (Basic Auth: private_key username, parol bo'sh)
-        import time as _t
-        fname = f"{int(_t.time()*1000)}_{file_id[:8]}.jpg"
+        if img.status_code != 200 or not img.content:
+            raise RuntimeError(f'yuklab olish: HTTP {img.status_code}, {len(img.content or b"")} bayt')
+        return img.content
+    content = _qayta_urin('rasm yuklab olish', yuklab_ol)
+    if not content:
+        return ''
+
+    # 2) ImageKit'ga yuklaymiz (Basic Auth: private_key username, parol bo'sh)
+    fname = f"{int(time.time()*1000)}_{file_id[:8]}.jpg"
+
+    def ik():
         r = req.post(
             IK_UPLOAD_URL,
             auth=(IK_PRIVATE_KEY, ''),
-            files={'file': (fname, img.content)},
+            files={'file': (fname, content)},
             data={'fileName': fname, 'folder': '/kraken'},
             timeout=30
         )
-        j = r.json()
+        try:
+            j = r.json()
+        except ValueError:
+            j = {}
         if r.status_code == 200 and j.get('url'):
             return j['url']
-        logger.error(f'ImageKit upload: {j}')
-        return tg_url  # fallback
-    except Exception as e:
-        logger.error(f'upload_to_imagekit: {e}')
-        return tg_url  # fallback
+        if r.status_code == 429 or r.status_code >= 500 or not j:
+            raise RuntimeError(f'ImageKit HTTP {r.status_code}')
+        logger.error(f'ImageKit upload: {r.status_code} {j}')
+        return ''
+    return _qayta_urin('ImageKit', ik) or ''
 
 
 def create_bot_elon(file_ids, yonalish=None):
     """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets.
-    yonalish (MS3.2) — Apps Script'ga ham boradi (hozir yozilmaydi — ustun yo'q; e'lon yo'nalishi modeldan)."""
-    urls = []
-    for fid in file_ids:
-        u = upload_to_imagekit(fid)
-        if u:
-            urls.append(u)
-    if not urls:
+    yonalish (MS3.2) — Apps Script'ga ham boradi (hozir yozilmaydi — ustun yo'q; e'lon yo'nalishi modeldan).
+    BUGUN222: rasmlar 4 tadan parallel yuklanadi (tartib saqlanadi); yuklanmaganlari — res['yuklanmadi'] (1 dan sanaladi).
+    Hech biri yuklanmasa — {'ok': False, 'yuklanmadi': [...]}, e'lon ochilmaydi. botCreateElon — 45 s (Apps Script qulfda
+    navbat kutishi mumkin), qayta yuborilmaydi: yetib borgan bo'lsa ikkinchi e'lon ochilardi."""
+    if not file_ids:
         return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(file_ids))) as ex:
+        natija = list(ex.map(upload_to_imagekit, file_ids))
+    urls = [u for u in natija if u]
+    yuklanmadi = [i + 1 for i, u in enumerate(natija) if not u]
+    if not urls:
+        return {'ok': False, 'yuklanmadi': yuklanmadi}
     try:
         payload = urllib.parse.quote(json.dumps(dict({'images': urls}, **({'yonalish': yonalish} if yonalish else {}))))
-        r = req.get(f'{SHEET_URL}?action=botCreateElon&data={payload}', timeout=20)
+        r = req.get(f'{SHEET_URL}?action=botCreateElon&data={payload}', timeout=45)
         res = r.json()
-        return res if res.get('ok') else None
     except Exception as e:
-        logger.error(f'create_bot_elon: {e}')
+        logger.error(f'create_bot_elon: {_maxfiy(e)}')
         return None
+    if not res.get('ok'):
+        logger.error(f'create_bot_elon: {res}')
+        return None
+    if yuklanmadi:
+        res['yuklanmadi'] = yuklanmadi
+    return res
+
+
+def _navbat_ishi(chat_id, fn, *args):
+    """Navbat ipida: xato yashirinmasin (ilgari run_in_executor xatoni jim yutardi) — logga va adminga."""
+    try:
+        fn(*args)
+    except Exception as e:
+        logger.error(f'elon navbati ({fn.__name__}): {_maxfiy(e)}')
+        try:
+            send_msg(chat_id, "❌ E'lon ochishda xatolik — rasmlarni qayta yuboring.")
+        except Exception:
+            pass
+
+
+def _albom_navbatga(mgid, chat_id):
+    """Albom taymeri tugadi (event loop ipida) — albomni e'lon navbatiga qo'yadi. Navbat kutayotganda kelgan kech rasm
+    o'sha albomga qo'shiladi (handle_admin_photo); ish boshlangandan keyin kelgani — yangi e'lon (aralashmaydi)."""
+    with _photo_qulf:
+        grp = _photo_groups.get(mgid)
+        if not grp or grp.get('navbatda'):
+            return
+        grp['navbatda'] = True
+    _elon_navbat.submit(_navbat_ishi, chat_id, finalize_photo_group, mgid, chat_id)
 
 
 def finalize_photo_group(mgid, chat_id):
-    """Albom to'planib bo'lgach chaqiriladi — chala elon yaratadi."""
-    grp = _photo_groups.pop(mgid, None)
+    """Albom to'planib bo'lgach chaqiriladi (e'lon navbatida) — chala elon yaratadi."""
+    with _photo_qulf:
+        grp = _photo_groups.pop(mgid, None)
     if not grp:
         return
     file_ids = grp.get('file_ids', [])
@@ -4322,23 +4407,25 @@ async def handle_admin_photo(chat_id, file_id, media_group_id):
     MS3.2: guruhning «Rasm · …» mavzusidan kelsa — e'lon o'sha bo'limniki (rasm_yonalish)."""
     if media_group_id:
         # Albom: rasmlarni yig'amiz, 2 sekund kutib, keyin bitta elon qilamiz
-        grp = _photo_groups.get(media_group_id)
-        if not grp:
-            grp = {'file_ids': [], 'chat_id': chat_id, 'yonalish': rasm_yonalish(chat_id)}
-            _photo_groups[media_group_id] = grp
-        grp['file_ids'].append(file_id)
-        # Oldingi taymer bo'lsa bekor qilamiz, yangisini o'rnatamiz
-        old = grp.get('timer')
-        if old:
-            old.cancel()
+        yon = rasm_yonalish(chat_id)
         loop = asyncio.get_event_loop()
-        # E1: ish alohida ipda (ichida ImageKit + Sheets so'rovlari bor)
-        grp['timer'] = loop.call_later(
-            2.0, lambda: loop.run_in_executor(None, finalize_photo_group, media_group_id, chat_id))
+        with _photo_qulf:
+            grp = _photo_groups.get(media_group_id)
+            if not grp:
+                grp = {'file_ids': [], 'chat_id': chat_id, 'yonalish': yon}
+                _photo_groups[media_group_id] = grp
+            grp['file_ids'].append(file_id)
+            if grp.get('navbatda'):
+                return    # BUGUN222: navbatda kutyapti — rasm o'sha e'longa qo'shiladi, yangi taymer kerak emas
+            # Oldingi taymer bo'lsa bekor qilamiz, yangisini o'rnatamiz
+            old = grp.get('timer')
+            if old:
+                old.cancel()
+            # E1 / BUGUN222: ish — e'lon navbatida (alohida ip; ichida ImageKit + Sheets so'rovlari bor)
+            grp['timer'] = loop.call_later(ALBOM_KUTISH, _albom_navbatga, media_group_id, chat_id)
     else:
-        # Bitta rasm — darrov elon
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(None, _single_photo_elon, chat_id, file_id)
+        # Bitta rasm — e'lon navbatiga (oldingi albom / rasm tugagach)
+        _elon_navbat.submit(_navbat_ishi, chat_id, _single_photo_elon, chat_id, file_id)
 
 
 def _single_photo_elon(chat_id, file_id):
@@ -4348,15 +4435,19 @@ def _single_photo_elon(chat_id, file_id):
 
 def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
     """Chala e'lon yaratildi / xato — admin javobi. MS3.2: bo'lim mavzusidan — nomi va sayt o'sha bo'limda ochiladi (?p=y_pc)."""
-    if not res:
-        send_msg(chat_id, "❌ Elon yaratishda xatolik. Qayta urining.")
+    yuk = ', '.join(f'{n}-rasm' for n in ((res or {}).get('yuklanmadi') or []))
+    if not res or not res.get('ok'):
+        # BUGUN222: hech bir rasm yuklanmadi — e'lon ochilmadi (bo'sh e'lon qolmaydi)
+        send_msg(chat_id, f"❌ {yuk} yuklanmadi — e'lon ochilmadi, qayta yuboring." if yuk
+                 else "❌ Elon yaratishda xatolik. Qayta urining.")
         return
     num = res.get('num', '?')
     bolim = f" · {YON_KANAL[yon][0]}" if yon in YON_KANAL else ''
     send_msg(chat_id,
         f"✅ Yangi elon yaratildi: <b>№{num}</b>{bolim}\n"
-        f"📸 {cnt} ta rasm saqlandi.\n\n"
-        f"Endi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+        f"📸 {cnt} ta rasm saqlandi.\n"
+        + (f"⚠️ {yuk} yuklanmadi, qayta yuboring.\n" if yuk else '') +
+        f"\nEndi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
         keyboard={"inline_keyboard": [[{
             "text": "🛠 Admin panel / Saytga kirish",
             "web_app": {"url": SAYT_URL + (f'?p=y_{yon}' if yon in YON_KANAL else '')}
