@@ -471,6 +471,40 @@ def yon_kanal_kaliti(chat):
     return ''
 
 
+# ── BUGUN226 (foydalanuvchi, 2026-10-16): /start ni qayta bosmagan ESKI mijozda eski reply-klaviatura (pastdagi matnli tugmalar)
+# qolgan. Eski tugma bosilsa (u botga shu tugma matnini yuboradi) — eski klaviatura olib tashlanadi va yangi 3 tugmali /start
+# xabari chiqadi. Nega: eski tugmalar yangi botda hech narsa qilmasdi («Tushunmadim»). Menyu tugmasi («Do'kon») — tegilmaydi.
+_ESKI_TUGMA_SOZ = ('saytga kirish', 'saytga qaytish', 'saytni ochish', "do'kon", 'perejti na sayt', 'перейти на сайт',
+                   'вернуться на сайт', 'открыть сайт', 'магазин', "kanalga a'zo bo'lish", 'kanal / канал', 'raqamni ulashish',
+                   'поделиться номером', 'konkursda qatnashish', 'konkurs', 'розыгрыш')
+
+
+def _eski_tugmami(text):
+    """Matn — eski reply-klaviatura tugmasimi (emoji / bo'sh joy / registr hisobga olinmaydi)."""
+    t = re.sub(r"[^\w\s'/]", '', str(text or '').lower().replace('’', "'"), flags=re.UNICODE)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return bool(t) and not t.startswith('/') and len(t) <= 60 and any(t == x or t.startswith(x + ' ') for x in _ESKI_TUGMA_SOZ)
+
+
+def eski_klaviatura_olib_tashla(chat_id):
+    """Eski reply-klaviatura (pastdagi tugmalar) ni yopadi: remove_keyboard faqat xabar bilan ketadi — qisqa xabar yuborilib,
+    darhol o'chiriladi (chatda iz qolmaydi). Xato bo'lsa jim — asosiy javobga xalaqit bermaydi."""
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json={'chat_id': chat_id, 'text': '👇',
+                                                    'reply_markup': {'remove_keyboard': True}}, timeout=8)
+        mid = (r.json().get('result') or {}).get('message_id') if r.status_code == 200 else None
+        if mid:
+            req.post(f'{TG_API}/deleteMessage', json={'chat_id': chat_id, 'message_id': mid}, timeout=8)
+    except Exception as e:
+        logger.error(f'eski klaviatura: {type(e).__name__}')
+
+
+def eski_mijoz_javob(chat_id):
+    """Eski tugma / noma'lum matn (lichka): eski klaviatura olib tashlanadi + yangi 3 tugmali /start xabari."""
+    eski_klaviatura_olib_tashla(chat_id)
+    send_bot_hub(chat_id)
+
+
 def send_bot_hub(chat_id):
     """Oddiy /start — «Nuqta tech'ga xush kelibsiz, qaysi yo'nalish» + 3 tugma. Qayta /start — yana chiqadi."""
     try:
@@ -4127,6 +4161,8 @@ async def konkurs_qatnash_endpoint(request):
         if r.get('ok') or (msg == 'already' and r.get('sabab') != 'telefon'):
             _konkurs_cache['time'] = 0
             _kk_qatnashchi_qosh(st.get('konkurs_id'), uid)   # BUGUN147: kanaldan chiqish keshiga darhol
+            if r.get('ok'):
+                await _kk_son_xabari(st.get('konkurs_id'), r.get('count'))   # BUGUN226: har 20 kishida adminga
             await blok(send_msg, uid, _kk_qatnash_matn(_kk_init_til(data.get('initData'))))
             if r.get('shubha'):
                 q = [f"⚠️ <b>Konkurs {html_escape(str(st.get('konkurs_id')))}: bir qurilmadan bir nechta akkaunt</b>",
@@ -4141,6 +4177,25 @@ async def konkurs_qatnash_endpoint(request):
     except Exception as e:
         logger.error(f'konkurs_qatnash: {type(e).__name__}')
         return web.json_response({'ok': False, 'sabab': 'xato'}, status=500)
+
+
+# ── BUGUN226 (foydalanuvchi, 2026-10-16): konkursda har 20 yangi ishtirokchida adminga «🎁 Konkursda 40 kishi».
+# Son — Apps Script joinKonkurs javobidagi `count` (jadval qulfi ichida hisoblangan: har qo'shilishga o'z soni) — shu sabab bot
+# qayta yonsa ham bir son ikki marta chiqmaydi (holat jadvalda — T2); `_kk_son_yuborilgan` — shu jarayondagi qo'shimcha himoya.
+KK_SON_QADAM = 20
+_kk_son_yuborilgan = set()
+
+
+async def _kk_son_xabari(konkurs_id, soni):
+    try:
+        soni = int(soni)
+    except (TypeError, ValueError):
+        return
+    kalit = (str(konkurs_id), soni)
+    if soni < KK_SON_QADAM or soni % KK_SON_QADAM or kalit in _kk_son_yuborilgan:
+        return
+    _kk_son_yuborilgan.add(kalit)
+    await _kk_admin(f"🎁 Konkursda {soni} kishi")
 
 
 def send_konkurs_channel_post(chat_id, text, images, reply_markup):
@@ -5243,9 +5298,16 @@ async def handle_update(data):
             elif _phone_ok(text) and await tiklash_holati(chat_id, user):
                 # E3: mijoz raqamni QO'LDA yozgan (tugmasiz) va aktiv konkurs bor
                 await handle_phone(chat_id, text, user)
+            elif message.get('chat', {}).get('type') == 'private' and _eski_tugmami(text):
+                # BUGUN226: eski reply-klaviatura tugmasi — yangi 3 tugmali /start xabari, eski klaviatura yopiladi
+                await blok(eski_mijoz_javob, chat_id)
             elif not guruhdan:   # B33: guruhda (admin o'zi yozgan izoh) — jim
                 # E4: noma'lum xabar — ilgari bot umuman javob bermasdi
-                await blok(send_msg, chat_id, NOMALUM_XABAR, START_KB)
+                # BUGUN226: lichkada — eski klaviatura yopiladi, tugmalar — yangi 3 yo'nalish (web_app)
+                lichka = message.get('chat', {}).get('type') == 'private'
+                if lichka:
+                    await blok(eski_klaviatura_olib_tashla, chat_id)
+                await blok(send_msg, chat_id, NOMALUM_XABAR, BOT_HUB_KB if lichka else START_KB)
     except Exception as e:
         logger.error(f'handle_update: {e}')
 
