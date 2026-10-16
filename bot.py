@@ -5075,6 +5075,9 @@ async def handle_update(data):
             # BUGUN208: «🔓 Bronni bekor qilish» (faqat admin lichkasi)
             if cq_data.startswith('bron_och:') and cq_adm:
                 asyncio.create_task(bron_bekor_tugma(cq_chat, cq_data))
+            # BUGUN227: buyurtma holati — «✅ To'lov keldi» / «🚚 Yo'lda» / «📦 Yetkazildi» (faqat admin lichkasi)
+            if cq_data.startswith('bh:') and cq_adm:
+                asyncio.create_task(buyurtma_holat_tugma(cq_chat, cq.get('message', {}).get('message_id'), cq_data))
             # B34: «🗑 Postni o'chirish» (faqat admin lichkasi)
             if cq_data.startswith('pochir') and cq_adm:
                 asyncio.create_task(blok(post_ochir_tugma, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
@@ -6029,6 +6032,94 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=()):
             f"🕒 {_kk_vaqt(time.time())}")
 
 
+# ══ BUGUN227: buyurtma holati — adminning tugmalari (✅ To'lov keldi · 🚚 Yo'lda · 📦 Yetkazildi) ══
+# Holat faqat ALGA siljiydi: kutilmoqda → tolandi → yolda → yetkazildi (bosqichni o'tkazib yuborish mumkin: to'lov chekini ko'rmay
+# «Yo'lda» desa ham bo'ladi). «bekor» (mijoz bekor qilgan) — oxirgi holat: undan keyin tugmalar ish bermaydi. Holat Sheets'ga yoziladi
+# (Buyurtmalar varag'i), mijozga botda qisqa xabar (uz + ru), saytdagi «Buyurtmalarim» shu holatni ko'rsatadi.
+_HOLAT_TARTIB = ('kutilmoqda', 'tolandi', 'yolda', 'yetkazildi')
+_HOLAT_ADMIN = {'tolandi': ('✅', "To'lov keldi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi')}
+_HOLAT_ADMIN_NOM = {'kutilmoqda': "⏳ To'lov kutilmoqda", 'tolandi': "✅ To'lov keldi", 'yolda': "🚚 Yo'lda",
+                    'yetkazildi': '📦 Yetkazildi', 'bekor': '❌ Mijoz bekor qilgan'}
+_HOLAT_MIJOZ = {   # mijozga xabar: (uz, ru) — {o} buyurtma raqami
+    'tolandi': ("✅ <b>Buyurtma №{o}</b> — to'lovingiz qabul qilindi. Rahmat!",
+                "✅ <b>Заказ №{o}</b> — оплата получена. Спасибо!"),
+    'yolda': ("🚚 <b>Buyurtma №{o}</b> yo'lga chiqdi!",
+              "🚚 <b>Заказ №{o}</b> уже в пути!"),
+    'yetkazildi': ("📦 <b>Buyurtma №{o}</b> yetkazildi. Xaridingiz uchun rahmat!",
+                   "📦 <b>Заказ №{o}</b> доставлен. Спасибо за покупку!"),
+}
+
+
+def _buyurtma_klava(uid, order, holat, bron_nums):
+    """Adminga boradigan buyurtma xabarining tugmalari: Mijozga yozish · (joriy holat) · keyingi holatlar · bronni bekor qilish."""
+    qator = [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]
+    if holat != 'kutilmoqda':
+        qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
+    if holat in _HOLAT_TARTIB:
+        keyingi = [{'text': f'{_HOLAT_ADMIN[h][0]} {_HOLAT_ADMIN[h][1]}', 'callback_data': f'bh:{h}:{uid}:{order}'}
+                   for h in _HOLAT_TARTIB[_HOLAT_TARTIB.index(holat) + 1:]]
+        qator += [keyingi[i:i + 2] for i in range(0, len(keyingi), 2)]
+    qator += [[{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
+                'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]
+    return {'inline_keyboard': qator}
+
+
+def _buyurtma_holat_qoy(uid, order, yangi):
+    """Holatni oldinga suradi. Qaytaradi (kod, buyurtma): 'ok' · 'eski' (shu yoki oldingi holat) · 'bekor' · 'topilmadi'."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+        if not b:
+            return 'topilmadi', None
+        if b.get('holat') == 'bekor':
+            return 'bekor', dict(b)
+        eski = b.get('holat') if b.get('holat') in _HOLAT_TARTIB else 'kutilmoqda'
+        if _HOLAT_TARTIB.index(yangi) <= _HOLAT_TARTIB.index(eski):
+            return 'eski', dict(b)
+        b['holat'] = yangi
+        b['holat_ts'] = time.time()
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+        return 'ok', dict(b)
+
+
+def _buyurtma_mijozga(uid, b, yangi):
+    """Mijozga botda qisqa xabar. Til — buyurtma berilganda Telegram'dan olingan; bilinmasa ikkalasi. (natija) 'yuborildi' | boshqa."""
+    uz, ru = _HOLAT_MIJOZ[yangi]
+    o = html_escape(b.get('order', ''))
+    til = b.get('til')
+    matn = uz.format(o=o) if til == 'uz' else ru.format(o=o) if til == 'ru' else uz.format(o=o) + '\n\n' + ru.format(o=o)
+    natija, _ = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML'}, urinish=2)
+    return natija
+
+
+async def buyurtma_holat_tugma(chat_id, message_id, cq_data):
+    """Admin tugmasi: bh:<holat>:<uid>:<order>. Holat saqlanadi, tugmalar yangilanadi, mijozga xabar ketadi."""
+    try:
+        p = cq_data.split(':')
+        if len(p) != 4 or p[1] not in _HOLAT_ADMIN or not p[2].isdigit() or not re.fullmatch(r'[A-Z0-9]{4,12}', p[3]):
+            return    # 'bh:-' (joriy holat belgisi) yoki buzuq — jim
+        yangi, uid, order = p[1], int(p[2]), p[3]
+        kod, b = await blok(_buyurtma_holat_qoy, uid, order, yangi)
+        if kod == 'topilmadi':
+            await blok(send_msg, chat_id, f"ℹ️ Buyurtma №{html_escape(order)} bot xotirasida topilmadi — holat o'zgarmadi.")
+            return
+        joriy = b.get('holat') if b else yangi
+        bron_nums = [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')]
+        if message_id:
+            await blok(req.post, f'{TG_API}/editMessageReplyMarkup', json={
+                'chat_id': int(chat_id), 'message_id': message_id,
+                'reply_markup': _buyurtma_klava(uid, order, joriy, bron_nums)}, timeout=10)
+        if kod == 'bekor':
+            await blok(send_msg, chat_id, f"ℹ️ Buyurtma №{html_escape(order)} — mijoz bekor qilgan, holat o'zgarmadi.")
+        elif kod == 'ok':
+            natija = await blok(_buyurtma_mijozga, uid, b, yangi)
+            if natija != 'yuborildi':
+                await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: holat saqlandi, lekin mijozga xabar bormadi "
+                                              f"(botni to'xtatgan bo'lishi mumkin). «Mijozga yozish» orqali o'zingiz yozing.")
+    except Exception as e:
+        logger.error(f'buyurtma_holat_tugma: {e}')
+
+
 def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs, qolgan_nums=()):
     """Fon oqimida. (ok, sabab) qaytaradi. BUGUN224: qolgan_nums — savatdagi boshqa tovarlar (topilmagan / yopiq — tushib qoladi)."""
     elon, models = elon_cache_get(num)
@@ -6045,9 +6136,7 @@ def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs, qolgan_nums=()):
     matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan)
     # Mijozga yozish tugmasi — tg://user?id (mijoz admin bilan avval yozishgan bo'lsa ochiladi)
     bron_nums = [num] + [str(e.get('num', '')) for e, _ in qolgan]
-    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]] + [
-        [{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
-          'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]}
+    klava = _buyurtma_klava(uid, order, 'kutilmoqda', bron_nums)   # BUGUN227: + holat tugmalari
     try:
         r = req.post(f'{TG_API}/sendMessage', json={
             'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
@@ -6148,7 +6237,8 @@ async def buyurtma_endpoint(request):
             return web.json_response({'error': sabab}, status=502)
         _BUYURTMA_KORILGAN[(uid, order)] = hozir
         # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
-        await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy)
+        await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
+                                   _kk_init_til(data.get('initData', '')) or '')
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
         for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
@@ -6201,6 +6291,141 @@ def _mijoz_saqlash():
         logger.error(f'mijoz saqlash: {e}')
 
 
+# ── BUGUN227: doimiy saqlash (Google Sheets, Apps Script mijozTelYoz / buyurtmaYoz / mijozHammasi) ──────────────────────────
+# Render qayta ishga tushsa (har deploy) MIJOZ_FAYL o'chadi — shuning uchun har o'zgarish Sheets'ga ham yoziladi, bot ishga
+# tushganda esa Sheets'dan o'qib olinadi. Yozish fonda va navbat bilan: tarmoq / Apps Script yiqilsa — navbatda qoladi, 5 soniyada
+# qayta uriniladi (webhook kutmaydi — T1). Raqamlar jadvalda: faqat egasi ko'radi, saytga hech qachon chiqmaydi.
+# SHEET_URL yoki API_KEY yo'q (sinov, mahalliy ishga tushirish) — sinxronlash umuman yurmaydi, faqat fayl.
+_MIJOZ_SYNC = set()           # navbat: ('t', uid) · ('b', uid, order)
+_MIJOZ_SYNC_QULF = threading.Lock()
+MIJOZ_SYNC_ORALIQ_S = 5
+
+
+def _mijoz_sync_yoqilgan():
+    return bool(SHEET_URL and API_KEY)
+
+
+def _mijoz_sync_belgila(*kalit):
+    """O'zgargan yozuvni navbatga qo'yadi (fon sikli Sheets'ga yozadi)."""
+    if _mijoz_sync_yoqilgan():
+        with _MIJOZ_SYNC_QULF:
+            _MIJOZ_SYNC.add(tuple(str(x) for x in kalit))
+
+
+def _buyurtma_sheet_dict(uid, b):
+    """Bitta buyurtma → Apps Script `buyurtmaYoz` ma'lumoti."""
+    return {'order': b.get('order'), 'user_id': str(uid), 'ts': b.get('ts'), 'holat': b.get('holat'),
+            'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts'), 'jami': b.get('jami'), 'tur': b.get('tur', ''),
+            'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''),
+            'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx')} for x in (b.get('tovar') or [])]}
+
+
+def _mijoz_sync_yubor():
+    """Navbatdagilarni Sheets'ga yozadi (bloklaydi — faqat fon oqimida). Yozilmaganlar navbatda qoladi. Nechta yozilganini qaytaradi."""
+    if not _mijoz_sync_yoqilgan():
+        return 0
+    with _MIJOZ_SYNC_QULF:
+        ish = sorted(_MIJOZ_SYNC)
+    yozildi = 0
+    for k in ish:
+        with _MIJOZ_LOCK:   # qiymatni qulf ostida nusxalaymiz (boshqa oqim o'zgartirayotgan bo'lishi mumkin)
+            m = _MIJOZ.get(k[1])
+            if k[0] == 't':
+                par = {'user_id': k[1], 'akkaunt': (m or {}).get('tels', {}).get('akkaunt', ''),
+                       'dostavka': (m or {}).get('tels', {}).get('dostavka', '')}
+                data = None
+            else:
+                b = next((x for x in (m or {}).get('buyurtma', []) if x.get('order') == k[2]), None)
+                data = json.dumps(_buyurtma_sheet_dict(k[1], b), ensure_ascii=False) if b else None
+                par = None
+        if k[0] == 't':
+            j = _kk_sheet('mijozTelYoz', timeout=40, **par)
+        elif data is None:
+            j = {'ok': True}   # yozuv endi yo'q (30 tadan oshib tushgan) — yuboradigan narsa yo'q
+        else:
+            j = _kk_sheet('buyurtmaYoz', timeout=40, data=data)
+        if j and j.get('ok'):
+            with _MIJOZ_SYNC_QULF:
+                _MIJOZ_SYNC.discard(k)
+            yozildi += 1
+        else:
+            break   # Apps Script javob bermadi — qolganini keyingi urinishga (tartib buzilmasin)
+    return yozildi
+
+
+def _mijoz_sheet_birlash(j):
+    """Sheets'dan kelgan {tels, buyurtma} ni xotiraga qo'shadi. Navbatdagi (hali yozilmagan) mahalliy yozuv ustun;
+    Sheets'da yo'q mahalliy yozuv navbatga qo'yiladi. Qaytaradi — (mijoz soni, buyurtma soni)."""
+    sheet_tel, sheet_buy = set(), set()
+    with _MIJOZ_LOCK:
+        for t in (j.get('tels') or []):
+            uid = str(t.get('user_id') or '')
+            if not uid:
+                continue
+            sheet_tel.add(uid)
+            m = _mijoz_ochiq(uid)
+            if ('t', uid) in _MIJOZ_SYNC:
+                continue
+            for tur in _MIJOZ_TEL_TURLAR:
+                if t.get(tur):
+                    m['tels'][tur] = t[tur]
+                else:
+                    m['tels'].pop(tur, None)
+        for b in (j.get('buyurtma') or []):
+            uid, order = str(b.get('user_id') or ''), str(b.get('order') or '')
+            if not uid or not order:
+                continue
+            sheet_buy.add((uid, order))
+            m = _mijoz_ochiq(uid)
+            if ('b', uid, order) in _MIJOZ_SYNC:
+                continue
+            yozuv = {'order': order, 'ts': b.get('ts') or 0, 'holat': b.get('holat') or 'kutilmoqda', 'tovar': b.get('tovar') or [],
+                     'jami': b.get('jami'), 'tur': b.get('tur') or '', 'ism': b.get('ism') or '', 'tel': b.get('tel') or '',
+                     'til': b.get('til') or '', 'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts')}
+            i = next((n for n, x in enumerate(m['buyurtma']) if x.get('order') == order), -1)
+            if i >= 0:
+                m['buyurtma'][i] = yozuv
+            else:
+                m['buyurtma'].append(yozuv)
+        for uid, m in _MIJOZ.items():
+            m['buyurtma'].sort(key=lambda x: x.get('ts') or 0, reverse=True)
+            del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
+            if uid not in sheet_tel and m['tels']:
+                _mijoz_sync_belgila('t', uid)
+            for x in m['buyurtma']:
+                if (uid, x.get('order')) not in sheet_buy:
+                    _mijoz_sync_belgila('b', uid, x.get('order'))
+        _mijoz_saqlash()
+        return len(_MIJOZ), sum(len(m['buyurtma']) for m in _MIJOZ.values())
+
+
+def mijoz_sheet_yuklash():
+    """Bot ishga tushganda (fon oqimida): Sheets → xotira. Apps Script uxlab turgan / eski bo'lsa — 5 marta urinadi."""
+    if not _mijoz_sync_yoqilgan():
+        return False
+    for n in range(5):
+        j = _kk_sheet('mijozHammasi', timeout=60)
+        if j and j.get('ok'):
+            mj, by = _mijoz_sheet_birlash(j)
+            logger.info(f'mijoz: Sheets dan {mj} mijoz, {by} buyurtma yuklandi')
+            return True
+        time.sleep(10 * (n + 1))
+    logger.error("mijoz: Sheets dan yuklab bo'lmadi (Apps Script mijozHammasi javob bermadi) — bo'sh xotira bilan davom etadi")
+    return False
+
+
+async def mijoz_sync_loop():
+    """Bot ishga tushganda yuklaydi, keyin navbatni bo'shatib turadi."""
+    await blok(mijoz_sheet_yuklash)
+    while True:
+        await asyncio.sleep(MIJOZ_SYNC_ORALIQ_S)
+        if _MIJOZ_SYNC:
+            try:
+                await blok(_mijoz_sync_yubor)
+            except Exception as e:
+                logger.error(f'mijoz sync: {type(e).__name__}')
+
+
 def _mijoz_ol(uid):
     return _MIJOZ.get(str(uid)) or {'tels': {}, 'buyurtma': []}
 
@@ -6245,6 +6470,7 @@ def _mijoz_tel_qosh(uid, tel, manba):
         elif _tel_norm(t['akkaunt']) != _tel_norm(tel):
             t['dostavka'] = tel
         _mijoz_saqlash()
+        _mijoz_sync_belgila('t', uid)
 
 
 def _mijoz_tovarlar(num, qolgan_nums):
@@ -6259,7 +6485,7 @@ def _mijoz_tovarlar(num, qolgan_nums):
     return res
 
 
-def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy):
+def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til=''):
     """/buyurtma muvaffaqiyatli bo'lgach (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi."""
     try:
         _mijoz_tel_qosh(uid, tel, 'sotib')
@@ -6272,9 +6498,10 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy):
             m['buyurtma'].insert(0, {
                 'order': order, 'ts': time.time(), 'holat': 'kutilmoqda', 'tovar': tovar,
                 'jami': None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
-                'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel})
+                'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else ''})
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _mijoz_saqlash()
+            _mijoz_sync_belgila('b', uid, order)
     except Exception as e:
         logger.error(f'mijoz_buyurtma_yoz: {e}')
 
@@ -6339,8 +6566,9 @@ async def buyurtma_bekor_endpoint(request):
             if b.get('holat') != 'kutilmoqda':
                 return web.json_response({'error': 'Bekor qilib bolmaydi'}, status=409)
             b['holat'] = 'bekor'
-            b['bekor_ts'] = time.time()
+            b['bekor_ts'] = b['holat_ts'] = time.time()
             _mijoz_saqlash()
+            _mijoz_sync_belgila('b', uid, order)
         bosh = []
         for x in (b.get('tovar') or []):
             n = str(x.get('num') or '')
@@ -6629,6 +6857,7 @@ async def main():
                 logger.error(f'eski bot webhook: {type(e).__name__}')
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
+    asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
     # Bot ishga tushganda: e'lon xotirasi (G10.3) + oxirgi elon raqami — BITTA yuklashdan
