@@ -59,7 +59,7 @@ SHEET_URL = os.environ.get('SHEET_URL', '')
 API_KEY = os.environ.get('API_KEY', '')
 
 # ── ImageKit (saytdagi bilan bir xil — barqaror rasm hosting) ──
-IK_PRIVATE_KEY = os.environ.get('IK_PRIVATE_KEY', 'private_uRjC2/psPBQPc5fAhmshbRw9K1o=')
+IK_PRIVATE_KEY = os.environ.get('IK_PRIVATE_KEY', '')
 IK_UPLOAD_URL = 'https://upload.imagekit.io/api/v1/files/upload'
 
 # ── REBRENDING (A5, 2026-10-06): brend nomi — mijozga ko'rinadigan bot matnlari shundan oladi ──
