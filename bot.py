@@ -200,6 +200,7 @@ class _TgReq:
         return self._asl.post(url, **kw)
 
 
+_TARMOQ_XATO = (req.Timeout, req.ConnectionError)   # BUGUN232: _sheet_oqi qayta urinadigan xatolar (asl modul)
 req = _TgReq(req)
 
 
@@ -670,12 +671,33 @@ def kanal_xush_kelibsiz(cm):
     return 'xato'
 
 
-def get_products():
+# BUGUN232 (2026-10-17): Apps Script odatda 4–6 s da javob beradi, lekin ba'zan 10–15 s dan oshadi — Render logida
+# ReadTimeout: 10-15 19:20 (get_products 15 s, botStart 15 s), 10-16 22:05 (get_konkurs 10 s, ketma-ket 2 ta). O'qish —
+# uzunroq kutish + bir marta qayta urinish (QOIDALAR_CHUQUR T8). Yozish (botStart) — navbatga, fonda qayta (pastda).
+SHEET_OQISH_URINISH = 2
+SHEET_OQISH_ORALIQ_S = 2
+
+
+def _sheet_oqi(nom, url, timeout=25, urinish=SHEET_OQISH_URINISH):
+    """Apps Script'dan O'QISH (GET). Tarmoq uzilsa / javob kechiksa — yana urinadi; oxirgisi ham o'xshamasa — xato
+    yuqoriga. 🔴 Logda faqat xato turi (URL'da kalit bo'lishi mumkin)."""
+    for n in range(urinish):
+        try:
+            return req.get(url, timeout=timeout)
+        except _TARMOQ_XATO as e:
+            logger.warning(f'{nom}: {type(e).__name__} ({n + 1}/{urinish})')
+            if n + 1 >= urinish:
+                raise
+            time.sleep(SHEET_OQISH_ORALIQ_S)
+
+
+def get_products(urinish=SHEET_OQISH_URINISH):
     """Sheets'dan barcha elon va modellarni oladi (action'siz so'rov)."""
     if not SHEET_URL:
         return None, None
     try:
-        r = req.get(f"{SHEET_URL}?callback=d&fid=1", timeout=15)   # BUGUN148: fid=1 — rasm_file_id ham (sayt olmaydi)
+        # BUGUN148: fid=1 — rasm_file_id ham (sayt olmaydi). BUGUN232: 15 → 30 s + qayta urinish (ro'yxat katta — 5 s+)
+        r = _sheet_oqi('get_products', f"{SHEET_URL}?callback=d&fid=1", timeout=30, urinish=urinish)
         text = r.text.strip()
         data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
         # G12: seriyalar ham keshda — `mos` kodlarini (p9s, phone) nomga aylantirish uchun
@@ -685,7 +707,7 @@ def get_products():
             _ELON_CACHE['turkumlar'] = data['turkumlar']
         return data.get('listings', []), data.get('models', [])
     except Exception as e:
-        logger.error(f'get_products: {e}')
+        logger.error(f'get_products: {type(e).__name__}')
         return None, None
 
 
@@ -2598,24 +2620,49 @@ def is_member(user_id):
         logger.error(f'getChatMember: {e}')
         return False
 
+# BUGUN232: 2026-10-16 22:05 getKonkurs 10 s da javob bermadi → sayt /kirish_holat «kirmagan» oldi, /start «aktiv konkurs
+# yo'q» deyishi mumkin edi. Endi: 20 s + qayta urinish; bir vaqtda bitta so'rov (parallel chaqiruvlar o'sha natijani oladi —
+# 20 kishi /start bossa Apps Script'ga 20 ta so'rov ketmaydi); Apps Script baribir javob bermasa — oxirgi olingan
+# konkurs (1 soatgacha). Eskirgan bo'lsa ham xavfsiz: _kk_aktivmi tugash vaqtini o'zi tekshiradi, yozish Apps Script'da.
+_konkurs_qulf = threading.Lock()
+_konkurs_oxirgi = {'avlod': 0, 'natija': None}   # nechanchi o'qish tugadi va nima qaytardi
+_konkurs_zaxira = {'data': None, 'time': 0}      # oxirgi muvaffaqiyatli konkurs
+KONKURS_ZAXIRA_S = 3600
+
+
 def get_konkurs():
-    import time
     now = time.time()
     if _konkurs_cache['data'] and now - _konkurs_cache['time'] < 120:
         return _konkurs_cache['data']
     if not SHEET_URL:
         return None
+    avlod = _konkurs_oxirgi['avlod']
+    if not _konkurs_qulf.acquire(timeout=90):
+        return _konkurs_zaxira['data'] if time.time() - _konkurs_zaxira['time'] < KONKURS_ZAXIRA_S else None
     try:
-        r = req.get(f"{SHEET_URL}?action=getKonkurs&callback=d", timeout=10)
-        text = r.text.strip()
-        data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
-        if data and data.get('id'):
-            _konkurs_cache['data'] = data
-            _konkurs_cache['time'] = now
-            return data
-    except Exception as e:
-        logger.error(f'get_konkurs: {e}')
-    return None
+        if _konkurs_oxirgi['avlod'] != avlod:      # biz kutganda boshqa oqim o'qib bo'ldi — o'sha natija
+            return _konkurs_oxirgi['natija']
+        natija = None
+        try:
+            r = _sheet_oqi('get_konkurs', f"{SHEET_URL}?action=getKonkurs&callback=d", timeout=20)
+            text = r.text.strip()
+            data = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+            if data and data.get('id'):
+                _konkurs_cache['data'] = data
+                _konkurs_cache['time'] = time.time()
+                _konkurs_zaxira.update(data=data, time=time.time())
+                natija = data
+            else:
+                _konkurs_zaxira.update(data=None, time=0)   # jadval aniq aytdi: konkurs yo'q
+        except Exception as e:
+            logger.error(f'get_konkurs: {type(e).__name__}')
+            if time.time() - _konkurs_zaxira['time'] < KONKURS_ZAXIRA_S:
+                natija = _konkurs_zaxira['data']
+                logger.warning("get_konkurs: Apps Script javob bermadi — oxirgi olingan konkurs ishlatildi")
+        _konkurs_oxirgi.update(avlod=avlod + 1, natija=natija)
+        return natija
+    finally:
+        _konkurs_qulf.release()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2730,14 +2777,61 @@ async def mijoz_bot_qayd(user, kanal):
         if not uid or (kanal, uid) in _MIJOZ_BOT_YOZILGAN:
             return
         til = 'ru' if str(user.get('language_code') or '').lower().startswith('ru') else 'uz'
-        j = await blok(_kk_sheet, 'botStart', timeout=15, user_id=uid, kanal=kanal,
-                       username=user.get('username') or '', ism=user.get('first_name') or '', til=til)
+        par = {'user_id': uid, 'kanal': kanal, 'username': user.get('username') or '',
+               'ism': user.get('first_name') or '', 'til': til}
+        j = await blok(_kk_sheet, 'botStart', timeout=30, **par)   # BUGUN232: 15 → 30 s (10-15 19:20 — 15 s yetmadi)
         if j and j.get('ok'):
-            if len(_MIJOZ_BOT_YOZILGAN) > 20000:
-                _MIJOZ_BOT_YOZILGAN.clear()
-            _MIJOZ_BOT_YOZILGAN.add((kanal, uid))
+            _mijoz_bot_yozildi(kanal, uid)
+        elif j is None and SHEET_URL and API_KEY:
+            # BUGUN232: Apps Script javob bermadi (ReadTimeout / tarmoq) — yozuv yo'qolmasin: navbatga, fonda qayta.
+            # botStart takror yozmaydi (birinchi vaqt qoladi) — qayta yuborish xavfsiz.
+            with _MIJOZ_BOT_NAVBAT_QULF:
+                _MIJOZ_BOT_NAVBAT.setdefault((kanal, uid), par)
     except Exception as e:
         logger.error(f'mijoz bot qayd ({kanal}): {type(e).__name__}')
+
+
+# BUGUN232: botStart navbati — (kanal, user_id) → so'rov maydonlari. Faqat Apps Script javob bermaganlar (ok:false — aniq
+# rad, qayta yuborilmaydi). Fonda har MIJOZ_BOT_NAVBAT_S soniyada (mijoz_bot_navbat_loop).
+_MIJOZ_BOT_NAVBAT = {}
+_MIJOZ_BOT_NAVBAT_QULF = threading.Lock()
+MIJOZ_BOT_NAVBAT_S = 30
+
+
+def _mijoz_bot_yozildi(kanal, uid):
+    if len(_MIJOZ_BOT_YOZILGAN) > 20000:
+        _MIJOZ_BOT_YOZILGAN.clear()
+    _MIJOZ_BOT_YOZILGAN.add((kanal, uid))
+
+
+def _mijoz_bot_navbat_yubor():
+    """Navbatdagi botStart'larni yozadi (bloklaydi — faqat fon oqimida). Apps Script yana javob bermasa — to'xtaydi,
+    qolgani navbatda (keyingi safar). Nechta yozilganini qaytaradi."""
+    with _MIJOZ_BOT_NAVBAT_QULF:
+        ish = list(_MIJOZ_BOT_NAVBAT.items())
+    yozildi = 0
+    for k, par in ish:
+        j = None if k in _MIJOZ_BOT_YOZILGAN else _kk_sheet('botStart', timeout=40, **par)
+        if j is None and k not in _MIJOZ_BOT_YOZILGAN:
+            break
+        with _MIJOZ_BOT_NAVBAT_QULF:
+            _MIJOZ_BOT_NAVBAT.pop(k, None)
+        if j and j.get('ok'):
+            _mijoz_bot_yozildi(*k)
+            yozildi += 1
+    if yozildi:
+        logger.info(f'mijoz bot qayd: navbatdan {yozildi} ta yozildi, qoldi {len(_MIJOZ_BOT_NAVBAT)}')
+    return yozildi
+
+
+async def mijoz_bot_navbat_loop():
+    while True:
+        await asyncio.sleep(MIJOZ_BOT_NAVBAT_S)
+        if _MIJOZ_BOT_NAVBAT:
+            try:
+                await blok(_mijoz_bot_navbat_yubor)
+            except Exception as e:
+                logger.error(f'mijoz bot navbat: {type(e).__name__}')
 
 
 _KK_BLOK_BELGI = ('blocked', 'deactivated', 'chat not found', 'peer_id_invalid', 'user not found',
@@ -4055,7 +4149,7 @@ def _kk_qatnash_yoz(st, qurilma, iz):
     data = json.dumps({'konkurs_id': str(st.get('konkurs_id') or ''), 'user_id': str(st.get('user_id') or ''),
                        'username': st.get('username') or '', 'ism': st.get('ism') or '', 'phone': st.get('phone') or '',
                        'qurilma': qurilma, 'qurilma_izi': iz}, ensure_ascii=False)
-    return _kk_sheet('joinKonkurs', timeout=15, data=data)
+    return _kk_sheet('joinKonkurs', timeout=25, data=data)   # BUGUN232: 15 → 25 s (sayt 30 s kutadi)
 
 
 def _kk_kim(username, ism, uid):
@@ -6906,11 +7000,12 @@ async def main():
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
+    asyncio.create_task(mijoz_bot_navbat_loop())   # BUGUN232: javob bermagan botStart'lar — fonda qayta
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
     # Bot ishga tushganda: e'lon xotirasi (G10.3) + oxirgi elon raqami — BITTA yuklashdan
     try:
-        if elon_cache_load() and _ELON_CACHE['by_num']:
+        if await blok(elon_cache_load) and _ELON_CACHE['by_num']:   # BUGUN232: alohida ipda — Sheets kechiksa webhook to'xtamaydi
             _last_sent['num'] = max(int(k) for k in _ELON_CACHE['by_num'].keys())
             logger.info(f"Last elon num: {_last_sent['num']}")
     except Exception as e:
