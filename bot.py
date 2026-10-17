@@ -111,7 +111,12 @@ _photo_groups = {}
 #    Ilgari har albom / rasm o'z ipida bir vaqtda botCreateElon ni chaqirardi.
 #  · _photo_qulf — _photo_groups ga (event loop ipi qo'shadi, navbat ipi oladi) bir vaqtda tegilmasin.
 #  · getFile / yuklab olish / ImageKit — vaqt tugasa yoki server xatosi bo'lsa 3 marta qayta (1, 2, 4 s).
-ALBOM_KUTISH = 2.0
+# BUGUN252 §1 (2026-10-18): albom kutish — har bo'lak kelganda qayta boshlanadi (ALBOM_KUTISH), lekin 1-bo'lakdan
+#  ALBOM_MAKS dan oshmaydi: bitta albom ikki e'lon bo'lmasin. Navbatga 1-bo'lak kelgan payt qo'yiladi — albomlar va bitta
+#  rasmlar kelgan tartibda, bittasi tugab keyingisi. §2: javob — bitta progress xabar («⏳ 12/20», JARAYON_ORALIQ da tahrir).
+ALBOM_KUTISH = 3.0
+ALBOM_MAKS = 10.0
+JARAYON_ORALIQ = 5.0
 RASM_QAYTA_KUTISH = (1, 2, 4)
 _photo_qulf = threading.Lock()
 _elon_navbat = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='elon-navbat')
@@ -129,7 +134,10 @@ GURUH_MAVZULAR = [('post', '📢 Postlar'), ('olx', '🛒 OLX'), ('stat', '📊 
                   # chala e'lon yaratiladi va javobdagi tugma saytni o'sha bo'limda ochadi. Lichkadan — avvalgidek (Mobile).
                   ('rasm_mobile', '📱 Rasm · Mobile'), ('rasm_pc', '💻 Rasm · PC'), ('rasm_camera', '📷 Rasm · Camera'),
                   # BUGUN244 (2026-10-17): saytdagi AI yordamchi — har 5 soatda hisobot (ai_hisobot_loop). Claude / qul ishlari — bu yerga EMAS.
-                  ('ai', '🤖 AI yordamchi')]
+                  ('ai', '🤖 AI yordamchi'),
+                  # BUGUN252 §4 (2026-10-18): rasm ombori — e'lon OCHILMAYDI: rasm ImageKit /rasmlar ga, Store «Rasmlar»
+                  # varag'iga; izohda e'lon raqami («213») — o'sha e'longa qo'shiladi. Saytda «🖼 Rasmlardan tanlash».
+                  ('rasmlar', '🖼 Rasmlar')]
 
 
 def rasm_yonalish(joy):
@@ -233,6 +241,9 @@ def guruh_sozla(chat, forum, xabar_chat):
         for k, nom in yangi:
             send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga rasm tashlang: chala e'lon shu bo'limga yaratiladi."
                      if k.startswith('rasm_') else
+                     f"{nom} — shu mavzuga rasm tashlang: e'lon ochilmaydi, rasm «Rasmlar» omboriga tushadi (saytda "
+                     "«🖼 Rasmlardan tanlash»). Izohga e'lon raqamini (masalan 213) yozsangiz — rasm o'sha e'longa qo'shiladi."
+                     if k == 'rasmlar' else
                      f"{nom} — saytdagi AI yordamchi hisoboti shu yerga keladi (Toshkent: 05, 10, 15, 20, 01)."
                      if k == 'ai' else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
     send_msg(xabar_chat, "✅ Guruh tayyor — hozirdan xabarlar shu yerga keladi (bot qayta ishga tushguncha).\n"
@@ -5073,8 +5084,9 @@ def tg_file_url(file_id):
     return _qayta_urin('getFile', bir) or ''
 
 
-def upload_to_imagekit(file_id):
+def upload_to_imagekit(file_id, papka='/kraken', kengaytma='jpg'):
     """Telegram file_id'ni yuklab olib, ImageKit'ga yuboradi. Barqaror URL qaytaradi, bo'lmasa — ''.
+    BUGUN252: papka — «🖼 Rasmlar» mavzusidan '/rasmlar'; kengaytma — fayl (document) bo'lib kelgan rasmniki.
     BUGUN222: har qadam (getFile, yuklab olish, ImageKit) — 3 marta qayta urinish; 0 baytli fayl — xato (e'longa
     qo'shilmaydi, 2026-10-15 №253). Telegram URL'iga «fallback» OLIB TASHLANDI: unda BOT_TOKEN bor (jadvalga, saytga
     chiqardi) va havola ~1 soatda o'ladi — e'londa keyin buzuq rasm qolardi. Endi admin «N-rasm yuklanmadi» xabarini oladi."""
@@ -5093,14 +5105,14 @@ def upload_to_imagekit(file_id):
         return ''
 
     # 2) ImageKit'ga yuklaymiz (Basic Auth: private_key username, parol bo'sh)
-    fname = f"{int(time.time()*1000)}_{file_id[:8]}.jpg"
+    fname = f"{int(time.time()*1000)}_{file_id[:8]}.{kengaytma}"
 
     def ik():
         r = req.post(
             IK_UPLOAD_URL,
             auth=(IK_PRIVATE_KEY, ''),
             files={'file': (fname, content)},
-            data={'fileName': fname, 'folder': '/kraken'},
+            data={'fileName': fname, 'folder': papka},
             timeout=30
         )
         try:
@@ -5116,7 +5128,24 @@ def upload_to_imagekit(file_id):
     return _qayta_urin('ImageKit', ik) or ''
 
 
-def create_bot_elon(file_ids, yonalish=None):
+def rasmlar_yukla(file_ids, papka='/kraken', har_rasm=None, kengaytma='jpg'):
+    """BUGUN252: 4 tadan parallel yuklash (tartib saqlanadi) → [url | '']. har_rasm() — har rasm tugaganda (progress)."""
+    def bir(fid):
+        try:
+            return upload_to_imagekit(fid, papka, kengaytma)
+        finally:
+            if har_rasm:
+                try:
+                    har_rasm()
+                except Exception as e:
+                    logger.warning(f'progress: {_maxfiy(e)}')
+    if not file_ids:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(file_ids))) as ex:
+        return list(ex.map(bir, file_ids))
+
+
+def create_bot_elon(file_ids, yonalish=None, har_rasm=None):
     """Rasm(lar)dan chala elon yaratadi. file_id -> ImageKit URL -> Sheets.
     yonalish (MS3.2) — Apps Script'ga ham boradi (hozir yozilmaydi — ustun yo'q; e'lon yo'nalishi modeldan).
     BUGUN222: rasmlar 4 tadan parallel yuklanadi (tartib saqlanadi); yuklanmaganlari — res['yuklanmadi'] (1 dan sanaladi).
@@ -5124,8 +5153,7 @@ def create_bot_elon(file_ids, yonalish=None):
     navbat kutishi mumkin), qayta yuborilmaydi: yetib borgan bo'lsa ikkinchi e'lon ochilardi."""
     if not file_ids:
         return None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(file_ids))) as ex:
-        natija = list(ex.map(upload_to_imagekit, file_ids))
+    natija = rasmlar_yukla(file_ids, har_rasm=har_rasm)
     urls = [u for u in natija if u]
     yuklanmadi = [i + 1 for i, u in enumerate(natija) if not u]
     if not urls:
@@ -5146,37 +5174,366 @@ def create_bot_elon(file_ids, yonalish=None):
 
 
 def _navbat_ishi(chat_id, fn, *args):
-    """Navbat ipida: xato yashirinmasin (ilgari run_in_executor xatoni jim yutardi) — logga va adminga."""
+    """Navbat ipida: xato yashirinmasin (ilgari run_in_executor xatoni jim yutardi) — logga va hisobotga.
+    BUGUN252: fn natijasi (dict | None) progress sessiyasiga boradi — oxirgi ish tugaganda bitta hisobot."""
     try:
-        fn(*args)
+        natija = fn(*args)
     except Exception as e:
         logger.error(f'elon navbati ({fn.__name__}): {_maxfiy(e)}')
+        natija = {'tur': 'xato'}
+    try:
+        _jarayon_ish(chat_id, natija)
+    except Exception as e:
+        logger.error(f'rasm hisoboti: {_maxfiy(e)}')
         try:
-            send_msg(chat_id, "❌ E'lon ochishda xatolik — rasmlarni qayta yuboring.")
+            send_msg(chat_id, "❌ Hisobot yuborilmadi — saytda tekshiring.")
         except Exception:
             pass
 
 
-def _albom_navbatga(mgid, chat_id):
-    """Albom taymeri tugadi (event loop ipida) — albomni e'lon navbatiga qo'yadi. Navbat kutayotganda kelgan kech rasm
-    o'sha albomga qo'shiladi (handle_admin_photo); ish boshlangandan keyin kelgani — yangi e'lon (aralashmaydi)."""
-    with _photo_qulf:
-        grp = _photo_groups.get(mgid)
-        if not grp or grp.get('navbatda'):
+# ── BUGUN252 §2: bitta progress xabar ──
+# Sessiya — har joy (chat + mavzu) uchun: navbatga tushgan ishlar (albom / bitta rasm) va rasmlar soni. Rasm yuklangan sari
+# «⏳ 12/20» xabari JARAYON_ORALIQ da bir marta tahrirlanadi (ilk xabar ham faqat shuncha vaqt o'tsa — tez tugagan 1 rasmga
+# ortiqcha xabar yo'q). Oxirgi ish tugaganda — progress xabari o'chadi, BITTA hisobot keladi (qaysi albomdan nechta rasm
+# yuklanmadi). Bitta e'lon bo'lsa — avvalgi «✅ Yangi elon yaratildi» xabari.
+# Progress yozuvi va hisobot — ikkalasi ham e'lon navbati ipida (rasm yuklash havzasi ish ichida tugaydi) — bir vaqtda emas.
+_jarayon = {}
+_jarayon_qulf = threading.Lock()
+
+
+def _jkalit(chat_id):
+    return (int(chat_id), getattr(chat_id, 'thread', None))
+
+
+def _jarayon_qosh(chat_id, rasm=0, ish=0, tur='elon'):
+    """Event loop ipida: rasm keldi (rasm=1) / yangi ish navbatga tushdi (ish=1)."""
+    with _jarayon_qulf:
+        k = _jkalit(chat_id)
+        j = _jarayon.get(k)
+        if j is None:
+            j = _jarayon[k] = {'chat': chat_id, 'tur': tur, 'jami': 0, 'tayyor': 0, 'ishlar': 0, 'tugadi': 0,
+                               'mid': None, 'oxirgi': time.monotonic(), 'natija': []}
+        j['jami'] += rasm
+        j['ishlar'] += ish
+
+
+def _jarayon_matn(j):
+    elon = sum(1 for n in j['natija'] if n and n.get('tur') == 'elon' and (n.get('res') or {}).get('ok'))
+    return (("⏳ Rasmlar omboriga: " if j['tur'] == 'rasmlar' else "⏳ Rasmlar yuklanmoqda: ")
+            + f"<b>{j['tayyor']}/{j['jami']}</b>" + (f"\n✅ {elon} ta e'lon tayyor" if elon else ''))
+
+
+def _jarayon_yoz(chat_id, mid, matn):
+    """Progress xabari: yo'q bo'lsa — yuboriladi (ovozsiz), bor bo'lsa — tahrirlanadi. message_id qaytaradi."""
+    try:
+        if mid:
+            req.post(f'{TG_API}/editMessageText', json={'chat_id': chat_id, 'message_id': mid, 'text': matn,
+                                                         'parse_mode': 'HTML'}, timeout=8)
+            return mid
+        r = req.post(f'{TG_API}/sendMessage', json={'chat_id': chat_id, 'text': matn, 'parse_mode': 'HTML',
+                                                     'disable_notification': True}, timeout=8).json()
+        return (r.get('result') or {}).get('message_id')
+    except Exception as e:
+        logger.warning(f'progress xabari: {_maxfiy(e)}')
+        return mid
+
+
+def _jarayon_rasm(chat_id):
+    """Rasm yuklandi (yoki yuklanmadi) — sanoq +1; oxirgi yozuvdan JARAYON_ORALIQ o'tgan bo'lsa — xabar yangilanadi."""
+    with _jarayon_qulf:
+        j = _jarayon.get(_jkalit(chat_id))
+        if not j:
             return
-        grp['navbatda'] = True
-    _elon_navbat.submit(_navbat_ishi, chat_id, finalize_photo_group, mgid, chat_id)
+        j['tayyor'] += 1
+        hozir = time.monotonic()
+        if hozir - j['oxirgi'] < JARAYON_ORALIQ or j['tayyor'] >= j['jami']:
+            return
+        j['oxirgi'] = hozir
+        matn, mid = _jarayon_matn(j), j['mid']
+    mid = _jarayon_yoz(chat_id, mid, matn)
+    with _jarayon_qulf:
+        j['mid'] = j['mid'] or mid
 
 
-def finalize_photo_group(mgid, chat_id):
-    """Albom to'planib bo'lgach chaqiriladi (e'lon navbatida) — chala elon yaratadi."""
+def _jarayon_ish(chat_id, natija):
+    """Ish tugadi. Sessiyadagi oxirgi ish bo'lsa — hisobot (sessiya yopiladi)."""
+    with _jarayon_qulf:
+        k = _jkalit(chat_id)
+        j = _jarayon.get(k)
+        if j is None:     # sessiyasiz chaqiruv (eski yo'l / sinov) — shu natijaning o'zi
+            j = {'chat': chat_id, 'tur': (natija or {}).get('tur', 'elon'), 'jami': 0, 'ishlar': 1, 'tugadi': 0,
+                 'mid': None, 'natija': []}
+        else:
+            j['tugadi'] += 1
+            if natija:
+                j['natija'].append(natija)
+            if j['tugadi'] < j['ishlar']:
+                return
+            _jarayon.pop(k, None)
+            natija = None
+    if natija:
+        j['natija'].append(natija)
+    _jarayon_yakun(j)
+
+
+def _jarayon_yakun(j):
+    chat_id, nat = j['chat'], [n for n in j['natija'] if n]
+    if nat:
+        if len(nat) == 1 and nat[0].get('tur') == 'elon':
+            n = nat[0]
+            _elon_tayyor_xabar(chat_id, n.get('res'), n.get('cnt', 0), n.get('yon'))
+        elif len(nat) == 1 and nat[0].get('matn'):      # bitta Rasmlar / kech ishi — o'z qatori («📸 Jami» ortiqcha)
+            send_msg(chat_id, nat[0]['matn'])
+        else:
+            matn, tugma = _hisobot(nat, j.get('jami') or sum(n.get('soni', 0) for n in nat))
+            send_msg(chat_id, matn, tugma)
+    if j.get('mid'):
+        delete_msg(chat_id, j['mid'])
+
+
+def _hisobot(nat, jami):
+    """Bir nechta ish (albom / rasm) natijasi → (matn, tugma). Qaysi albomdan qaysi rasm yuklanmadi — alohida qator."""
+    qator, ok_num, saqlandi, yonlar = [], [], 0, []
+    for n in nat:
+        tur = n.get('tur')
+        if tur == 'elon':
+            res, soni = n.get('res') or {}, n.get('soni', 0)
+            yuk = res.get('yuklanmadi') or []
+            if res.get('ok'):
+                ok_num.append(f"№{res.get('num', '?')}")
+                yonlar.append(n.get('yon'))
+                saqlandi += soni - len(yuk)
+                if yuk:
+                    qator.append(f"⚠️ №{res.get('num', '?')}: {', '.join(f'{i}-rasm' for i in yuk)} yuklanmadi "
+                                 f"({soni} tadan)")
+            else:
+                qator.append(f"❌ {'Albom' if soni > 1 else 'Rasm'} ({soni} rasm): "
+                             + ("hech biri yuklanmadi" if yuk else "xatolik") + " — e'lon ochilmadi, qayta yuboring")
+        elif tur == 'xato':
+            qator.append("❌ Bir albomda xatolik — e'lon ochilmadi, qayta yuboring")
+        else:                      # 'rasmlar' / 'kech' — tayyor qator
+            saqlandi += n.get('saqlandi', 0)
+            if n.get('matn'):
+                qator.append(n['matn'])
+    bosh = []
+    if ok_num:
+        yon = yonlar[0] if len(set(yonlar)) == 1 else None
+        bolim = f" · {YON_KANAL[yon][0]}" if yon in YON_KANAL else ''
+        bosh.append(f"✅ <b>{len(ok_num)} ta e'lon yaratildi</b>{bolim}: {', '.join(ok_num)}")
+    matn = '\n'.join(bosh + qator + [f"📸 Jami: {saqlandi}/{jami} rasm saqlandi."])
+    if not ok_num:
+        return matn, None
+    yon = yonlar[0] if len(set(yonlar)) == 1 else None
+    return (matn + "\n\nEndi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+            {"inline_keyboard": [[{"text": "🛠 Admin panel / Saytga kirish",
+                                   "web_app": {"url": SAYT_URL + (f'?p=y_{yon}' if yon in YON_KANAL else '')}}]]})
+
+
+# ── BUGUN252 §1: albom bo'laklari ──
+def _albom_bolak(key, chat_id, mid, file_id, tur, izoh='', kengaytma='jpg'):
+    """Event loop ipida: albom bo'lagi keldi. 1-bo'lak — albom ochiladi va ishi DARROV navbatga qo'yiladi (kelgan tartib
+    saqlansin); ish bo'laklar tugashini kutadi: har bo'lakda taymer qayta (ALBOM_KUTISH), 1-bo'lakdan ALBOM_MAKS dan oshmaydi.
+    Ish boshlangandan keyin kelgan kech bo'lak — yangi e'lon EMAS: alohida ish o'sha e'longa qo'shadi."""
+    loop = asyncio.get_event_loop()
+    hozir = time.monotonic()
+    yangi_ish = None
     with _photo_qulf:
-        grp = _photo_groups.pop(mgid, None)
+        grp = _photo_groups.get(key)
+        if grp is None:
+            for k in [k for k, g in _photo_groups.items() if g.get('tugadi') and hozir - g.get('boshi', 0) > 600]:
+                _photo_groups.pop(k, None)
+            grp = _photo_groups[key] = {'bolaklar': [], 'izohlar': [], 'chat_id': chat_id, 'tur': tur,
+                                        'kengaytma': kengaytma, 'yonalish': rasm_yonalish(chat_id), 'boshi': hozir,
+                                        'tayyor': threading.Event()}
+            yangi_ish = (_albom_ishi, key)
+        if izoh:
+            grp['izohlar'].append((mid, izoh))
+        if grp.get('olindi'):
+            grp.setdefault('kech', []).append((mid, file_id))
+            if not grp.get('kech_navbatda'):
+                grp['kech_navbatda'] = True
+                yangi_ish = (_kech_ishi, key)
+        else:
+            grp['bolaklar'].append((mid, file_id))
+            old = grp.get('timer')
+            if old:
+                old.cancel()
+            qoldi = max(0.0, grp['boshi'] + ALBOM_MAKS - hozir)
+            grp['timer'] = loop.call_later(min(ALBOM_KUTISH, qoldi), grp['tayyor'].set)
+    _jarayon_qosh(chat_id, rasm=1, ish=1 if yangi_ish else 0, tur=tur)
+    if yangi_ish:
+        _elon_navbat.submit(_navbat_ishi, chat_id, *yangi_ish)
+
+
+def _albom_izoh(grp):
+    """Albom izohi — eng kichik message_id li izohli bo'lakdan (odatda 1-rasm): butun albomga."""
+    return sorted(grp.get('izohlar') or [])[0][1] if grp.get('izohlar') else ''
+
+
+def _albom_ishi(key):
+    """Navbat ipida: albom bo'laklari tugashini kutadi, message_id bo'yicha tartiblaydi, e'lon / Rasmlar."""
+    with _photo_qulf:
+        grp = _photo_groups.get(key)
     if not grp:
+        return None
+    grp['tayyor'].wait(ALBOM_MAKS + 5)      # taymer (event loop) — bo'laklar tugadi; ehtiyot chegarasi bilan
+    with _photo_qulf:
+        grp['olindi'] = True
+        t = grp.get('timer')
+        if t:
+            t.cancel()
+        fids = [f for _, f in sorted(grp['bolaklar'])]
+        izoh = _albom_izoh(grp)
+    chat_id = grp['chat_id']
+    try:
+        if grp['tur'] == 'rasmlar':
+            natija = _rasmlar_ishi(chat_id, fids, izoh, grp.get('kengaytma', 'jpg'))
+        else:
+            natija = _elon_ishi(chat_id, fids, grp.get('yonalish'))
+    finally:
+        with _photo_qulf:
+            grp['tugadi'] = True
+    grp['natija'] = natija
+    return natija
+
+
+def _kech_ishi(key):
+    """Ish boshlangandan keyin kelgan bo'lak(lar) — o'sha e'longa (ochilmagan bo'lsa — yangi e'lon) / Rasmlar ga."""
+    with _photo_qulf:
+        grp = _photo_groups.get(key) or {}
+        kech = sorted(grp.pop('kech', []))
+        grp['kech_navbatda'] = False
+    if not kech:
+        return None
+    chat_id, fids = grp['chat_id'], [f for _, f in kech]
+    if grp.get('tur') == 'rasmlar':
+        return _rasmlar_ishi(chat_id, fids, _albom_izoh(grp), grp.get('kengaytma', 'jpg'))
+    num = ((grp.get('natija') or {}).get('res') or {}).get('num')
+    if not num:
+        return _elon_ishi(chat_id, fids, grp.get('yonalish'))
+    natija = rasmlar_yukla(fids, har_rasm=lambda: _jarayon_rasm(chat_id))
+    urls = [u for u in natija if u]
+    j = _kk_sheet('rasmBiriktir', timeout=45, data=json.dumps({'num': num, 'urls': urls, 'majburiy': True})) if urls else None
+    if j and j.get('ok'):
+        return {'tur': 'kech', 'saqlandi': len(urls), 'soni': len(fids),
+                'matn': f"➕ №{num} ga kech kelgan {len(urls)} rasm qo'shildi"
+                        + (f" ({len(fids) - len(urls)} tasi yuklanmadi)" if len(urls) < len(fids) else '')}
+    return {'tur': 'kech', 'saqlandi': 0, 'soni': len(fids),
+            'matn': f"❌ №{num} ga kech kelgan {len(fids)} rasm qo'shilmadi — qayta yuboring"}
+
+
+def _elon_ishi(chat_id, fids, yon):
+    """Rasm(lar) → chala e'lon. Natija — hisobot uchun."""
+    res = create_bot_elon(fids, yon, har_rasm=lambda: _jarayon_rasm(chat_id))
+    return {'tur': 'elon', 'res': res, 'cnt': (res or {}).get('images', len(fids)), 'yon': yon, 'soni': len(fids)}
+
+
+# ── BUGUN252 §4: «🖼 Rasmlar» mavzusi ──
+# BUGUN246 §7 jadvali: raqam bor — «✅ №213 ga qo'shildi» · raqam yo'q — «№999 topilmadi — rasm Rasmlar omborida qoldi» ·
+# sotilgan / o'chirilgan — «№213 sotilgan — baribir qo'shaymi?» (tugma) · izoh raqam emas — izoh bo'lib saqlanadi ·
+# albomda faqat 1-rasmda izoh — butun albom o'sha raqamga · rasm emas — e'tiborsiz, bir marta yo'l-yo'riq.
+_rasm_kutish = {}           # tugma tokeni → {'num', 'urls', 'vaqt'} («baribir qo'shaymi?» javobi kutilmoqda)
+_rasmlar_yol = {'korsatildi': False}
+
+
+def rasm_izoh(matn):
+    """Izoh → (raqam | None, izoh). «213», «№213», «#213» — raqam; boshqasi — izoh (500 belgigacha)."""
+    m = re.fullmatch(r'\s*[#№]?\s*(\d{1,6})\s*', matn or '')
+    return (int(m.group(1)), '') if m else (None, (matn or '').strip()[:500])
+
+
+def rasmlar_mavzusi(joy):
+    t = getattr(joy, 'thread', None)
+    return bool(t and GURUH.get('id') and GURUH.get('rasmlar') and int(joy) == GURUH['id'] and t == GURUH['rasmlar'])
+
+
+def _rasmlar_ishi(chat_id, fids, izoh_matn='', kengaytma='jpg'):
+    """Rasm(lar) → ImageKit /rasmlar → Store «Rasmlar» (botRasmlar); izohda raqam bo'lsa — o'sha e'longa ham."""
+    natija = rasmlar_yukla(fids, '/rasmlar', lambda: _jarayon_rasm(chat_id), kengaytma)
+    urls = [u for u in natija if u]
+    yuk = [i + 1 for i, u in enumerate(natija) if not u]
+    soni = len(fids)
+    if not urls:
+        return {'tur': 'rasmlar', 'saqlandi': 0, 'soni': soni, 'matn': f"❌ {soni} rasm yuklanmadi — qayta yuboring"}
+    num, izoh = rasm_izoh(izoh_matn)
+    j = _kk_sheet('botRasmlar', timeout=45, data=json.dumps({'urls': urls, 'izoh': izoh, 'num': num}))
+    if not j or not j.get('ok'):
+        logger.error(f'botRasmlar: {(j or {}).get("msg", "javob yoq")}')
+        return {'tur': 'rasmlar', 'saqlandi': 0, 'soni': soni,
+                'matn': f"❌ {len(urls)} rasm Rasmlar varag'iga yozilmadi — qayta yuboring"}
+    qism = f" ({', '.join(f'{i}-rasm' for i in yuk)} yuklanmadi)" if yuk else ''
+    holat = j.get('holat')
+    if num and holat == 'qoshildi':
+        matn = f"✅ №{num} ga qo'shildi — {len(urls)} rasm{qism}"
+    elif num and holat in ('sotilgan', 'ochirilgan'):
+        import secrets
+        tok = secrets.token_hex(4)
+        with _photo_qulf:
+            for k in [k for k, v in _rasm_kutish.items() if time.time() - v['vaqt'] > 86400]:
+                _rasm_kutish.pop(k, None)
+            _rasm_kutish[tok] = {'num': num, 'urls': urls, 'vaqt': time.time()}
+        nima = 'sotilgan' if holat == 'sotilgan' else "o'chirilgan"
+        send_msg(chat_id, f"№{num} {nima} — baribir qo'shaymi? ({len(urls)} rasm Rasmlar omborida turibdi)",
+                 {"inline_keyboard": [[{"text": "✅ Ha, qo'shilsin", "callback_data": f"rqo:{tok}"},
+                                       {"text": "✖️ Yo'q", "callback_data": f"rqy:{tok}"}]]})
+        matn = f"❓ №{num} {nima} — savol alohida xabarda{qism}"
+    elif num:
+        matn = f"№{num} topilmadi — rasm Rasmlar omborida qoldi ({len(urls)} rasm){qism}"
+    else:
+        matn = f"📥 {len(urls)} rasm Rasmlar omboriga saqlandi" + (f" · izoh: {html_escape(izoh)}" if izoh else '') + qism
+    return {'tur': 'rasmlar', 'saqlandi': len(urls), 'soni': soni, 'matn': matn}
+
+
+def rasm_baribir_tugma(chat_id, message_id, data):
+    """«№213 sotilgan — baribir qo'shaymi?» tugmasi: rqo — qo'shiladi (rasmBiriktir, majburiy), rqy — omborda qoladi."""
+    tok = data[4:]
+    with _photo_qulf:
+        k = _rasm_kutish.pop(tok, None)
+    if not k:
+        matn = "⌛ Bu savol eskirgan — rasm Rasmlar omborida, saytda «🖼 Rasmlardan tanlash» bilan qo'shing."
+    elif data.startswith('rqy:'):
+        matn = f"✖️ №{k['num']} ga qo'shilmadi — rasm Rasmlar omborida qoldi."
+    else:
+        j = _kk_sheet('rasmBiriktir', timeout=45, data=json.dumps({'num': k['num'], 'urls': k['urls'], 'majburiy': True}))
+        matn = (f"✅ №{k['num']} ga qo'shildi — {len(k['urls'])} rasm" if j and j.get('ok') else
+                f"❌ №{k['num']} ga qo'shilmadi — saytda «🖼 Rasmlardan tanlash» bilan qo'shing.")
+    try:
+        req.post(f'{TG_API}/editMessageText', json={'chat_id': chat_id, 'message_id': int(message_id or 0), 'text': matn},
+                 timeout=8)
+    except Exception as e:
+        logger.warning(f'rasm tugmasi: {_maxfiy(e)}')
+        send_msg(chat_id, matn)
+
+
+async def handle_rasmlar_xabar(chat_id, message):
+    """«🖼 Rasmlar» mavzusidagi admin xabari. Rasm / rasm-fayl — navbatga; boshqasi — e'tiborsiz, bir marta yo'l-yo'riq."""
+    mid = message.get('message_id', 0)
+    izoh = message.get('caption', '')
+    mgid = message.get('media_group_id')
+    photo = message.get('photo')
+    doc = message.get('document') or {}
+    kengaytma = 'jpg'
+    if photo:
+        fid = photo[-1].get('file_id', '')
+    elif str(doc.get('mime_type', '')).startswith('image/'):
+        if int(doc.get('file_size') or 0) > 20 * 1024 * 1024:
+            await blok(send_msg, chat_id, "⚠️ Fayl katta (20 MB dan ortiq) — bot ololmaydi. Rasm sifatida yuboring.")
+            return
+        fid = doc.get('file_id', '')
+        kengaytma = (re.findall(r'\.([A-Za-z0-9]{2,5})$', doc.get('file_name') or '') or ['jpg'])[0].lower()
+    else:
+        if not _rasmlar_yol['korsatildi']:
+            _rasmlar_yol['korsatildi'] = True
+            await blok(send_msg, chat_id, "🖼 Bu mavzuga rasm tashlang (izohga e'lon raqami — masalan 213 — yozsangiz, "
+                                          "o'sha e'longa qo'shiladi). Matn, stiker, video — e'tiborsiz.")
         return
-    file_ids = grp.get('file_ids', [])
-    res = create_bot_elon(file_ids, grp.get('yonalish'))
-    _elon_tayyor_xabar(chat_id, res, (res or {}).get('images', len(file_ids)), grp.get('yonalish'))
+    if not fid:
+        return
+    if mgid:
+        _albom_bolak(f'r:{mgid}', chat_id, mid, fid, 'rasmlar', izoh, kengaytma)
+    else:
+        _jarayon_qosh(chat_id, rasm=1, ish=1, tur='rasmlar')
+        _elon_navbat.submit(_navbat_ishi, chat_id, _rasmlar_ishi, chat_id, [fid], izoh, kengaytma)
 
 
 async def handle_konkurs_photo(chat_id, file_id, media_group_id=None):
@@ -5257,36 +5614,16 @@ def _save_konkurs_photos(chat_id, file_ids):
         send_msg(chat_id, "❌ Konkurs yaratishda xatolik. Qayta urining.")
 
 
-async def handle_admin_photo(chat_id, file_id, media_group_id):
+async def handle_admin_photo(chat_id, file_id, media_group_id, mid=0):
     """Admin rasm yuborsa — chala elon yaratadi.
-    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi.
-    MS3.2: guruhning «Rasm · …» mavzusidan kelsa — e'lon o'sha bo'limniki (rasm_yonalish)."""
+    Albom (media group) bo'lsa, barcha rasmlar to'planguncha kutadi (BUGUN252: _albom_bolak — qayta boshlanuvchi taymer,
+    maks. ALBOM_MAKS; tartib — message_id). MS3.2: guruhning «Rasm · …» mavzusidan kelsa — e'lon o'sha bo'limniki."""
     if media_group_id:
-        # Albom: rasmlarni yig'amiz, 2 sekund kutib, keyin bitta elon qilamiz
-        yon = rasm_yonalish(chat_id)
-        loop = asyncio.get_event_loop()
-        with _photo_qulf:
-            grp = _photo_groups.get(media_group_id)
-            if not grp:
-                grp = {'file_ids': [], 'chat_id': chat_id, 'yonalish': yon}
-                _photo_groups[media_group_id] = grp
-            grp['file_ids'].append(file_id)
-            if grp.get('navbatda'):
-                return    # BUGUN222: navbatda kutyapti — rasm o'sha e'longa qo'shiladi, yangi taymer kerak emas
-            # Oldingi taymer bo'lsa bekor qilamiz, yangisini o'rnatamiz
-            old = grp.get('timer')
-            if old:
-                old.cancel()
-            # E1 / BUGUN222: ish — e'lon navbatida (alohida ip; ichida ImageKit + Sheets so'rovlari bor)
-            grp['timer'] = loop.call_later(ALBOM_KUTISH, _albom_navbatga, media_group_id, chat_id)
+        _albom_bolak(media_group_id, chat_id, mid, file_id, 'elon')
     else:
         # Bitta rasm — e'lon navbatiga (oldingi albom / rasm tugagach)
-        _elon_navbat.submit(_navbat_ishi, chat_id, _single_photo_elon, chat_id, file_id)
-
-
-def _single_photo_elon(chat_id, file_id):
-    yon = rasm_yonalish(chat_id)
-    _elon_tayyor_xabar(chat_id, create_bot_elon([file_id], yon), 1, yon)
+        _jarayon_qosh(chat_id, rasm=1, ish=1)
+        _elon_navbat.submit(_navbat_ishi, chat_id, _elon_ishi, chat_id, [file_id], rasm_yonalish(chat_id))
 
 
 def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
@@ -5866,6 +6203,9 @@ async def handle_update(data):
             # BUGUN227: buyurtma holati — «✅ To'lov keldi» / «🚚 Yo'lda» / «📦 Yetkazildi» (faqat admin lichkasi)
             if cq_data.startswith('bh:') and cq_adm:
                 asyncio.create_task(buyurtma_holat_tugma(cq_chat, cq.get('message', {}).get('message_id'), cq_data))
+            # BUGUN252 §4: «№213 sotilgan — baribir qo'shaymi?» (🖼 Rasmlar mavzusi)
+            if cq_data.startswith(('rqo:', 'rqy:')) and cq_adm:
+                asyncio.create_task(blok(rasm_baribir_tugma, cq_chat, cq_msg.get('message_id'), cq_data))
             # B34: «🗑 Postni o'chirish» (faqat admin lichkasi)
             if cq_data.startswith('pochir') and cq_adm:
                 asyncio.create_task(blok(post_ochir_tugma, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
@@ -5882,6 +6222,11 @@ async def handle_update(data):
                 asyncio.create_task(blok(istak_javob_yubor, chat_id, message, manzil))
                 return
 
+        # BUGUN252 §4: «🖼 Rasmlar» mavzusi — e'lon ochilmaydi (rasm omborga); buyruqlar (/…) — eski yo'lda
+        if guruhdan and rasmlar_mavzusi(chat_id) and not text.startswith('/'):
+            await handle_rasmlar_xabar(chat_id, message)
+            return
+
         # ── ADMIN rasm yuborsa ──
         photo = message.get('photo')
         if photo and adm:
@@ -5894,7 +6239,7 @@ async def handle_update(data):
                 await handle_konkurs_photo(chat_id, file_id, mgid)
                 return
             # Aks holda — eski logika: chala elon yaratamiz
-            await handle_admin_photo(chat_id, file_id, mgid)
+            await handle_admin_photo(chat_id, file_id, mgid, message.get('message_id', 0))
             return
 
         if text.startswith('/yubor') or text.startswith('/elon'):
