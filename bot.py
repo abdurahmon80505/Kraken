@@ -709,6 +709,9 @@ def get_products(urinish=SHEET_OQISH_URINISH):
             _ELON_CACHE['series'] = data['series']
         if isinstance(data.get('turkumlar'), list):      # G12 daraxt: turkum → bo'lim
             _ELON_CACHE['turkumlar'] = data['turkumlar']
+        if isinstance(data.get('guruhlar'), list):       # BUGUN251: ranglar guruhi (kanal posti) — {id: guruh}
+            _ELON_CACHE['guruhlar'] = {str(g.get('id', '')).strip(): g for g in data['guruhlar']
+                                       if isinstance(g, dict) and str(g.get('id', '')).strip()}
         return data.get('listings', []), data.get('models', [])
     except Exception as e:
         logger.error(f'get_products: {type(e).__name__}')
@@ -767,6 +770,10 @@ def elon_cache_put(elon):
         eski = _ELON_CACHE['by_num'].get(str(elon['num']))
         if eski and eski.get('rasm_file_id') and not elon.get('rasm_file_id'):
             elon['rasm_file_id'] = eski['rasm_file_id']
+        if eski:                                          # BUGUN251: sayt xabarida guruh / sotilgan yo'q — eskisidan
+            for k in ('guruh', 'sotilgan'):
+                if k not in elon and eski.get(k) not in (None, ''):
+                    elon[k] = eski[k]
         _ELON_CACHE['by_num'][str(elon['num'])] = elon
 
 
@@ -1766,6 +1773,9 @@ def kanal_id_yoz(num, mid):
             e['channel_message_id'] = qiymat
     if not ok:
         logger.error(f'kanal_id_yoz: №{num} id {mid} Sheets ga yozilmadi')
+    gid = guruh_idsi(e)
+    if gid:
+        guruh_yangila_keyin(gid)   # BUGUN251: rang posti paydo bo'ldi / o'chdi — guruh postidagi havola ham
     return ok
 
 
@@ -2079,18 +2089,20 @@ def kanal_ochir(num):
 
 
 def kanal_yana_keldi(num, yonalish=None):
-    """«Yana keldi»: eski post o'chadi, yangisi yuboriladi, yangi id yoziladi (A14 qarori 2026-09-18)."""
+    """«Yana keldi» / qayta yuborish: yangi post yuboriladi, yangi id yoziladi, KEYIN eskisi o'chadi (A14 qarori 2026-09-18).
+    BUGUN251: avval yangisi — yangisi ketmasa eskisi kanalda qoladi. Eski post o'chmasa (48 soatdan eski / boshqa bot
+    yuborgan) — bot uni tahrirlamaydi, adminga «eski postni qo'lda o'chiring» + havola (foydalanuvchi javobi 1B, 2026-10-17)."""
     elon, models = elon_cache_get(num)
     if not elon:
         return None, "e'lon topilmadi"
     mid = kanal_msg_id(elon)
     toplamda = bool(mid) and toplam_postmi(elon, models)
-    if mid and not toplamda:
-        for _, chat, m in kanal_postlar(elon):   # MS3.1: hamma kanaldagisi
-            delete_msg(chat, m)   # o'chmasa ham yangisi ketadi
+    eskilar = [] if toplamda or not mid else kanal_postlar(elon)   # MS3.1: hamma kanaldagisi
     yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
     if yangi and toplamda:
         toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
+    if yangi and eskilar:
+        _eski_ochir(eskilar, f'№{num}')
     return yangi, xato
 
 
@@ -2131,9 +2143,12 @@ def _mid_elonlar(mid, hammasi=False):
 
 def toplam_postmi(elon, models):
     """E'lonning posti to'plammi: case/part/accessory (/toplam) yoki bitta id'ga 2+ e'lon yozilgan (saytdan belgilab, B29)."""
+    mid = kanal_msg_id(elon)
+    if guruh_idsi(elon):
+        # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
+        return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
     if elon_turi(elon, models) in TOPLAM_TURLAR:
         return True
-    mid = kanal_msg_id(elon)
     return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
 
 
@@ -2350,6 +2365,8 @@ def kanal_toplam(nums):
             otkazildi.append({'num': int(n), 'sabab': "topilmadi yoki chala / o'chirilgan"})
         elif kanal_msg_id(elon):
             otkazildi.append({'num': int(n), 'sabab': 'kanalda posti bor'})
+        elif guruh_idsi(elon):   # BUGUN251: rang guruhi o'z posti bilan chiqadi
+            otkazildi.append({'num': int(n), 'sabab': "rang guruhida — guruh blokidan «Kanalga»"})
         else:
             tanlangan.append(elon)
     if not tanlangan:
@@ -2439,6 +2456,8 @@ def kanal_sinxron(eski, yangi):
         num = int(yangi['num'])
         st = elon_status(yangi)
         mid = kanal_msg_id(yangi)
+        for g in {guruh_idsi(eski), guruh_idsi(yangi)} - {''}:
+            guruh_yangila_keyin(g)   # BUGUN251: rang narxi / holati / nomi o'zgardi — guruh posti ham (kechiktirib, bir marta)
         if st == 'deleted':
             if mid:
                 ok, xato = kanal_ochir(num)
@@ -2447,6 +2466,18 @@ def kanal_sinxron(eski, yangi):
             return 'ochir' if mid else ''
         if mid:
             ok, xato = kanal_tahrir(num)
+            sabab = '' if ok else tahrir_sabab(xato)
+            if sabab and not toplam_postmi(yangi, elon_cache_get(num)[1]):
+                # BUGUN251: post qo'lda o'chirilgan / boshqa bot yuborgan — tahrir bo'lmaydi
+                izoh = f"⚠️ №{num} kanal posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}."
+                if st == 'active':
+                    yangi_mid, x2 = kanal_yana_keldi(num)
+                    izoh += (f" Yangi post yuborildi (id {yangi_mid})." if yangi_mid
+                             else f" Yangi post ham ketmadi: <code>{html_escape(x2)}</code>")
+                else:
+                    izoh += " E'lon faol emas — yangi post yuborilmadi."
+                send_msg(admin_joy('post'), izoh)
+                return 'yana' if st == 'active' else 'tahrir'
             if not ok:
                 send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
             elif eski is not None and _images_xom(eski) != _images_xom(yangi) and not toplam_postmi(yangi, elon_cache_get(num)[1]):
@@ -2468,6 +2499,499 @@ def kanal_sinxron(eski, yangi):
     except Exception as e:
         logger.error(f'kanal_sinxron: {e}')
         return ''
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  BUGUN251 (2026-10-17): RANG GURUHI — KANAL POSTI («Ranglar» 4-bosqich)
+#  Guruh (sayt «Guruh qilish», Guruhlar varag'i) → kanalga BITTA post: sarlavha, narx («12$ dan» — narxlar har xil),
+#  «Ranglari:» (har rang — havola), «Mosligi:» (guruh tavsifi). Rasm — guruhning umumiy rasmlari, bo'lmasa har rangning
+#  1-rasmi. Post har safar ma'lumotdan qayta yasaladi (rang qo'shilsa / narx o'zgarsa — tahrir).
+#  · «Ranglarni alohida ham yuborilsinmi?» Ha — avval guruh posti (havolalar saytga), keyin har rang o'z posti
+#    (orasi ≥3 s, 429 — kutib qayta), oxirida guruh posti tahrir: havolalar rang postlariga. Yo'q — faqat guruh posti.
+#  · Qayta yuborish: yangisi yuboriladi, eskisi o'chadi. O'chmasa (48 soatdan eski / boshqa bot) — bot tahrirlamaydi,
+#    adminga «eski postni qo'lda o'chiring» + havola (foydalanuvchi javobi 1B, 2026-10-17).
+#  · Tahrir rad etilsa (post qo'lda o'chirilgan / boshqa bot yuborgan) — yangi post + adminga sababi.
+#  · Kanal: env GURUH_KANAL_ID — bo'sh / «test» → TEST_CHANNEL (sukut: merge'dan keyin ham asl kanalga sinov posti
+#    ketmasin); «asl» → e'lonning odatdagi kanali (post_kanal); boshqa qiymat — o'sha chat.
+#    Test rejimida rang postlarining id'si Elonlar'ga YOZILMAYDI (asl kanal posti deb o'ylanmasin) — guruh id'si ichida («r»).
+#  · Guruhlar.kanal_message_id — JSON {"k": kanal, "m": post id, "t": yuborilgan vaqt (epoch), "r": {num: rang posti id}}.
+# ══════════════════════════════════════════════════════════════════════════
+GURUH_KANAL = os.environ.get('GURUH_KANAL_ID', 'test').strip()
+GURUH_ORALIQ_S = 3          # rang postlari orasi (Telegram kanalga ~20 xabar/daqiqa)
+GURUH_429_URINISH = 3       # «Too Many Requests: retry after N» — necha marta kutib qayta
+_GURUH_KECH_S = 8           # e'lon tahriridan keyin guruh postini yangilash — kechiktirib, bir marta (ketma-ket saqlashlar)
+_GURUH_LOCK = threading.RLock()
+_GURUH_FAOL = set()         # hozir yuborilayotgan / tahrirlanayotgan guruhlar
+_GURUH_KUTDI = set()        # ish paytida yana o'zgargan — tugagach bir marta tahrir
+_GURUH_TAYMER = {}
+_uxla = time.sleep          # sinovda almashtiriladi
+_taymer = threading.Timer
+TAHRIR_SABAB_MATN = {
+    'yoq': "post kanalda yo'q (qo'lda o'chirilgan)",
+    'begona': "bu post boshqa bot yuborgan (yoki qo'lda yozilgan) — bot uni tahrirlay olmaydi",
+}
+
+
+def _fonda(fn, *a):
+    threading.Thread(target=fn, args=a, daemon=True).start()
+
+
+def guruh_idsi(elon):
+    """E'lon qaysi rang guruhida (Elonlar.guruh) — '' yo'q."""
+    return str((elon or {}).get('guruh', '') or '').strip()
+
+
+def guruh_test_rejim():
+    return GURUH_KANAL.lower() in ('', 'test')
+
+
+def guruh_kanali(azolar, models):
+    """Guruh posti qaysi kanalga (GURUH_KANAL_ID)."""
+    if guruh_test_rejim():
+        return TEST_CHANNEL
+    if GURUH_KANAL.lower() == 'asl':
+        return post_kanal(post_yonalish(azolar[0], models)) if azolar else POST_CHANNEL
+    return GURUH_KANAL
+
+
+def post_havola(chat, mid):
+    """Kanal posti havolasi: @kanal → t.me/kanal/123; -100… (yopiq) → t.me/c/…/123; noma'lum — ''."""
+    c = str(chat or '').strip()
+    if not mid:
+        return ''
+    if c.startswith('@'):
+        return f'https://t.me/{c[1:]}/{int(mid)}'
+    if c.startswith('-100') and c[4:].isdigit():
+        return f'https://t.me/c/{c[4:]}/{int(mid)}'
+    return ''
+
+
+def guruh_kanal_oqi(g):
+    """Guruhlar.kanal_message_id → {'k', 'm', 't', 'r'}; post yo'q — {}. Oddiy son — POST_CHANNEL'dagi post."""
+    v = (g or {}).get('kanal_message_id')
+    if isinstance(v, str) and v.strip().startswith('{'):
+        try:
+            v = json.loads(v)
+        except Exception:
+            v = None
+    if isinstance(v, dict):
+        try:
+            m = int(float(v.get('m')))
+        except Exception:
+            return {}
+        r = {}
+        for k, x in (v.get('r') or {}).items() if isinstance(v.get('r'), dict) else []:
+            try:
+                r[str(int(float(k)))] = int(float(x))
+            except Exception:
+                pass
+        return {'k': str(v.get('k') or POST_CHANNEL), 'm': m, 't': int(float(v.get('t') or 0)), 'r': r}
+    try:
+        m = int(float(str(v).strip()))
+    except Exception:
+        return {}
+    return {'k': POST_CHANNEL, 'm': m, 't': 0, 'r': {}} if m > 0 else {}
+
+
+def tahrir_sabab(xato):
+    """Tahrir xatosi: 'yoq' — post o'chirilgan, 'begona' — botniki emas (eski bot / qo'lda), '' — boshqa (tarmoq…)."""
+    x = str(xato or '').lower()
+    if 'message to edit not found' in x or 'message_id_invalid' in x or 'message not found' in x:
+        return 'yoq'
+    if "can't be edited" in x or 'message_author_required' in x:
+        return 'begona'
+    return ''
+
+
+def _retry_after(xato):
+    m = re.search(r'retry after (\d+)', str(xato or ''), re.I)
+    return int(m.group(1)) if m else None
+
+
+def _429_bilan(fn, *a):
+    """Telegram «Too Many Requests: retry after N» — N soniya kutib qayta (GURUH_429_URINISH martagacha)."""
+    for i in range(GURUH_429_URINISH):
+        r = fn(*a)
+        s = None if r[0] else _retry_after(r[1])
+        if s is None or i == GURUH_429_URINISH - 1:
+            return r
+        _uxla(min(s, 60) + 1)
+    return r
+
+
+def _alohida(g):
+    v = (g or {}).get('alohida')
+    return v is True or str(v or '').strip().lower() in ('1', 'true', 'ha')
+
+
+def _gnum(e):
+    return int(float((e or {}).get('num', 0) or 0))
+
+
+def guruh_ol(gid, yangila=False):
+    """(guruh, a'zolar [faol / sotilgan e'lonlar, guruh tartibida], models). yangila — avval Sheets'dan qayta yuklash."""
+    gid = str(gid or '').strip()
+    if yangila or gid not in (_ELON_CACHE.get('guruhlar') or {}):
+        elon_cache_load()
+    with _elon_cache_lock:
+        g = (_ELON_CACHE.get('guruhlar') or {}).get(gid)
+        by_num = dict(_ELON_CACHE['by_num'])
+        models = dict(_ELON_CACHE['models'])
+    if not g:
+        return None, [], models
+    azolar = []
+    for n in g.get('azolar') or []:
+        try:
+            e = by_num.get(str(int(float(n))))
+        except Exception:
+            continue
+        if not e or elon_status(e) in ('deleted', 'waited') or ('guruh' in e and guruh_idsi(e) != gid):
+            continue
+        azolar.append(e)
+    return g, azolar, models
+
+
+def _guruh_nomi(g, azolar, models, lang='uz'):
+    v = str((g or {}).get('nomUz' if lang == 'uz' else 'nomRu') or '').strip()
+    if v or not azolar:
+        return v
+    return elon_nomi(azolar[0], models.get(str(azolar[0].get('specId', '') or ''), {}), lang)
+
+
+def _guruh_rasmlar(g):
+    v = (g or {}).get('rasmlar') or []
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except Exception:
+            v = [v]
+    return [str(u).strip() for u in v if str(u or '').strip()] if isinstance(v, list) else []
+
+
+def guruh_post_qur(g, azolar, models, havolalar=None):
+    """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>)."""
+    havolalar = havolalar or {}
+    juft = [belgi_ajrat(u) for u in _guruh_rasmlar(g)] or [rasm_joylari(e)[0] for e in azolar if rasm_joylari(e)]
+    rasmlar, src = [], {}
+    for u, joy in juft:
+        if u and u not in rasmlar:
+            rasmlar.append(u)
+            src[u] = belgili(u, joy)   # A26: kanal posti — suv belgisi bilan
+    media = rich_media(rasmlar[:10], False, src)
+
+    uz, ru = _guruh_nomi(g, azolar, models, 'uz'), _guruh_nomi(g, azolar, models, 'ru')
+    sarlavha = html_escape(uz) + (f' / {html_escape(ru)}' if ru and ru != uz else '')
+    fmt = lambda n: '%g' % n
+    faol = [e for e in azolar if elon_status(e) != 'sold']
+    narxlar = [n for n in (_narx_son(e) for e in faol) if n]
+    farqli = len(set(narxlar)) > 1
+    if not faol:
+        narx = '<p>Qolmadi / Нет в наличии</p>'
+    elif not narxlar:
+        narx = ''
+    elif farqli:
+        narx = f'<p><b>{fmt(min(narxlar))}$ dan</b> / <b>от {fmt(min(narxlar))}$</b></p>'
+    else:
+        narx = f'<p><b>{fmt(narxlar[0])}$</b></p>'
+
+    qatorlar = []
+    for e in azolar:
+        num = _gnum(e)
+        cuz = clean_color(e.get('color') or '').strip() or elon_nomi(e, models.get(str(e.get('specId', '') or ''), {}), 'uz')
+        cru = clean_color(e.get('colorRu') or '').strip()
+        nom = html_escape(cuz.upper()) + (f' / {html_escape(cru.upper())}' if cru and cru.upper() != cuz.upper() else '')
+        if elon_status(e) == 'sold':
+            qatorlar.append(f'• <s>{nom}</s> — qolmadi / нет')
+            continue
+        url = havolalar.get(num) or f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}'
+        p = _narx_son(e)
+        qatorlar.append(f'• <a href="{html_escape(url)}">{nom}</a>' + (f' — {fmt(p)}$' if farqli and p else ''))
+    ranglar = '<p><b>Ranglari / Цвета:</b><br/>' + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
+
+    izoh = html_escape(str(g.get('izoh') or '').strip()).replace('\n', '<br/>')
+    izoh_ru = html_escape(str(g.get('izohRu') or '').strip()).replace('\n', '<br/>')
+    mos = []
+    if izoh:
+        mos.append(f'<b>Mosligi:</b> {izoh}')
+    if izoh_ru:
+        mos.append(f'<b>Совместимость:</b> {izoh_ru}')
+    mosligi = '<p>' + '<br/>'.join(mos) + '</p>' if mos else ''
+
+    birinchi = _gnum(faol[0] if faol else (azolar[0] if azolar else {}))
+    sahifa = f'elon_{birinchi}' if birinchi else 'home'
+    return (
+        media
+        + f'<p><b>{sarlavha}</b></p>'
+        + narx
+        + ranglar
+        + mosligi
+        + '<tg-button-row>'
+          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp={sahifa}">🛍 Saytda ko\'rish / Смотреть на сайте</tg-button>'
+          '</tg-button-row>'
+    )
+
+
+def _guruh_havolalar(g, azolar, models, kd):
+    """«Ranglarni alohida» yoqilgan bo'lsa — {num: rang posti havolasi}. Test rejimida — kd['r'] dan (Elonlar'ga yozilmagan),
+    asl rejimda — e'lonning o'z posti (to'plam posti emas; guruh kanalidagisi afzal)."""
+    if not _alohida(g):
+        return {}
+    out = {}
+    for e in azolar:
+        num = _gnum(e)
+        if guruh_test_rejim():
+            m = (kd.get('r') or {}).get(str(num))
+            h = post_havola(kd.get('k'), m) if m else ''
+        else:
+            postlar = [] if toplam_postmi(e, models) else kanal_postlar(e)
+            p = next((x for x in postlar if x[1] == kd.get('k')), postlar[0] if postlar else None)
+            h = post_havola(p[1], p[2]) if p else ''
+        if h:
+            out[num] = h
+    return out
+
+
+def guruh_kanal_yoz(gid, kd, alohida=None):
+    """Guruh posti id'si (va «alohida») — Guruhlar varag'iga (Apps Script guruhKanal) va xotiraga. True — ok."""
+    payload = {'id': str(gid), 'kanal_message_id': json.dumps(kd, separators=(',', ':')) if kd and kd.get('m') else ''}
+    if alohida is not None:
+        payload['alohida'] = bool(alohida)
+    ok = False
+    if SHEET_URL:
+        try:
+            # 🔴 faqat bot (API_KEY) — guruh posti id'sini begona yozmasin. Logda URL yo'q (kalit bor)
+            r = req.get(f'{SHEET_URL}?action=guruhKanal&key={urllib.parse.quote(API_KEY)}'
+                        f'&data={urllib.parse.quote(json.dumps(payload))}', timeout=20)
+            text = r.text.strip()
+            d = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
+            ok = bool(d.get('ok'))
+        except Exception as e:
+            logger.error(f'guruh_kanal_yoz: {type(e).__name__}')
+    with _elon_cache_lock:
+        g = (_ELON_CACHE.get('guruhlar') or {}).get(str(gid))
+        if g is not None:
+            g['kanal_message_id'] = payload['kanal_message_id']
+            if alohida is not None:
+                g['alohida'] = bool(alohida)
+    if not ok:
+        logger.error(f'guruh_kanal_yoz: guruh {gid} id Sheets ga yozilmadi')
+    return ok
+
+
+def _eski_ochir(eskilar, nom, t=0):
+    """Qayta yuborishdan keyin eski post(lar)ni o'chiradi [(yo'nalish, kanal, mid)]. O'chmagani — tahrirlanmaydi,
+    adminga «eski postni qo'lda o'chiring» + havola (1B). True — hammasi o'chdi."""
+    qoldi = []
+    for _, chat, m in eskilar:
+        ok, x = delete_msg(chat, m)
+        if not ok:
+            qoldi.append((chat, m, x))
+    if not qoldi:
+        return True
+    sabab = '48 soatdan eski' if t and time.time() - t > 48 * 3600 else '48 soatdan eski yoki boshqa bot yuborgan'
+    qatorlar = [f'• {post_havola(c, m)}' if post_havola(c, m) else f'• {html_escape(c)}, id {m}' for c, m, _ in qoldi]
+    send_msg(admin_joy('post'),
+             f"🧹 {html_escape(nom)}: yangi post yuborildi, eski post o'chmadi ({sabab}) — eski postni qo'lda o'chiring:\n"
+             + '\n'.join(qatorlar) + f"\n<code>{html_escape(qoldi[0][2])}</code>")
+    return False
+
+
+def _guruh_ish(gid, fn, *a):
+    """Bitta guruh ustida bir vaqtda bitta ish. Band bo'lsa — None (ish tugagach bir marta tahrir navbatga)."""
+    with _GURUH_LOCK:
+        if gid in _GURUH_FAOL:
+            _GURUH_KUTDI.add(gid)
+            return None
+        _GURUH_FAOL.add(gid)
+    try:
+        return fn(gid, *a)
+    finally:
+        with _GURUH_LOCK:
+            _GURUH_FAOL.discard(gid)
+            qayta = gid in _GURUH_KUTDI
+            _GURUH_KUTDI.discard(gid)
+        if qayta:
+            guruh_tahrir_fon(gid)
+
+
+def _guruh_yubor(gid, alohida):
+    g, azolar, models = guruh_ol(gid, yangila=True)
+    if not g:
+        return None, 'Guruh topilmadi', ''
+    if not [e for e in azolar if elon_status(e) != 'sold']:
+        return None, "Guruhda sotuvdagi rang yo'q", ''
+    eski = guruh_kanal_oqi(g)
+    chat = guruh_kanali(azolar, models)
+    kd = {'k': chat, 'm': None, 't': int(time.time()), 'r': dict(eski.get('r') or {}) if eski.get('k') == chat else {}}
+    html = guruh_post_qur(g, azolar, models, {})   # havolalar hozircha saytga (alohida — rang postlaridan keyin tahrir)
+    mid, xato = _429_bilan(send_rich, chat, html)
+    if not mid:
+        return None, xato, ''
+    kd['m'] = int(mid)
+    guruh_kanal_yoz(gid, kd, alohida=None if alohida else False)
+    if eski.get('m') and (eski['k'], eski['m']) != (chat, kd['m']):
+        _eski_ochir([(None, eski['k'], eski['m'])], f"Guruh «{_guruh_nomi(g, azolar, models)}»", eski.get('t'))
+    return kd['m'], '', post_havola(chat, kd['m'])
+
+
+def guruh_yubor(gid, alohida=False):
+    """Guruh posti kanalga (yangi yoki qayta). alohida — keyin fonda har rang o'z posti. (mid, xato, havola)."""
+    gid = str(gid or '').strip()
+    r = _guruh_ish(gid, _guruh_yubor, bool(alohida))
+    if r is None:
+        return None, 'Bu guruh posti hozir yuborilmoqda — biroz kuting', ''
+    mid, xato, havola = r
+    if mid:
+        if alohida:
+            _fonda(guruh_ranglar_fon, gid)
+        else:
+            g, azolar, models = guruh_ol(gid)
+            send_msg(admin_joy('post'), f"📣 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}» kanalga chiqdi"
+                                        f"{' (TEST kanal)' if guruh_test_rejim() else ''}: {havola or mid}")
+    return mid, xato, havola
+
+
+def _guruh_ranglar(gid):
+    """Har rang o'z posti (sotilgan / posti borlari o'tkaziladi), orasi ≥ GURUH_ORALIQ_S; oxirida guruh posti tahrir.
+    {'yuborildi': [num], 'xatolar': [matn]}."""
+    g, azolar, models = guruh_ol(gid, yangila=True)
+    if not g:
+        return {'yuborildi': [], 'xatolar': ['Guruh topilmadi']}
+    kd = guruh_kanal_oqi(g)
+    if not kd.get('m'):
+        return {'yuborildi': [], 'xatolar': ["Guruh posti kanalda yo'q — avval «Kanalga»"]}
+    guruh_kanal_yoz(gid, kd, alohida=True)
+    g['alohida'] = True
+    test = guruh_test_rejim()
+    yuborildi, xatolar, birinchi = [], [], True
+    for e in azolar:
+        num = _gnum(e)
+        if elon_status(e) == 'sold':
+            continue
+        if test and str(num) in kd['r']:
+            continue
+        if not test and kanal_msg_id(e) and not toplam_postmi(e, models):
+            continue   # o'z posti bor
+        if not birinchi:
+            _uxla(GURUH_ORALIQ_S)
+        birinchi = False
+        if test:
+            m, x = _429_bilan(kanal_rich_yubor, num, e, models, kd['k'])
+            if m:
+                kd['r'][str(num)] = int(m)
+                guruh_kanal_yoz(gid, kd)
+        else:
+            m, x = _429_bilan(kanal_yana_keldi if kanal_msg_id(e) else kanal_post, num)   # to'plamda bo'lsa — undan chiqadi
+        if m:
+            yuborildi.append(num)
+        else:
+            xatolar.append(f'№{num}: {x}')
+    with _GURUH_LOCK:
+        _GURUH_KUTDI.discard(gid)   # rang postlari id'si yozilgani — quyidagi tahrir hammasini oladi
+    ok, xato = guruh_tahrir(gid)
+    if not ok:
+        xatolar.append(f'guruh posti tahriri: {xato}')
+    return {'yuborildi': yuborildi, 'xatolar': xatolar}
+
+
+def guruh_ranglar_fon(gid):
+    """«Ranglarni alohida yuborish» (fonda) — natija adminga."""
+    try:
+        r = _guruh_ish(gid, _guruh_ranglar)
+        if r is None:
+            send_msg(admin_joy('post'), f"⏳ Guruh {html_escape(gid)}: boshqa ish ketyapti — ranglarni keyinroq qayta yuboring.")
+            return
+        g, azolar, models = guruh_ol(gid)
+        izoh = f"🎨 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}»: {len(r['yuborildi'])} ta rang alohida yuborildi"
+        izoh += (' (TEST kanal)' if guruh_test_rejim() else '') + (
+            f" (№{', №'.join(str(n) for n in r['yuborildi'])})" if r['yuborildi'] else '')
+        if r['xatolar']:
+            izoh += '\n⚠️ ' + '\n⚠️ '.join(html_escape(x) for x in r['xatolar'])
+        send_msg(admin_joy('post'), izoh)
+    except Exception as e:
+        logger.error(f'guruh_ranglar_fon {gid}: {e}')
+
+
+def guruh_tahrir(gid, yangila=False):
+    """Guruh postini hozirgi ma'lumotdan qayta yasab tahrirlaydi. Post yo'q — hech narsa; a'zo qolmasa — post o'chadi.
+    Tahrir rad etilsa (post o'chirilgan / boshqa bot) — yangi post + adminga sababi. Guruh tarqatilgan (Guruhlar'da
+    endi yo'q) — posti o'chadi. (True, '') / (False, xato)."""
+    with _elon_cache_lock:
+        oldin = (_ELON_CACHE.get('guruhlar') or {}).get(str(gid))
+    g, azolar, models = guruh_ol(gid, yangila)
+    if not g:
+        kd = guruh_kanal_oqi(oldin)
+        if not (yangila and kd.get('m')):
+            return False, 'Guruh topilmadi'
+        ok, x = delete_msg(kd['k'], kd['m'])   # guruh tarqatildi (yangi yuklashda yo'q) — kanaldagi posti ham
+        if not ok:
+            send_msg(admin_joy('post'), f"🧹 Guruh {html_escape(gid)} tarqatildi, kanaldagi posti o'chmadi — qo'lda o'chiring: "
+                                        f"{post_havola(kd['k'], kd['m']) or kd['m']}\n<code>{html_escape(x)}</code>")
+        return True, ''
+    kd = guruh_kanal_oqi(g)
+    if not kd.get('m'):
+        return True, ''
+    if not azolar:
+        ok, x = delete_msg(kd['k'], kd['m'])
+        if ok:
+            guruh_kanal_yoz(gid, {})
+        return ok, x
+    html = guruh_post_qur(g, azolar, models, _guruh_havolalar(g, azolar, models, kd))
+    ok, xato = _429_bilan(edit_rich, kd['k'], kd['m'], html)
+    if ok:
+        return True, ''
+    sabab = tahrir_sabab(xato)
+    if not sabab:
+        return False, xato
+    nom = html_escape(_guruh_nomi(g, azolar, models))
+    chat = guruh_kanali(azolar, models)
+    yangi = {'k': chat, 'm': None, 't': int(time.time()), 'r': kd['r'] if kd['k'] == chat else {}}
+    html = guruh_post_qur(g, azolar, models, _guruh_havolalar(g, azolar, models, yangi))
+    mid, x2 = _429_bilan(send_rich, chat, html)
+    if not mid:
+        send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
+                                    f"Yangi post ham ketmadi: <code>{html_escape(x2)}</code>")
+        return False, x2
+    yangi['m'] = int(mid)
+    guruh_kanal_yoz(gid, yangi)
+    if sabab == 'begona':
+        _eski_ochir([(None, kd['k'], kd['m'])], f'Guruh «{nom}»', kd.get('t'))
+    send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
+                                f"Yangi post yuborildi: {post_havola(chat, mid) or mid}")
+    return True, ''
+
+
+def guruh_tahrir_fon(gid, yangila=True):
+    """Fonda guruh posti tahriri (band bo'lsa — ish tugagach o'zi). Xato — adminga."""
+    try:
+        with _GURUH_LOCK:
+            _GURUH_TAYMER.pop(gid, None)
+        r = _guruh_ish(gid, guruh_tahrir, yangila)
+        if r and not r[0]:
+            send_msg(admin_joy('post'), f"⚠️ Guruh {html_escape(gid)} kanal posti yangilanmadi: <code>{html_escape(r[1])}</code>")
+    except Exception as e:
+        logger.error(f'guruh_tahrir_fon {gid}: {e}')
+
+
+def guruh_yangila_keyin(gid):
+    """E'lon o'zgardi — guruh posti (kanalda bo'lsa) _GURUH_KECH_S dan keyin bir marta yangilanadi."""
+    gid = str(gid or '').strip()
+    if not gid:
+        return
+    with _GURUH_LOCK:
+        if gid in _GURUH_FAOL:
+            _GURUH_KUTDI.add(gid)
+            return
+        g = (_ELON_CACHE.get('guruhlar') or {}).get(gid)
+        if not g or not guruh_kanal_oqi(g).get('m'):
+            return   # guruh kanalga chiqmagan
+        eski = _GURUH_TAYMER.pop(gid, None)
+        if eski:
+            eski.cancel()
+        t = _taymer(_GURUH_KECH_S, guruh_tahrir_fon, args=(gid,))
+        t.daemon = True
+        _GURUH_TAYMER[gid] = t
+        t.start()
 
 
 def html_escape(s):
@@ -7102,6 +7626,42 @@ async def kanal_toplam_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+async def kanal_guruh_endpoint(request):
+    """BUGUN251: saytdagi rang guruhi bloki — «📣 Kanalga» / «🔄 Qayta yuborish» / «🎨 Ranglarni alohida yuborish» va
+    guruh o'zgargandan keyingi tahrir. Faqat admin (initData).
+    {initData, id: 'g12', amal: 'yubor' | 'alohida' | 'tahrir', alohida: bool} →
+    yubor: {ok, mid, havola, test} · alohida / tahrir: {ok, fonda: true} (natija adminga Telegram'da)."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        gid = str(data.get('id', '') or '').strip()
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,20}', gid):
+            return web.json_response({'error': 'Guruh id notogri'}, status=400)
+        amal = str(data.get('amal', 'yubor'))
+        if amal == 'yubor':
+            mid, xato, havola = await blok(guruh_yubor, gid, bool(data.get('alohida')))
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato})
+            return web.json_response({'ok': True, 'mid': mid, 'havola': havola, 'test': guruh_test_rejim(),
+                                      'alohida': bool(data.get('alohida'))})
+        if amal == 'alohida':
+            with _elon_cache_lock:
+                g = (_ELON_CACHE.get('guruhlar') or {}).get(gid)
+            if g is not None and not guruh_kanal_oqi(g).get('m'):
+                return web.json_response({'ok': False, 'error': "Guruh posti kanalda yo'q — avval «Kanalga»"})
+            _fonda(guruh_ranglar_fon, gid)
+            return web.json_response({'ok': True, 'fonda': True})
+        if amal == 'tahrir':
+            _fonda(guruh_tahrir_fon, gid)
+            return web.json_response({'ok': True, 'fonda': True})
+        return web.json_response({'error': "Noma'lum amal"}, status=400)
+    except Exception as e:
+        logger.error(f'kanal_guruh_endpoint: {e}')
+        return web.json_response({'error': str(e)}, status=500)
+
+
 async def health(request):
     return web.json_response({'status': 'ok'})
 
@@ -7210,6 +7770,7 @@ async def main():
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
+    app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
     app.router.add_get('/health', health)
     app.router.add_route('OPTIONS', '/{path_info:.*}', lambda r: web.Response())
     runner = web.AppRunner(app)
