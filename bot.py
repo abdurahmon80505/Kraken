@@ -6145,26 +6145,45 @@ def _buyurtma_sarlavha(elon, model):
     return nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
 
 
-def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=()):
+def _buyurtma_soni(elon, sonlar):
+    """BUGUN236: mijoz tanlagan dona soni — ko'p donali tovarda omborda borigacha, bitta tovarda — doim 1."""
+    try:
+        n = int((sonlar or {}).get(str(elon.get('num', '')), 1))
+    except Exception:
+        n = 1
+    if not kop_donali(elon):
+        return 1
+    return max(1, min(n, soni_val(elon) or 1, 99))
+
+
+def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonlar=None):
     """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi).
-    BUGUN224: qolgan — savatdan sotib olishda qolgan tovarlar [(elon, model), …]; narx — hammasining jami."""
+    BUGUN224: qolgan — savatdan sotib olishda qolgan tovarlar [(elon, model), …]; narx — hammasining jami.
+    BUGUN236: sonlar — {num: dona}; narx × dona (dona ko'p donali tovarda omborda borigacha cheklanadi)."""
     qatorlar = [(elon, model)] + list(qolgan)
+    donalar = [_buyurtma_soni(e, sonlar) for e, _ in qatorlar]
     narxlar = [_narx_son(e) for e, _ in qatorlar]
-    usd = None if any(n is None for n in narxlar) else sum(narxlar)
+    usd = None if any(n is None for n in narxlar) else sum(n * d for n, d in zip(narxlar, donalar))
     narx = f'{usd:g}$' if usd is not None else '—'
     # so'm — 1 000 gacha yaxlit (to'lov sahifasidagi summa bilan bir xil bo'lsin: mijoz ko'rgan = admin ko'rgan)
     som = (f"{int(round(usd * kurs / 1000.0)) * 1000:,}".replace(',', ' ') + " so'm") if usd is not None else '—'
     kurs_s = f'{kurs:,}'.replace(',', ' ')
+    def _dona(n, d):   # «35$ × 2 = 70$» · bitta bo'lsa «35$»
+        if n is None:
+            return '—'
+        return f'{n:g}$ × {d} = {n * d:g}$' if d > 1 else f'{n:g}$'
     if len(qatorlar) == 1:
-        tovar = f"📱 <b>{html_escape(_buyurtma_sarlavha(elon, model))}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
+        tovar = (f"📱 <b>{html_escape(_buyurtma_sarlavha(elon, model))}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
+                 + (f"🔢 <b>{donalar[0]} dona</b> · {html_escape(_dona(narxlar[0], donalar[0]))}\n" if donalar[0] > 1 else ''))
     else:
         tovar = f"🧺 <b>Savatdan — {len(qatorlar)} ta tovar:</b>\n" + ''.join(
             f"{i}. <b>{html_escape(_buyurtma_sarlavha(e, m))}</b> · №{html_escape(e.get('num', ''))}"
-            f" · {html_escape(f'{n:g}$' if n is not None else '—')}\n"
-            for i, ((e, m), n) in enumerate(zip(qatorlar, narxlar), 1))
+            f" · {html_escape(_dona(n, d))}\n"
+            for i, ((e, m), n, d) in enumerate(zip(qatorlar, narxlar, donalar), 1))
+    jami_s = 'Jami ' if (len(qatorlar) > 1 or donalar[0] > 1) else ''
     return (f"🛒 <b>Yangi buyurtma</b> №{html_escape(order)}\n\n"
             + tovar +
-            f"💵 {'Jami ' if len(qatorlar) > 1 else ''}{html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n\n"
+            f"💵 {jami_s}{html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n\n"
             f"👤 {html_escape(ism)}\n"
             f"📞 {html_escape(tel)}\n"
             f"📍 {_buyurtma_joy_matn(joy)}\n\n"
@@ -6261,7 +6280,7 @@ async def buyurtma_holat_tugma(chat_id, message_id, cq_data):
         logger.error(f'buyurtma_holat_tugma: {e}')
 
 
-def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs, qolgan_nums=()):
+def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs, qolgan_nums=(), sonlar=None):
     """Fon oqimida. (ok, sabab) qaytaradi. BUGUN224: qolgan_nums — savatdagi boshqa tovarlar (topilmagan / yopiq — tushib qoladi)."""
     elon, models = elon_cache_get(num)
     if not elon:
@@ -6274,7 +6293,7 @@ def _buyurtma_yubor(uid, num, order, ism, tel, joy, kurs, qolgan_nums=()):
         e, ms = elon_cache_get(n)
         if e and elon_status(e) not in ('deleted', 'waited', 'sold'):
             qolgan.append((e, (ms or {}).get(str(e.get('specId', '') or ''), {})))
-    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan)
+    matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan, sonlar)
     # Mijozga yozish tugmasi — tg://user?id (mijoz admin bilan avval yozishgan bo'lsa ochiladi)
     bron_nums = [num] + [str(e.get('num', '')) for e, _ in qolgan]
     klava = _buyurtma_klava(uid, order, 'kutilmoqda', bron_nums)   # BUGUN227: + holat tugmalari
@@ -6356,6 +6375,20 @@ async def buyurtma_endpoint(request):
                 return web.json_response({'error': 'Nomer notogri'}, status=400)
             if n != num and n not in qolgan_nums:
                 qolgan_nums.append(n)
+        # BUGUN236: dona soni — {num: dona} (faqat shu buyurtmadagi raqamlar, 1..99; omborda borigacha — _buyurtma_soni)
+        sonlar = {}
+        sonlar_xom = data.get('sonlar') or {}
+        if not isinstance(sonlar_xom, dict) or len(sonlar_xom) > 10:
+            return web.json_response({'error': 'Soni notogri'}, status=400)
+        for k, v in sonlar_xom.items():
+            k = str(k or '').strip()
+            try:
+                v = int(v)
+            except Exception:
+                return web.json_response({'error': 'Soni notogri'}, status=400)
+            if k not in [num] + qolgan_nums or not (1 <= v <= 99):
+                return web.json_response({'error': 'Soni notogri'}, status=400)
+            sonlar[k] = v
         if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
             return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
         if not (1 <= len(ism) <= 60):
@@ -6373,13 +6406,13 @@ async def buyurtma_endpoint(request):
         _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
         loop = asyncio.get_event_loop()
         ok, sabab = await loop.run_in_executor(
-            None, _buyurtma_yubor, uid, num, order, ism, tel, joy, kurs, qolgan_nums)
+            None, _buyurtma_yubor, uid, num, order, ism, tel, joy, kurs, qolgan_nums, sonlar)
         if not ok:
             return web.json_response({'error': sabab}, status=502)
         _BUYURTMA_KORILGAN[(uid, order)] = hozir
         # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
         await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
-                                   _kk_init_til(data.get('initData', '')) or '')
+                                   _kk_init_til(data.get('initData', '')) or '', sonlar)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
         for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
@@ -6458,7 +6491,7 @@ def _buyurtma_sheet_dict(uid, b):
     return {'order': b.get('order'), 'user_id': str(uid), 'ts': b.get('ts'), 'holat': b.get('holat'),
             'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts'), 'jami': b.get('jami'), 'tur': b.get('tur', ''),
             'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''),
-            'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx')} for x in (b.get('tovar') or [])]}
+            'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in (b.get('tovar') or [])]}
 
 
 def _mijoz_sync_yubor():
@@ -6614,24 +6647,25 @@ def _mijoz_tel_qosh(uid, tel, manba):
         _mijoz_sync_belgila('t', uid)
 
 
-def _mijoz_tovarlar(num, qolgan_nums):
-    """[{num, nom, narx}] — e'lonlar serverdagi keshdan (mijoz yuborganiga ishonilmaydi)."""
+def _mijoz_tovarlar(num, qolgan_nums, sonlar=None):
+    """[{num, nom, narx, soni}] — e'lonlar serverdagi keshdan (mijoz yuborganiga ishonilmaydi). narx — 1 donasi (BUGUN236)."""
     res = []
     for n in [num] + list(qolgan_nums):
         elon, models = elon_cache_get(n)
         if not elon:
             continue
         model = (models or {}).get(str(elon.get('specId', '') or ''), {})
-        res.append({'num': str(elon.get('num', n)), 'nom': _buyurtma_sarlavha(elon, model), 'narx': _narx_son(elon)})
+        res.append({'num': str(elon.get('num', n)), 'nom': _buyurtma_sarlavha(elon, model), 'narx': _narx_son(elon),
+                    'soni': _buyurtma_soni(elon, sonlar)})
     return res
 
 
-def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til=''):
+def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None):
     """/buyurtma muvaffaqiyatli bo'lgach (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi."""
     try:
         _mijoz_tel_qosh(uid, tel, 'sotib')
-        tovar = _mijoz_tovarlar(num, qolgan_nums)
-        narxlar = [x['narx'] for x in tovar]
+        tovar = _mijoz_tovarlar(num, qolgan_nums, sonlar)
+        narxlar = [None if x['narx'] is None else x['narx'] * x['soni'] for x in tovar]
         with _MIJOZ_LOCK:
             m = _mijoz_ochiq(uid)
             if any(b.get('order') == order for b in m['buyurtma']):
@@ -6659,7 +6693,7 @@ async def mijoz_holat_endpoint(request):
             m = _mijoz_ol(uid)
             tels = [{'id': k, 'niqob': _tel_niqob(m['tels'][k])} for k in _MIJOZ_TEL_TURLAR if m['tels'].get(k)]
             buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
-                         'tur': b.get('tur', ''), 'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx')}
+                         'tur': b.get('tur', ''), 'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
                                                             for x in (b.get('tovar') or [])]}
                         for b in m['buyurtma']]
         return web.json_response({'ok': True, 'tels': tels, 'buyurtma': buyurtma})
