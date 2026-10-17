@@ -127,7 +127,9 @@ GURUH_MAVZULAR = [('post', '📢 Postlar'), ('olx', '🛒 OLX'), ('stat', '📊 
                   ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar'),
                   # MS3.2 (BUGUN56, 2026-10-08): rasm yuklash — har bo'limga o'z mavzusi. Shu mavzuga tashlangan rasm(lar)dan
                   # chala e'lon yaratiladi va javobdagi tugma saytni o'sha bo'limda ochadi. Lichkadan — avvalgidek (Mobile).
-                  ('rasm_mobile', '📱 Rasm · Mobile'), ('rasm_pc', '💻 Rasm · PC'), ('rasm_camera', '📷 Rasm · Camera')]
+                  ('rasm_mobile', '📱 Rasm · Mobile'), ('rasm_pc', '💻 Rasm · PC'), ('rasm_camera', '📷 Rasm · Camera'),
+                  # BUGUN244 (2026-10-17): saytdagi AI yordamchi — har 5 soatda hisobot (ai_hisobot_loop). Claude / qul ishlari — bu yerga EMAS.
+                  ('ai', '🤖 AI yordamchi')]
 
 
 def rasm_yonalish(joy):
@@ -230,7 +232,9 @@ def guruh_sozla(chat, forum, xabar_chat):
         GURUH = g
         for k, nom in yangi:
             send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga rasm tashlang: chala e'lon shu bo'limga yaratiladi."
-                     if k.startswith('rasm_') else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
+                     if k.startswith('rasm_') else
+                     f"{nom} — saytdagi AI yordamchi hisoboti shu yerga keladi (Toshkent: 05, 10, 15, 20, 01)."
+                     if k == 'ai' else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
     send_msg(xabar_chat, "✅ Guruh tayyor — hozirdan xabarlar shu yerga keladi (bot qayta ishga tushguncha).\n"
                          "Doimiy bo'lishi uchun Render → Environment → <b>ADMIN_GURUH</b> = quyidagi qator "
                          "(bosib nusxalang), keyin Manual Deploy:\n"
@@ -774,6 +778,125 @@ async def elon_cache_loop():
             await blok(elon_cache_load)
         except Exception as e:
             logger.error(f'elon_cache_loop: {e}')
+
+
+
+# ── BUGUN244 (2026-10-17): «🤖 AI yordamchi» — saytdagi AI yordamchi hisoboti, guruhning o'z mavzusiga ──
+# Toshkent vaqti bilan 05, 10, 15, 20, 01 da: «🤖 So'nggi 5 soat (10:00–15:00): 7 savol · 4 mijoz · AI 6 · skript 1 · adminga 1 · …».
+# Sonlarni sayt hisoblaydi (netlify/functions/yordamchi.js, GET ?hisobot=) — botga faqat sonlar keladi (ism, username, tgId, telefon YO'Q).
+# NEGA qat'iy soatlar («ishga tushgandan 5 soat» emas): bot qayta ishga tushganda hisob soati surilmaydi, odam qachon kelishini biladi.
+# Takrorsiz: har oynaning belgisi (2026-10-17T15) saytda saqlanadi — bot qayta ishga tushsa ham shu oyna ikkinchi marta yuborilmaydi.
+# Bot uxlab, bir necha oynani o'tkazib yuborsa — uyg'onganda faqat OXIRGI oyna bir marta yuboriladi.
+# Env (Render): YORDAMCHI_JURNAL_KALIT — Netlify'dagi bilan bir xil · YORDAMCHI_URL (ixtiyoriy). Kalit yoki mavzu yo'q — jim (bitta log).
+YORDAMCHI_URL = os.environ.get('YORDAMCHI_URL', '') or SAYT_URL.rstrip('/') + '/.netlify/functions/yordamchi'
+YORDAMCHI_JURNAL_KALIT = os.environ.get('YORDAMCHI_JURNAL_KALIT', '')
+AI_HISOBOT_SOATLAR = (1, 5, 10, 15, 20)   # Toshkent
+AI_HISOBOT_QAYTA = 600                    # sayt / Telegram javob bermasa — 10 daqiqadan keyin yana
+AI_HISOBOT_KUTISH_MAX = 1800              # uzoq uxlamaydi: soat surilsa ham 30 daqiqada o'zini tutadi
+_AI_HISOBOT = {'oxirgi': None, 'matn': None, 'matn_belgi': None, 'urinish': 0, 'jim': None}
+
+
+def ai_hisobot_oyna(hozir):
+    """hozir (epoch s) → (oyna oxiri, oyna boshi, belgi, keyingi oyna oxiri) — epoch s; belgi Toshkent soati bilan: 2026-10-17T15."""
+    from datetime import datetime, timezone, timedelta
+    tz = timezone(timedelta(hours=5))
+    kun = datetime.fromtimestamp(hozir, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    nuqtalar = [(kun + timedelta(days=d, hours=h)) for d in (-1, 0, 1) for h in AI_HISOBOT_SOATLAR]
+    i = max(n for n, t in enumerate(nuqtalar) if t.timestamp() <= hozir)
+    oxiri, boshi, keyingi = nuqtalar[i], nuqtalar[i - 1], nuqtalar[i + 1]
+    return int(oxiri.timestamp()), int(boshi.timestamp()), oxiri.strftime('%Y-%m-%dT%H'), int(keyingi.timestamp())
+
+
+def ai_hisobot_ol(oxiri, boshi, belgi):
+    """Saytdan hisobot: dict · {'rad': True} (403 — kalit mos emas) · None (tarmoq / sayt xatosi — keyinroq yana).
+    Logda kalit YO'Q (u faqat sarlavhada; xato matni o'rniga — xato turi)."""
+    try:
+        r = req.get(YORDAMCHI_URL, params={'hisobot': (oxiri - boshi) // 3600, 'gacha': oxiri * 1000, 'belgi': belgi},
+                    headers={'x-jurnal-kalit': YORDAMCHI_JURNAL_KALIT}, timeout=20)
+    except Exception as e:
+        logger.error(f'ai_hisobot: sayt javob bermadi ({type(e).__name__})')
+        return None
+    if r.status_code == 403:
+        logger.error("ai_hisobot: sayt 403 — Render va Netlify'dagi YORDAMCHI_JURNAL_KALIT bir xil emas")
+        return {'rad': True}
+    try:
+        d = r.json() if r.status_code == 200 else None
+    except Exception:
+        d = None
+    if not isinstance(d, dict) or not d.get('ok'):
+        logger.error(f"ai_hisobot: sayt javobi noto'g'ri (HTTP {r.status_code})")
+        return None
+    return d
+
+
+def ai_hisobot_matn(d, oxiri, boshi):
+    """Sayt sonlaridan bitta qator. 0 savol — «0 savol» (hisobot baribir keladi: bot ishlayotgani ko'rinsin)."""
+    from datetime import datetime, timezone, timedelta
+    tz = timezone(timedelta(hours=5))
+    vaqt = f"{datetime.fromtimestamp(boshi, tz):%H:%M}–{datetime.fromtimestamp(oxiri, tz):%H:%M}"
+
+    def son(k):
+        try:
+            return int(d.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0
+    qism = [f"{son('savol')} savol"]
+    if son('savol'):
+        qism += [f"{son('mijoz')} mijoz", f"AI {son('ai')}", f"skript {son('skript')}", f"adminga {son('adminga')}"]
+        top = [html_escape(str(t.get('matn', ''))[:30]) for t in (d.get('top') or [])[:5] if isinstance(t, dict) and t.get('matn')]
+        if top:
+            qism.append("ko'p so'ralgan: " + ', '.join(top))
+    matn = f"🤖 So'nggi {(oxiri - boshi) // 3600} soat ({vaqt}): " + ' · '.join(qism)
+    sabab = d.get('xatoSabab')
+    if son('xato') and isinstance(sabab, dict) and sabab:
+        matn += f"\n⚠️ AI ishlamadi — {son('xato')} (" + ', '.join(
+            f"{html_escape(str(k)[:20])} {int(v) if str(v).isdigit() else 0}" for k, v in list(sabab.items())[:5]) + ')'
+    return matn
+
+
+def ai_hisobot_qadam(hozir):
+    """Bitta qadam (ai_hisobot_loop chaqiradi, sinov ham): kerak bo'lsa hisobotni oladi va mavzuga yuboradi.
+    Qaytaradi — keyingi qadamgacha necha soniya kutish."""
+    s = _AI_HISOBOT
+    oxiri, boshi, belgi, keyingi = ai_hisobot_oyna(hozir)
+    kut = max(1, min(keyingi - hozir, AI_HISOBOT_KUTISH_MAX))
+    if s['oxirgi'] == belgi:
+        return kut
+    if not (GURUH.get('id') and GURUH.get('ai')) or not YORDAMCHI_JURNAL_KALIT:
+        if s['jim'] != belgi:   # har oynada bitta qator; oyna «bajarildi» deb belgilanmaydi — /guruh dan keyin shu oyna ham keladi
+            s['jim'] = belgi
+            logger.info('ai_hisobot: jim — ' + ("«🤖 AI yordamchi» mavzusi yo'q (/guruh)" if not GURUH.get('ai')
+                                                else "YORDAMCHI_JURNAL_KALIT yo'q"))
+        return kut
+    if s['matn_belgi'] != belgi:
+        d = ai_hisobot_ol(oxiri, boshi, belgi)
+        if d is None:
+            return min(kut, AI_HISOBOT_QAYTA)
+        if d.get('rad') or d.get('takror'):   # kalit mos emas (log yozildi) · shu oyna allaqachon yuborilgan
+            s['oxirgi'] = belgi
+            return kut
+        s['matn'], s['matn_belgi'], s['urinish'] = ai_hisobot_matn(d, oxiri, boshi), belgi, 0
+    if send_msg(Joy(GURUH['id'], GURUH['ai']), s['matn']):
+        s['oxirgi'], s['matn'], s['matn_belgi'] = belgi, None, None
+        return kut
+    s['urinish'] += 1
+    if s['urinish'] >= 3:
+        logger.error(f'ai_hisobot: Telegram 3 marta qabul qilmadi — {belgi} oynasi tashlab ketildi')
+        s['oxirgi'], s['matn'], s['matn_belgi'] = belgi, None, None
+        return kut
+    return min(kut, AI_HISOBOT_QAYTA)
+
+
+async def ai_hisobot_loop():
+    """Fonda: ai_hisobot_qadam — alohida ipda (sayt / Telegram so'rovi webhook'ni to'xtatmaydi). Xato — bot yiqilmaydi."""
+    await asyncio.sleep(60)   # ishga tushish yuki (webhook, e'lon xotirasi) o'tsin
+    while True:
+        try:
+            kut = await blok(ai_hisobot_qadam, time.time())
+        except Exception as e:
+            logger.error(f'ai_hisobot: {type(e).__name__}')
+            kut = AI_HISOBOT_QAYTA
+        await asyncio.sleep(kut)
 
 
 def get_stat(days=1):
@@ -7120,6 +7243,7 @@ async def main():
     except Exception as e:
         logger.error(f'init elon_cache: {e}')
     asyncio.create_task(elon_cache_loop())   # kuniga bir marta ehtiyot yuklash
+    asyncio.create_task(ai_hisobot_loop())   # BUGUN244: «🤖 AI yordamchi» mavzusiga har 5 soatda hisobot
     logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
     while True:
         await asyncio.sleep(3600)
