@@ -334,6 +334,118 @@ def clean_color(color):
     return re.sub(r'\s*\([^)]*\)', '', str(color)).strip()
 
 
+# ═══ BUGUN260-7: rang va xususiyat lug'ati — sayt sayt/js/02-yordamchi.js (RANG_ROYXAT, XUSUSIYAT_LUGAT) bilan bir xil ═══
+# NEGA: g'ilof «MagSafe / Stand» endi `xususiyat` ustunida (JSON ["magsafe","stand"]), `storage` — faqat xotira. Ilgari
+# sarlavha `name (storage)` edi: migratsiyadan keyin g'ilof postidan «(MagSafe)» yo'qolardi, xotira bo'sh bo'lsa «()» chiqardi.
+# Orqaga moslik: ustun bo'sh bo'lsa — eski `storage` dagi «MagSafe» o'qiladi (migratsiyagacha ham sarlavha o'zgarmaydi).
+RANG_ROYXAT = [
+    ('Qora', 'Чёрный'), ('Oq', 'Белый'), ("Ko'k", 'Синий'), ('Havorang', 'Голубой'), ('Qizil', 'Красный'),
+    ('Yashil', 'Зелёный'), ('Sariq', 'Жёлтый'), ("To'q sariq", 'Оранжевый'), ('Kulrang', 'Серый'), ('Pushti', 'Розовый'),
+    ('Binafsha', 'Фиолетовый'), ('Jigarrang', 'Коричневый'), ('Kumush', 'Серебристый'), ('Oltin', 'Золотой'),
+    ("To'q ko'k", 'Тёмно-синий'), ('Shaffof', 'Прозрачный'), ('Qora shaffof', 'Чёрный прозрачный'),
+    ('Obsidian Black (Qora)', 'Obsidian Black (Черный)'), ('Porcelain (Oq)', 'Porcelain (Белый)'),
+    ('Snow White (Oq)', 'Snow White (Белый)'), ('Moonstone', 'Moonstone'), ('Hazel', 'Hazel'), ('Lemongrass', 'Lemongrass'),
+    ('Jade', 'Jade'), ("Bay (Ko'k)", 'Bay (Синий)'), ('Rose Quartz', 'Rose Quartz'),
+]
+XUSUSIYAT_LUGAT = [
+    ('magsafe', 'MagSafe', 'MagSafe', re.compile(r'mag\s*safe', re.I)),
+    ('magfit', 'MagFit', 'MagFit', re.compile(r'mag\s*fit', re.I)),
+    ('stand', 'Stand', 'Подставка', re.compile(r'stand|подставк|tayanch', re.I)),
+    ('kamera', 'Kamera himoyasi', 'Защита камеры', re.compile(r'kamera\s*himoya|защит\w*\s*камер|camera\s*(guard|protect)', re.I)),
+]
+
+
+def rang_kalit(s):
+    """AppScript.gs / sayt rangKalit bilan bir xil: katta-kichik harf, «ko'k / ko‘k / koʻk / kok» farqsiz."""
+    return re.sub(r'\s+', ' ', re.sub(r"['‘’ʻʼ`´]", '', str(s or '').lower())).strip()
+
+
+def rang_ru(item):
+    """E'lon rangining ruschasi: `colorRu` → lug'at → admin qo'lda yozgani (getAll `rangLugat`) → o'zbekchasi."""
+    ru = str((item or {}).get('colorRu') or '').strip()
+    uz = str((item or {}).get('color') or '').strip()
+    if ru or not uz:
+        return ru
+    k = rang_kalit(uz)
+    for a, b in RANG_ROYXAT:
+        if rang_kalit(a) == k:
+            return b
+    qolda = _ELON_CACHE.get('rangLugat') or {}
+    yoz = qolda.get(k) if isinstance(qolda, dict) else None
+    if isinstance(yoz, dict) and str(yoz.get('ru') or '').strip():
+        return str(yoz['ru']).strip()
+    return uz
+
+
+def _xus_lugat():
+    """Doimiy lug'at + admin ⚙️ Sozlama'da qo'shgani (getAll `xusLugat`: [{k, uz, ru}])."""
+    out = list(XUSUSIYAT_LUGAT)
+    bor = {x[0] for x in out}
+    for x in (_ELON_CACHE.get('xusLugat') or []):
+        if not isinstance(x, dict):
+            continue
+        k = str(x.get('k') or '').strip().lower()
+        uz = str(x.get('uz') or '').strip()
+        if k and uz and k not in bor:
+            bor.add(k)
+            out.append((k, uz, str(x.get('ru') or '').strip() or uz, re.compile(r'\s*'.join(map(re.escape, uz.split())), re.I)))
+    return out
+
+
+def _xus_matndan(s):
+    v = str(s or '').strip()
+    return [x[0] for x in _xus_lugat() if v and x[3].search(v)]
+
+
+def storage_xususiyatmi(s):
+    """storage qiymati xususiyatmi (xotira emas) — «MagSafe», «Magsafe, stand»; «128GB» — yo'q."""
+    v = str(s or '').strip()
+    return bool(v) and not re.search(r'\d\s*(gb|tb)', v, re.I) and bool(_xus_matndan(v))
+
+
+def elon_xususiyat(item):
+    """E'lon xususiyat kalitlari: `xususiyat` ustuni (JSON yoki vergul) — bo'sh bo'lsa eski `storage` («MagSafe»)."""
+    item = item or {}
+    v = item.get('xususiyat')
+    if v not in (None, ''):
+        a = v
+        if isinstance(v, str):
+            try:
+                a = json.loads(v)
+            except Exception:
+                a = v.split(',')
+        if not isinstance(a, list):
+            a = [a]
+        lug = _xus_lugat()
+        out = []
+        for x in a:
+            k = str('' if x is None else x).strip().lower()
+            kk = k if any(t[0] == k for t in lug) else (_xus_matndan(k) or [''])[0]
+            if kk and kk not in out:
+                out.append(kk)
+        if out:
+            return out
+    st = item.get('storage')
+    return _xus_matndan(st) if storage_xususiyatmi(st) else []
+
+
+def xususiyat_matn(item, lang='uz'):
+    """«MagSafe, Stand» (ru — «MagSafe, Подставка»)."""
+    nom = {x[0]: (x[2] if lang == 'ru' else x[1]) for x in _xus_lugat()}
+    return ', '.join(nom.get(k, k) for k in elon_xususiyat(item))
+
+
+def elon_xotira(item):
+    """Haqiqiy xotira: storage — faqat xususiyat bo'lmasa («MagSafe» → '')."""
+    s = str((item or {}).get('storage') or '').strip()
+    return '' if storage_xususiyatmi(s) else s
+
+
+def elon_qavs(item, lang='uz'):
+    """Nom yonidagi qavs ichi — xotira va xususiyat («256GB» · «MagSafe, Stand»); ikkalasi ham bo'sh — ''."""
+    return ', '.join(x for x in (elon_xotira(item), xususiyat_matn(item, lang)) if x)
+
+
 def holati_matni(cond, cycle):
     """condition + cycle bo'yicha (uz_qator, ru_qator, emoji) qaytaradi."""
     sikl_uz = f" ({cycle}tsikl)" if cycle else ""
@@ -720,6 +832,10 @@ def get_products(urinish=SHEET_OQISH_URINISH):
             _ELON_CACHE['series'] = data['series']
         if isinstance(data.get('turkumlar'), list):      # G12 daraxt: turkum → bo'lim
             _ELON_CACHE['turkumlar'] = data['turkumlar']
+        if isinstance(data.get('xusLugat'), list):       # BUGUN260-7: admin qo'shgan xususiyatlar (⚙️ Sozlama)
+            _ELON_CACHE['xusLugat'] = data['xusLugat']
+        if isinstance(data.get('rangLugat'), dict):      # BUGUN260-7: qo'lda yozilgan rang ruschalari
+            _ELON_CACHE['rangLugat'] = data['rangLugat']
         if isinstance(data.get('guruhlar'), list):       # BUGUN251: ranglar guruhi (kanal posti) — {id: guruh}
             _ELON_CACHE['guruhlar'] = {str(g.get('id', '')).strip(): g for g in data['guruhlar']
                                        if isinstance(g, dict) and str(g.get('id', '')).strip()}
@@ -1240,7 +1356,6 @@ def build_elon(item, models_by_id):
     """Bitta elon uchun (matn, entities) qaytaradi. entities premium emoji uchun."""
     num = int(float(item.get('num', 0) or 0))
     name_uz = item.get('nameUz', '') or item.get('name', '')
-    storage = item.get('storage', '')
     price = str(item.get('price', '')).replace('.0', '')
     old = str(item.get('oldPrice', '')).replace('.0', '')
     cond = item.get('condition', 'new')
@@ -1282,9 +1397,11 @@ def build_elon(item, models_by_id):
 
     color_clean = clean_color(color_uz)
 
-    # ── Sarlavha: G logo + BOLD nom (xotira) + rang ──
+    # ── Sarlavha: G logo + BOLD nom (xotira, xususiyat) + rang ──
+    # BUGUN260-7: qavs ichi bo'sh bo'lsa — qavs yo'q (ilgari «Nom ()» chiqardi)
     add_prem('google'); add(" ")
-    title = f"{name_uz} ({storage})"
+    qavs = elon_qavs(item)
+    title = name_uz + (f" ({qavs})" if qavs else '')
     add_fmt(title, 'bold')
     if color_clean:
         add(f" {color_clean}")
@@ -1514,7 +1631,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), yozilganidek (BUGUN17)
     mos_txt = html_escape(mos_line(model, models_by_id, 'uz'))
     izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
-    storage = html_escape(str(elon.get('storage') or '').strip())
+    storage = html_escape(elon_qavs(elon))   # BUGUN260-7: xotira + xususiyat («MagSafe, Stand»)
     color = html_escape(clean_color(elon.get('color') or ''))
     price = str(elon.get('price', '') or '').replace('.0', '')
     old = str(elon.get('oldPrice', '') or '').replace('.0', '')
@@ -2709,7 +2826,7 @@ def guruh_post_qur(g, azolar, models, havolalar=None):
     for e in azolar:
         num = _gnum(e)
         cuz = clean_color(e.get('color') or '').strip() or elon_nomi(e, models.get(str(e.get('specId', '') or ''), {}), 'uz')
-        cru = clean_color(e.get('colorRu') or '').strip()
+        cru = clean_color(rang_ru(e)).strip()   # BUGUN260-7: colorRu bo'sh — rang lug'atidan
         nom = html_escape(cuz.upper()) + (f' / {html_escape(cru.upper())}' if cru and cru.upper() != cuz.upper() else '')
         if elon_status(e) == 'sold':
             qatorlar.append(f'• <s>{nom}</s> — qolmadi / нет')
@@ -3055,13 +3172,14 @@ def build_olx_text(item, models_by_id):
     """
     num = int(float(item.get('num', 0) or 0))
     name_uz = item.get('nameUz', '') or item.get('name', '')
-    storage = item.get('storage', '')
+    storage = elon_xotira(item)   # BUGUN260-7: «MagSafe» xotira emas — alohida «Xususiyat» qatori
+    xus_uz, xus_ru = xususiyat_matn(item, 'uz'), xususiyat_matn(item, 'ru')
     price = str(item.get('price', '')).replace('.0', '')
     old = str(item.get('oldPrice', '')).replace('.0', '')
     cond = item.get('condition', 'new')
     cycle = str(item.get('cycle', '') or '').replace('.0', '')
     color_uz = clean_color(item.get('color', ''))
-    color_ru = clean_color(item.get('colorRu', '') or item.get('color', ''))
+    color_ru = clean_color(rang_ru(item))   # BUGUN260-7: colorRu bo'sh bo'lsa — rang lug'atidan
 
     model = models_by_id.get(item.get('specId', ''), {})
     spec_uz = model.get('specUz', '') or ''
@@ -3101,6 +3219,8 @@ def build_olx_text(item, models_by_id):
         lines.append(f"• Rangi: {color_uz}")
     if storage:
         lines.append(f"• Xotira: {storage}")
+    if xus_uz:
+        lines.append(f"• Xususiyat: {xus_uz}")
     if spec_uz:
         lines.append(spec_uz)
     lines.append("")
@@ -3108,10 +3228,13 @@ def build_olx_text(item, models_by_id):
         lines.append(f"• Цвет: {color_ru}")
     if storage:
         lines.append(f"• Память: {storage}")
+    if xus_ru:
+        lines.append(f"• Особенности: {xus_ru}")
     if spec_ru:
         lines.append(spec_ru)
 
-    return f"{name_uz} ({storage})".strip(), "\n".join(lines).strip()
+    qavs = elon_qavs(item)
+    return (name_uz + (f" ({qavs})" if qavs else '')).strip(), "\n".join(lines).strip()
 
 
 def send_elon(chat_id, text, entities):
@@ -5993,7 +6116,7 @@ def inline_natija(elon, models):
     model = (models or {}).get(str(elon.get('specId', '') or ''), {})
     rasmlar = images_of(elon)[:10]
     nom = elon_nomi(elon, model, 'uz')
-    xotira = str(elon.get('storage') or '').strip()
+    xotira = elon_qavs(elon)   # BUGUN260-7: xotira + xususiyat
     rang = clean_color(elon.get('color') or '')
     sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
     narx = str(elon.get('price', '') or '').replace('.0', '')
@@ -6033,7 +6156,7 @@ def _inline_karta(num, elon, model, sarlavha=None, izoh=None):
         return None
     if sarlavha is None:
         nom = elon_nomi(elon, model, 'uz')
-        xotira = str(elon.get('storage') or '').strip()
+        xotira = elon_qavs(elon)   # BUGUN260-7: xotira + xususiyat
         rang = clean_color(elon.get('color') or '')
         sarlavha = nom + (f' ({xotira})' if xotira else '') + (f' {rang}' if rang else '')
     if izoh is None:
@@ -6563,7 +6686,7 @@ def send_elon_card(chat_id, num):
         return
     model = models.get(str(elon.get('specId', '')), {}) if isinstance(models, dict) else {}
     nom = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi
-    xotira = html_escape(str(elon.get('storage', '') or ''))
+    xotira = html_escape(elon_qavs(elon))   # BUGUN260-7: xotira + xususiyat
     rang = html_escape(clean_color(elon.get('color', '')))
     narx = str(elon.get('price', '') or '').replace('.0', '')
     cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used'),
@@ -6868,7 +6991,7 @@ def _share_result(num, elon, model):
     rasm = _ik_olcham(rasm, 'w-800,q-80')
 
     nom = elon_nomi(elon, model, 'uz')   # G12: e'lonning o'z nomi
-    xotira = str(elon.get('storage') or '').strip()
+    xotira = elon_qavs(elon)   # BUGUN260-7: xotira + xususiyat
     rang = clean_color(elon.get('color') or '')
     narx = str(elon.get('price', '')).replace('.0', '')
     cycle = str(elon.get('cycle', '') or '').replace('.0', '')
@@ -7179,7 +7302,7 @@ def _buyurtma_ranglar(elon, ranglar):
 
 def _buyurtma_sarlavha(elon, model, ranglar=None):
     nom = elon_nomi(elon, model, 'uz') or f"E'lon №{elon.get('num', '')}"
-    xotira = str(elon.get('storage') or '').strip()
+    xotira = elon_qavs(elon)   # BUGUN260-7: xotira + xususiyat
     rr = _buyurtma_ranglar(elon, ranglar)
     if rr:   # BUGUN236 §8: «Powerbank — Oq × 1, Qora × 2» (e'lonning umumiy rangi o'rniga)
         rang = ', '.join(f'{r} × {d}' if (d > 1 or len(rr) > 1) else r for r, d in rr)
