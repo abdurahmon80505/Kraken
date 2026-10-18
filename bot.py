@@ -1881,7 +1881,7 @@ def _sheets_update(payload):
     if not SHEET_URL:
         return False
     try:
-        r = req.get(f'{SHEET_URL}?action=update&data={urllib.parse.quote(json.dumps(payload))}', timeout=20)
+        r = req.get(f'{SHEET_URL}?action=update&key={urllib.parse.quote(API_KEY)}&data={urllib.parse.quote(json.dumps(payload))}', timeout=20)
         text = r.text.strip()
         d = json.loads(text[2:-1]) if text.startswith('d(') else r.json()
         return bool(d.get('ok'))
@@ -5283,7 +5283,7 @@ def create_bot_elon(file_ids, yonalish=None, har_rasm=None):
         return {'ok': False, 'yuklanmadi': yuklanmadi}
     try:
         payload = urllib.parse.quote(json.dumps(dict({'images': urls}, **({'yonalish': yonalish} if yonalish else {}))))
-        r = req.get(f'{SHEET_URL}?action=botCreateElon&data={payload}', timeout=45)
+        r = req.get(f'{SHEET_URL}?action=botCreateElon&key={urllib.parse.quote(API_KEY)}&data={payload}', timeout=45)
         res = r.json()
     except Exception as e:
         logger.error(f'create_bot_elon: {_maxfiy(e)}')
@@ -5718,7 +5718,7 @@ def _save_konkurs_photos(chat_id, file_ids):
             'prizePics': ','.join(urls),
             'prizePicFileIds': ','.join(fids)
         }))
-        r = req.get(f'{SHEET_URL}?action=createWaitedKonkurs&data={payload}', timeout=15)
+        r = req.get(f'{SHEET_URL}?action=createWaitedKonkurs&key={urllib.parse.quote(API_KEY)}&data={payload}', timeout=15)
         ok = r.json().get('ok')
     except Exception as e:
         logger.error(f'createWaitedKonkurs: {e}')
