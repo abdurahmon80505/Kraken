@@ -7421,6 +7421,28 @@ def _buyurtma_mijozga(uid, b, yangi):
     return natija
 
 
+def _sotuv_sheet_yoz(uid, b):
+    """BUGUN275: tasdiqlangan buyurtma → Store (Sotuvlar varag'i + e'lon «sotildi»). Store'da (order, num) bo'yicha bir marta
+    yoziladi — qayta chaqirish xavfsiz (admin tugmani qayta bossa shu qayta urinish). nik — buyurtma paytidagi username,
+    yo'q bo'lsa Telegram getChat. Raqam/nik logga YOZILMAYDI. True — Store qabul qildi."""
+    try:
+        tovar = [{'num': x.get('num'), 'soni': x.get('soni') or 1, 'narx': x.get('narx')}
+                 for x in (b.get('tovar') or []) if x.get('num')]
+        if not tovar:
+            return True
+        nik = str(b.get('nik') or '').lstrip('@')
+        if not nik:
+            n, j = _kk_tg('getChat', {'chat_id': uid}, urinish=1)
+            if n == 'yuborildi':
+                nik = str(((j or {}).get('result') or {}).get('username') or '')
+        d = {'order': b.get('order'), 'user_id': uid, 'nik': nik, 'tel': b.get('tel') or '', 'tovar': tovar}
+        r = _kk_sheet('sotuvYoz', timeout=40, data=json.dumps(d, ensure_ascii=False))
+        return bool(r and r.get('ok'))
+    except Exception as e:
+        logger.error(f'sotuv_sheet_yoz: {type(e).__name__}')
+        return False
+
+
 async def buyurtma_holat_tugma(chat_id, message_id, cq_data):
     """Admin tugmasi: bh:<holat>:<uid>:<order>. Holat saqlanadi, tugmalar yangilanadi, mijozga xabar ketadi."""
     try:
@@ -7445,6 +7467,12 @@ async def buyurtma_holat_tugma(chat_id, message_id, cq_data):
             if natija != 'yuborildi':
                 await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: holat saqlandi, lekin mijozga xabar bormadi "
                                               f"(botni to'xtatgan bo'lishi mumkin). «Mijozga yozish» orqali o'zingiz yozing.")
+        # BUGUN275: tasdiqlangan (to'langan / yo'lda / yetkazilgan) buyurtma → Store'ga sotuv yozuvi, e'lonlar «sotildi».
+        # 'eski' ham — bir xil tugma qayta bosilsa Store'ga yozish qayta uriniladi (Store takror yozmaydi).
+        if kod in ('ok', 'eski') and b and b.get('holat') in ('tolandi', 'yolda', 'yetkazildi'):
+            if not await blok(_sotuv_sheet_yoz, uid, b):
+                await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: Store'ga sotuv yozuvi tushmadi — "
+                                              f"tugmani qayta bosing (takror yozilmaydi).")
     except Exception as e:
         logger.error(f'buyurtma_holat_tugma: {e}')
 
@@ -7601,8 +7629,9 @@ async def buyurtma_endpoint(request):
             return web.json_response({'error': sabab}, status=502)
         _BUYURTMA_KORILGAN[(uid, order)] = hozir
         # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
+        nik = ((_init_data_user(data.get('initData', '')) or {}).get('username') or '')   # BUGUN275: sotuv yozuvi uchun
         await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
-                                   _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar)
+                                   _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
         for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
@@ -7866,7 +7895,7 @@ def _mijoz_tovarlar(num, qolgan_nums, sonlar=None, ranglar=None):
     return res
 
 
-def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None):
+def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None, nik=''):
     """/buyurtma muvaffaqiyatli bo'lgach (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi."""
     try:
         _mijoz_tel_qosh(uid, tel, 'sotib')
@@ -7879,7 +7908,8 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
             m['buyurtma'].insert(0, {
                 'order': order, 'ts': time.time(), 'holat': 'kutilmoqda', 'tovar': tovar,
                 'jami': None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
-                'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else ''})
+                'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else '',
+                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40]})
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _mijoz_saqlash()
             _mijoz_sync_belgila('b', uid, order)
