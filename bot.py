@@ -7623,8 +7623,9 @@ async def buyurtma_endpoint(request):
 
 
 # ══ BUGUN225: mijoz profili — 2 ta raqam (akkaunt · yetkazish) va «Buyurtmalarim» ══
-# Raqam saytga HECH QACHON to'liq chiqmaydi: /mijoz_holat faqat niqoblangan ko'rinishini («+998 ** *** 45 67») qaytaradi; sotib
-# olishda sayt 'tel_id' ('akkaunt' | 'dostavka') yuboradi, bot to'liq raqamni o'zi oladi. Raqam qachon olinadi: konkursda (botda
+# BUGUN271: /mijoz_holat imzosi tekshirilgan EGASIGA o'z raqamlarini to'liq qaytaradi (foydalanuvchi: «hech bir marketpleysda bunaqa
+# yashirin turmaydi»); boshqa hech kimga — yo'q (imzo shart, uid imzodan). Sotib olishda sayt baribir 'tel_id' ('akkaunt' |
+# 'dostavka') yuboradi, bot to'liq raqamni o'zi oladi. Yetkazish raqamini mijoz profildan o'zgartiradi — /mijoz_tel. Raqam qachon olinadi: konkursda (botda
 # «Raqamni ulashish» — handle_phone) va «Sotib olish» bosilganda (/buyurtma). Saqlash: xotira + MIJOZ_FAYL (bron kabi: Render
 # qayta ishga tushsa fayl o'chadi — doimiy saqlash Apps Script'ni talab qiladi; eng ko'pi bilan mijoz raqamini qayta yozadi).
 MIJOZ_FAYL = os.environ.get('MIJOZ_FAYL', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mijoz_holat.json'))
@@ -7817,6 +7818,21 @@ def _tel_niqob(tel):
     return '*' * (len(r) - 4) + ' ' + r[-4:]
 
 
+def _tel_uz(tel):
+    """BUGUN271: O'zbekiston raqami → '+998 90 123 45 67'; boshqa shakl — ''. Qabul: '+998901234567', '998 90 123-45-67', '901234567'."""
+    r = re.sub(r'\D', '', str(tel or ''))
+    if len(r) == 9:
+        r = '998' + r
+    if len(r) != 12 or not r.startswith('998') or r[3] == '0':
+        return ''
+    return f'+998 {r[3:5]} {r[5:8]} {r[8:10]} {r[10:]}'
+
+
+def _mijoz_tels_javob(m):
+    """Profil uchun raqamlar ro'yxati — faqat egasining o'ziga (imzo tekshirilgandan keyin) beriladi."""
+    return [{'id': k, 'tel': m['tels'][k], 'niqob': _tel_niqob(m['tels'][k])} for k in _MIJOZ_TEL_TURLAR if m['tels'].get(k)]
+
+
 def _mijoz_tel_qosh(uid, tel, manba):
     """Raqamni profilga yozadi. manba 'konkurs' — akkaunt raqami (Telegram'dan olingan, almashtiriladi);
     manba 'sotib' — akkaunt yo'q bo'lsa akkaunt; bo'lsa va boshqa raqam bo'lsa — yetkazish raqami (yangisi eskisini almashtiradi)."""
@@ -7872,8 +7888,8 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
 
 
 async def mijoz_holat_endpoint(request):
-    """BUGUN225: profil — niqoblangan raqamlar (akkaunt / yetkazish) va «Buyurtmalarim» ro'yxati. initData imzosi shart (401).
-    Javobda to'liq raqam, ism, joy YO'Q."""
+    """BUGUN225: profil — raqamlar (akkaunt / yetkazish) va «Buyurtmalarim» ro'yxati. initData imzosi shart (401).
+    BUGUN271: raqam to'liq ('tel') + eski 'niqob' (moslik); uid faqat imzodan — boshqa odamning raqami kelmaydi. Ism, joy YO'Q."""
     try:
         data = await request.json()
         uid = check_init_data(data.get('initData', ''))
@@ -7881,7 +7897,7 @@ async def mijoz_holat_endpoint(request):
             return web.json_response({'error': 'Imzo notogri'}, status=401)
         with _MIJOZ_LOCK:
             m = _mijoz_ol(uid)
-            tels = [{'id': k, 'niqob': _tel_niqob(m['tels'][k])} for k in _MIJOZ_TEL_TURLAR if m['tels'].get(k)]
+            tels = _mijoz_tels_javob(m)
             buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
                          'tur': b.get('tur', ''), 'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
                                                             for x in (b.get('tovar') or [])]}
@@ -7889,6 +7905,33 @@ async def mijoz_holat_endpoint(request):
         return web.json_response({'ok': True, 'tels': tels, 'buyurtma': buyurtma})
     except Exception as e:
         logger.error(f'mijoz_holat_endpoint: {e}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def mijoz_tel_endpoint(request):
+    """BUGUN271: profil — yetkazish raqamini o'zgartirish. {initData, tel}. Imzo shart (401), uid faqat imzodan; raqam
+    +998 XX XXX XX XX bo'lmasa — 400. Akkaunt raqami bilan bir xil bo'lsa — alohida yetkazish raqami olib tashlanadi (akkaunt
+    raqamining o'zi ishlatiladi). Akkaunt raqami (Telegram) bu yerda o'zgarmaydi. Javob — /mijoz_holat dagi 'tels'."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        tel = _tel_uz(data.get('tel', ''))
+        if not tel:
+            return web.json_response({'error': 'format'}, status=400)
+        with _MIJOZ_LOCK:
+            m = _mijoz_ochiq(uid)
+            if m['tels'].get('akkaunt') and _tel_norm(m['tels']['akkaunt']) == _tel_norm(tel):
+                m['tels'].pop('dostavka', None)
+            else:
+                m['tels']['dostavka'] = tel
+            _mijoz_saqlash()
+            _mijoz_sync_belgila('t', uid)
+            tels = _mijoz_tels_javob(m)
+        return web.json_response({'ok': True, 'tels': tels})
+    except Exception as e:
+        logger.error(f'mijoz_tel_endpoint: {type(e).__name__}')
         return web.json_response({'error': 'xato'}, status=500)
 
 
@@ -8229,7 +8272,8 @@ async def main():
     app.router.add_post('/share', share_endpoint)   # G9.1: ulashish uchun tayyor rasmli xabar
     app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
     app.router.add_post('/buyurtma', buyurtma_endpoint)
-    app.router.add_post('/mijoz_holat', mijoz_holat_endpoint)   # BUGUN225: profil — niqoblangan raqamlar + Buyurtmalarim
+    app.router.add_post('/mijoz_holat', mijoz_holat_endpoint)   # BUGUN225: profil — raqamlar (BUGUN271: to'liq, faqat egasiga) + Buyurtmalarim
+    app.router.add_post('/mijoz_tel', mijoz_tel_endpoint)       # BUGUN271: profil — yetkazish raqamini o'zgartirish
     app.router.add_post('/buyurtma_bekor', buyurtma_bekor_endpoint)   # BUGUN225: mijoz buyurtmani bekor qildi
     app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
