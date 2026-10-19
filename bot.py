@@ -6334,6 +6334,9 @@ async def handle_update(data):
             # B34: «🗑 Postni o'chirish» (faqat admin lichkasi)
             if cq_data.startswith('pochir') and cq_adm:
                 asyncio.create_task(blok(post_ochir_tugma, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
+            # BUGUN296: mijoz — «🧾 To'landim — chek yuborish» (chk:) va «bu chek qaysi buyurtma?» (chm:); faqat o'z lichkasida
+            if cq_data.startswith(('chk:', 'chm:')) and cq_user.get('id') and cq_chat == cq_user.get('id'):
+                asyncio.create_task(chek_tugma(cq_user['id'], cq_data, cq_user))
             return
 
         if not chat_id:
@@ -6350,6 +6353,13 @@ async def handle_update(data):
         # BUGUN252 §4: «🖼 Rasmlar» mavzusi — e'lon ochilmaydi (rasm omborga); buyruqlar (/…) — eski yo'lda
         if guruhdan and rasmlar_mavzusi(chat_id) and not text.startswith('/'):
             await handle_rasmlar_xabar(chat_id, message)
+            return
+
+        # BUGUN296: lichkada rasm / rasm-fayl / PDF — mijozning cheki (admin bo'lsa — faqat o'zi «chek kutilmoqda» qo'ygan bo'lsa,
+        # ya'ni sinab ko'rayotgan bo'lsa; aks holda admin rasmi eskicha e'lon yaratadi)
+        if (message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id
+                and _chek_fayl(message) is not None and (not adm or await blok(_chek_kutyapti, chat_id))):
+            asyncio.create_task(chek_qabul(chat_id, user, message))
             return
 
         # ── ADMIN rasm yuborsa ──
@@ -6432,7 +6442,10 @@ async def handle_update(data):
                 asyncio.create_task(mijoz_bot_qayd(user, 'yangi'))
             parts = text.split(' ', 1)
             deep = parts[1].strip() if len(parts) > 1 else ''
-            if deep in ('konkurs', 'konkurs_y'):
+            if deep.startswith('chek_') and message.get('chat', {}).get('type') == 'private' and user.get('id'):
+                # BUGUN296: saytdagi «🧾 To'landim — chek yuborish» → ?start=chek_<buyurtma raqami> (konkurs / hub chiqmaydi)
+                asyncio.create_task(chek_boshla(user['id'], user, deep[5:].upper()))
+            elif deep in ('konkurs', 'konkurs_y'):
                 if deep == 'konkurs_y' and user.get('id'):   # BUGUN147: saytda logo 3 marta — yashirin konkursga kalit
                     _kk_kalitli.add(user['id'])
                 await start_konkurs_flow(chat_id, user)
@@ -7550,10 +7563,17 @@ async def buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar=None):
         bron_nums = [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')]
         if message_id:
             klava = _buyurtma_klava(uid, order, joriy, bron_nums)
-            yangi_m = _buyurtma_holat_matn((xabar or {}).get('text'), (xabar or {}).get('entities'), joriy,
+            xb = xabar or {}
+            rasmli = not xb.get('text') and bool(xb.get('caption'))   # BUGUN296: chek nusxasi — rasm, matni caption'da
+            yangi_m = _buyurtma_holat_matn(xb.get('caption') if rasmli else xb.get('text'),
+                                           xb.get('caption_entities') if rasmli else xb.get('entities'), joriy,
                                            b.get('holat_ts') or time.time()) if (kod == 'ok' and b) else None
             natija = 'xato'
-            if yangi_m:
+            if yangi_m and rasmli:
+                natija, _ = await blok(_kk_tg, 'editMessageCaption', {
+                    'chat_id': int(chat_id), 'message_id': message_id, 'caption': yangi_m[0],
+                    'caption_entities': yangi_m[1], 'reply_markup': klava}, urinish=2)
+            elif yangi_m:
                 natija, _ = await blok(_kk_tg, 'editMessageText', {
                     'chat_id': int(chat_id), 'message_id': message_id, 'text': yangi_m[0], 'entities': yangi_m[1],
                     'reply_markup': klava, 'link_preview_options': {'is_disabled': True}}, urinish=2)
@@ -7575,6 +7595,358 @@ async def buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar=None):
                                               f"tugmani qayta bosing (takror yozilmaydi).")
     except Exception as e:
         logger.error(f'buyurtma_holat_tugma: {e}')
+
+
+# ══ BUGUN296: chek botga ══
+# Mijoz to'laydi va chekni SHU BOTGA yuboradi (ilgari — @admin ga yozardi, chek buyurtmaga bog'lanmasdi). Oqim:
+#  1) buyurtma tushganda mijozga botda xabar: tarkibi, jami, «💳 To'lash» va «🧾 To'landim — chek yuborish» (to'langan bo'lsa — tugmasiz);
+#  2) «To'landim» (yoki saytdagi tugma → ?start=chek_<raqam>) — bot «chek rasmini yuboring — №…» deydi; «chek kutilmoqda» holati
+#     buyurtma yozuvida (chek = 'kut') — Sheets'dagi «chek» ustuniga ham yoziladi, bot qayta yonsa ham yo'qolmaydi;
+#  3) rasm / rasm-fayl / PDF kelsa: holat bor — o'sha buyurtmaga; yo'q — oxirgi to'lanmagan buyurtmaga; bir nechta bo'lsa — tugma bilan so'raydi;
+#  4) mijozga «✅ Chekingiz qabul qilindi…» + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
+# Bir xil rasm (file_unique_id) ikkinchi marta adminga bormaydi. Albom (bir nechta rasm) — bitta javob, hammasi adminga.
+TOLOV_URL = os.environ.get('TOLOV_URL', 'https://nuqta-tech-tolov.netlify.app/').strip()   # sayt SOTIB_TOLOV_JONLI bilan bir xil
+_CHEK_QULF = threading.Lock()
+_CHEK_ALBOM = {}      # (uid, media_group_id) → {'t', 'order' | None (so'ralmoqda), 'mid': [xabar id'lari]}
+_CHEK_TANLASH = {}    # (uid, message_id) → {'t', 'fid', 'mgid'} — «qaysi buyurtma?» deb so'ralgan chek
+
+
+def _chek_matn(til, uz, ru):
+    return uz if til == 'uz' else ru if til == 'ru' else uz + '\n\n' + ru
+
+
+def _chek_tugma_nomi(til, uz, ru):
+    return uz if til == 'uz' else ru if til == 'ru' else f'{uz} / {ru}'
+
+
+def _chek_tel_til(user, b=None):
+    """Buyurtmada bo'lsa — o'sha til; yo'q bo'lsa Telegram til kodi (ru → ru, uz → uz), bilinmasa ''."""
+    t = (b or {}).get('til')
+    if t in ('uz', 'ru'):
+        return t
+    k = str((user or {}).get('language_code') or '').lower()
+    return 'ru' if k.startswith('ru') else 'uz' if k.startswith('uz') else ''
+
+
+def _chek_summa(b):
+    """(usd, so'm | None, kurs | None). Buyurtmadagi jami $ va (bor bo'lsa) buyurtma paytidagi kurs — sayt bilan bir xil yaxlitlash."""
+    try:
+        usd = float(b.get('jami'))
+    except Exception:
+        return None, None, None
+    if not usd > 0:
+        return None, None, None
+    try:
+        kurs = int(float((b.get('joy') or {}).get('kurs') or 0))
+    except Exception:
+        kurs = 0
+    if not 1000 <= kurs <= 100000:
+        return usd, None, None
+    return usd, int(round(usd * kurs / 1000.0)) * 1000, kurs
+
+
+def _chek_summa_s(b):
+    usd, som, _ = _chek_summa(b)
+    if usd is None:
+        return '—'
+    return f'{usd:g}$' + (f" ≈ {som:,}".replace(',', ' ') + " so'm" if som else '')
+
+
+def _chek_tolov_url(b):
+    usd, som, kurs = _chek_summa(b)
+    if not som:
+        return ''
+    return TOLOV_URL.rstrip('/') + '/?' + urllib.parse.urlencode({'o': b.get('order'), 's': som, 'u': f'{usd:g}', 'k': kurs})
+
+
+def _chek_admin_tugma():
+    return {'text': "✍️ Adminga yozish", 'url': f'https://t.me/{ADMIN_USERNAME}'}
+
+
+def _chek_buyurtma_matn(b):
+    o = html_escape(b.get('order', ''))
+    qat = ''
+    for i, x in enumerate(b.get('tovar') or [], 1):
+        soni = x.get('soni') or 1
+        narx = '' if x.get('narx') is None else f" · {round(x['narx'] * soni, 2):g}$"
+        qat += f"{i}. {html_escape(x.get('nom') or '—')}{f' × {soni}' if soni > 1 else ''}{narx}\n"
+    jami = html_escape(_chek_summa_s(b))
+    return _chek_matn(
+        b.get('til'),
+        f"🛒 <b>Buyurtma №{o}</b>\n\n{qat}\n💵 Jami: <b>{jami}</b>\n\n"
+        f"To'lovni amalga oshiring, so'ng «🧾 To'landim» tugmasini bosib chekni yuboring.",
+        f"🛒 <b>Заказ №{o}</b>\n\n{qat}\n💵 Итого: <b>{jami}</b>\n\n"
+        f"Оплатите заказ, затем нажмите «🧾 Оплатил» и отправьте чек.")
+
+
+def _chek_buyurtma_klava(b):
+    """To'langan (yoki bekor) buyurtmada tugma yo'q; «To'lash» — summa va kurs ma'lum bo'lsa."""
+    if b.get('holat') != 'kutilmoqda':
+        return None
+    til = b.get('til')
+    qator = []
+    url = _chek_tolov_url(b)
+    if url:
+        qator.append([{'text': _chek_tugma_nomi(til, "💳 To'lash", '💳 Оплатить'), 'url': url}])
+    qator.append([{'text': _chek_tugma_nomi(til, "🧾 To'landim — chek yuborish", '🧾 Оплатил — отправить чек'),
+                   'callback_data': f"chk:{b.get('order')}"}])
+    return {'inline_keyboard': qator}
+
+
+def _chek_yubor(uid, matn, klava=None):
+    p = {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML', 'link_preview_options': {'is_disabled': True}}
+    if klava:
+        p['reply_markup'] = klava
+    natija, _ = _kk_tg('sendMessage', p, urinish=2)
+    return natija
+
+
+def _chek_buyurtmalar(uid):
+    return _mijoz_ol(uid)['buyurtma']
+
+
+def _chek_mijozga_xabar(uid, order):
+    """Buyurtma tushganda mijozga bitta xabar (har buyurtmaga bir marta: mijoz_xabar). /start bosmagan bo'lsa Telegram yubormaydi —
+    qayta urinilmaydi (saytdagi «To'landim» tugmasi botni ochadi va o'sha paytda xabar o'zi chiqadi)."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        if not b or b.get('mijoz_xabar') or b.get('holat') != 'kutilmoqda':
+            return None
+        b['mijoz_xabar'] = 1
+        _mijoz_saqlash()
+        b = dict(b)
+    try:
+        return _chek_yubor(uid, _chek_buyurtma_matn(b), _chek_buyurtma_klava(b))
+    except Exception as e:
+        logger.error(f'chek mijozga xabar: {type(e).__name__}')
+        return None
+
+
+def _chek_belgi(uid, order, **maydon):
+    """Yozuvga maydonlar (chek, chek_fid) → fayl + Sheets navbati."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        if not b:
+            return None
+        b.update(maydon)
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+        return dict(b)
+
+
+def _chek_boshla(uid, order, user=None):
+    """«To'landim» bosildi / ?start=chek_<raqam>. Holatni qo'yadi, mijozga javob. Qaytaradi — natija kodi (sinov uchun)."""
+    with _MIJOZ_LOCK:
+        m = _mijoz_ol(uid)
+        b = next((x for x in m['buyurtma'] if x.get('order') == order), None)
+        til = _chek_tel_til(user, b)
+        if b and b.get('holat') == 'kutilmoqda':
+            for x in m['buyurtma']:   # bir vaqtda bitta «chek kutilmoqda»
+                if x is not b and x.get('chek') == 'kut':
+                    x['chek'] = ''
+                    _mijoz_sync_belgila('b', uid, x.get('order'))
+            b['chek'] = 'kut'
+            _mijoz_saqlash()
+            _mijoz_sync_belgila('b', uid, order)
+        b = dict(b) if b else None
+    o = html_escape(order)
+    if not b:
+        _chek_yubor(uid, _chek_matn(til, f"ℹ️ Buyurtma №{o} topilmadi. Savolingiz bo'lsa — adminga yozing.",
+                                    f"ℹ️ Заказ №{o} не найден. Если есть вопрос — напишите админу."),
+                    {'inline_keyboard': [[_chek_admin_tugma()]]})
+        return 'topilmadi'
+    if b.get('holat') == 'bekor':
+        _chek_yubor(uid, _chek_matn(til, f"ℹ️ Buyurtma №{o} bekor qilingan.", f"ℹ️ Заказ №{o} отменён."),
+                    {'inline_keyboard': [[_chek_admin_tugma()]]})
+        return 'bekor'
+    if b.get('holat') != 'kutilmoqda':
+        _chek_yubor(uid, _chek_matn(til, f"✅ Buyurtma №{o} — to'lov allaqachon qabul qilingan. Rahmat!",
+                                    f"✅ Заказ №{o} — оплата уже принята. Спасибо!"))
+        return 'tolangan'
+    _chek_yubor(uid, _chek_matn(til, f"🧾 Chek rasmini (yoki faylini) shu yerga yuboring — buyurtma №{o}",
+                                f"🧾 Отправьте сюда фото (или файл) чека — заказ №{o}"))
+    return 'kutilmoqda'
+
+
+def _chek_fayl(message):
+    """Chek bo'la oladigan xabar: rasm · rasm / PDF fayl → file_unique_id ('' bo'lishi mumkin). Boshqasi — None."""
+    ph = message.get('photo')
+    if ph:
+        return (ph[-1].get('file_unique_id') or ph[-1].get('file_id') or '')
+    d = message.get('document') or {}
+    mt = str(d.get('mime_type') or '')
+    if d and (mt.startswith('image/') or mt == 'application/pdf'):
+        return d.get('file_unique_id') or d.get('file_id') or ''
+    return None
+
+
+def _chek_kutyapti(uid):
+    """Mijozda «chek kutilmoqda» holati bormi (admin o'z lichkasida sinasa — rasm e'lon yasamasin)."""
+    with _MIJOZ_LOCK:
+        return any(b.get('chek') == 'kut' and b.get('holat') == 'kutilmoqda' for b in _chek_buyurtmalar(uid))
+
+
+def _chek_admin_matn(b, davomi=False):
+    o = html_escape(b.get('order', ''))
+    if davomi:
+        return f"🧾 <b>Chek (davomi)</b> — №{o}"
+    return (f"🧾 <b>Chek keldi</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
+            f"👤 {html_escape(b.get('ism') or '—')}\n\n"
+            f"⏳ To'lov kutilmoqda\n🕒 {_kk_vaqt(time.time())}")
+
+
+def _chek_adminga(uid, b, mid, davomi=False):
+    """Chek nusxasi (copyMessage) + izoh + «✅ To'lov keldi». Nusxa bo'lmasa — forward, u ham bo'lmasa — False."""
+    order = b.get('order')
+    yoz = [{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]
+    tolandi = _HOLAT_ADMIN['tolandi']
+    klava = {'inline_keyboard': [yoz]} if davomi else {
+        'inline_keyboard': [yoz, [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f'bh:tolandi:{uid}:{order}'}]]}
+    matn = _chek_admin_matn(b, davomi)
+    natija, _ = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
+                                       'parse_mode': 'HTML', 'reply_markup': klava}, urinish=2)
+    if natija in ('yuborildi', 'noaniq'):   # noaniq — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki nusxa bo'lmasin)
+        return True
+    f, _ = _kk_tg('forwardMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
+    if f != 'yuborildi':
+        return False
+    return _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava},
+                  urinish=2)[0] in ('yuborildi', 'noaniq')
+
+
+def _chek_topshir(uid, user, order, mids, fid):
+    """Chek aniq buyurtmaga biriktirildi: holat belgilanadi, adminga nusxa, mijozga «qabul qilindi». mids[0] — asosiy xabar,
+    qolgani (albom) — «davomi». Admin nusxasi yetmasa — holat qaytariladi va mijozga rost aytiladi (jimgina «qabul» demaydi)."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        if not b:
+            return 'topilmadi'
+        eski = {'chek': b.get('chek') or '', 'chek_fid': list(b.get('chek_fid') or [])}
+    til = _chek_tel_til(user, b)
+    yangi_fid = ([fid] if fid else []) + eski['chek_fid']
+    b = _chek_belgi(uid, order, chek=_kk_vaqt(time.time())[-5:], chek_fid=yangi_fid[:10])
+    o = html_escape(order)
+    if _chek_adminga(uid, b, mids[0]):
+        for m in mids[1:]:
+            _chek_adminga(uid, b, m, davomi=True)
+        _chek_yubor(uid, _chek_matn(
+            til, f"✅ Chekingiz qabul qilindi. Buyurtmangiz №{o} qabul qilindi — admin siz bilan aloqaga chiqadi.",
+            f"✅ Ваш чек принят. Заказ №{o} принят — админ свяжется с вами."), {'inline_keyboard': [[_chek_admin_tugma()]]})
+        return 'qabul'
+    _chek_belgi(uid, order, **eski)
+    _chek_yubor(uid, _chek_matn(
+        til, f"⚠️ Chekni adminga yetkaza olmadim (buyurtma №{o}). Iltimos, «Adminga yozish» orqali chekni to'g'ridan-to'g'ri yuboring.",
+        f"⚠️ Не удалось передать чек админу (заказ №{o}). Пожалуйста, отправьте чек напрямую через «Написать админу»."),
+        {'inline_keyboard': [[_chek_admin_tugma()]]})
+    return 'adminga_yetmadi'
+
+
+def _chek_qabul(uid, user, message):
+    """Mijozdan rasm / fayl keldi (fon oqimida). Qaytaradi — natija kodi: qabul · dup · tanla · yoq · davomi · adminga_yetmadi."""
+    mid, mgid, fid = message.get('message_id'), message.get('media_group_id'), _chek_fayl(message)
+    hozir = time.time()
+    nishon, ochiq, holat, order, davomi = None, [], '', None, False
+    with _CHEK_QULF:
+        for k in [k for k, v in _CHEK_ALBOM.items() if hozir - v['t'] > 600]:
+            _CHEK_ALBOM.pop(k, None)
+        for k in [k for k, v in _CHEK_TANLASH.items() if hozir - v['t'] > 3600]:
+            _CHEK_TANLASH.pop(k, None)
+        alb = _CHEK_ALBOM.get((uid, mgid)) if mgid else None
+        if alb:   # albomning 2-, 3-… rasmi — qaror birinchisiniki
+            alb['mid'].append(mid)
+            order, davomi = alb['order'], True
+        else:
+            with _MIJOZ_LOCK:
+                ochiq = [dict(b) for b in _chek_buyurtmalar(uid) if b.get('holat') == 'kutilmoqda']
+            takror = next((b for b in ochiq if fid and fid in (b.get('chek_fid') or [])), None)
+            kut = next((b for b in ochiq if b.get('chek') == 'kut'), None)
+            nishon = takror or kut or (ochiq[0] if len(ochiq) == 1 else None)
+            if takror:
+                order, holat = takror.get('order'), 'dup'
+            elif nishon:
+                order, holat = nishon.get('order'), 'bor'
+            else:
+                holat = 'yoq' if not ochiq else 'tanla'
+            if mgid and holat in ('bor', 'tanla'):
+                _CHEK_ALBOM[(uid, mgid)] = {'t': hozir, 'order': order, 'mid': [mid]}
+            if holat == 'tanla':
+                _CHEK_TANLASH[(uid, mid)] = {'t': hozir, 'fid': fid, 'mgid': mgid}
+    if davomi:
+        if order:   # order yo'q — so'ralmoqda: tanlangach hammasi birga ketadi
+            with _MIJOZ_LOCK:
+                b = next((dict(x) for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+            if b:
+                _chek_adminga(uid, b, mid, davomi=True)
+                if fid:
+                    _chek_belgi(uid, order, chek_fid=([fid] + list(b.get('chek_fid') or []))[:10])
+        return 'davomi'
+    til = _chek_tel_til(user, nishon)
+    if holat == 'yoq':
+        _chek_yubor(uid, _chek_matn(
+            til, "ℹ️ Sizda to'lov kutayotgan buyurtma topilmadi. Savolingiz bo'lsa — adminga yozing.",
+            "ℹ️ У вас нет заказа, ожидающего оплаты. Если есть вопрос — напишите админу."),
+            {'inline_keyboard': [[_chek_admin_tugma()]]})
+        return 'yoq'
+    if holat == 'dup':
+        o = html_escape(order)
+        _chek_yubor(uid, _chek_matn(
+            til, f"ℹ️ Bu chek allaqachon qabul qilingan — buyurtma №{o}. Admin siz bilan aloqaga chiqadi.",
+            f"ℹ️ Этот чек уже принят — заказ №{o}. Админ свяжется с вами."), {'inline_keyboard': [[_chek_admin_tugma()]]})
+        return 'dup'
+    if holat == 'tanla':
+        qator = [[{'text': f"№{b.get('order')} · {_chek_summa_s(b)}", 'callback_data': f"chm:{b.get('order')}:{mid}"}]
+                 for b in ochiq[:6]]
+        _chek_yubor(uid, _chek_matn(til, "🧾 Bu chek qaysi buyurtma uchun?", "🧾 Для какого заказа этот чек?"),
+                    {'inline_keyboard': qator})
+        return 'tanla'
+    return _chek_topshir(uid, user, order, [mid], fid)
+
+
+def _chek_tugma(uid, cq_data, user=None):
+    """Mijoz tugmalari: chk:<order> — «To'landim» · chm:<order>:<message_id> — «shu buyurtma uchun» (chek allaqachon yuborilgan)."""
+    p = cq_data.split(':')
+    if len(p) < 2 or not re.fullmatch(r'[A-Z0-9]{4,12}', p[1]):
+        return None
+    order = p[1]
+    if p[0] == 'chk' and len(p) == 2:
+        return _chek_boshla(uid, order, user)
+    if p[0] == 'chm' and len(p) == 3 and p[2].isdigit():
+        mid = int(p[2])
+        with _MIJOZ_LOCK:
+            b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        if not b or b.get('holat') != 'kutilmoqda':
+            return _chek_boshla(uid, order, user)   # holat bo'yicha tushuntiradi
+        with _CHEK_QULF:
+            t = _CHEK_TANLASH.pop((uid, mid), None)
+            if t is None:   # bot qayta yongan yoki tugma ikki marta bosilgan — chek allaqachon ishlangan yoki xotira yo'q
+                return _chek_boshla(uid, order, user)
+            alb = _CHEK_ALBOM.get((uid, t.get('mgid'))) if t.get('mgid') else None
+            mids = list(alb['mid']) if alb else [mid]
+            if alb:
+                alb['order'] = order
+        return _chek_topshir(uid, user, order, mids, t.get('fid'))
+    return None
+
+
+async def chek_tugma(uid, cq_data, user=None):
+    try:
+        await blok(_chek_tugma, uid, cq_data, user)
+    except Exception as e:
+        logger.error(f'chek_tugma: {type(e).__name__}')
+
+
+async def chek_qabul(uid, user, message):
+    try:
+        return await blok(_chek_qabul, uid, user, message)
+    except Exception as e:
+        logger.error(f'chek_qabul: {type(e).__name__}')
+
+
+async def chek_boshla(uid, user, order):
+    try:
+        await blok(_chek_boshla, uid, order, user)
+    except Exception as e:
+        logger.error(f'chek_boshla: {type(e).__name__}')
 
 
 # ══ BUGUN295: buyurtma yo'qolmasin ══
@@ -7757,6 +8129,7 @@ def _buyurtma_xabar_ish():
             t = dict(t, matn=_BUYURTMA_QAYTA + t['matn'])
             if _buyurtma_xabar_yubor(uid, b.get('order'), t, kutish=(0, 3)):
                 yuborildi += 1
+                _chek_mijozga_xabar(uid, b.get('order'))   # BUGUN296: sayt zaxirasidan tiklangan buyurtma — mijozga ham (bir marta)
         except Exception as e:
             logger.error(f'buyurtma xabar ish: {type(e).__name__}')
         finally:
@@ -7908,6 +8281,7 @@ async def buyurtma_endpoint(request):
             return web.json_response({'error': 'Telefon notogri'}, status=400)
         if not (1000 <= kurs <= 100000):
             return web.json_response({'error': 'Kurs notogri'}, status=400)
+        joy['kurs'] = kurs   # BUGUN296: mijozga «💳 To'lash» havolasi (so'm = $ × shu kurs) — sayt bilan bir xil summa
         hozir = time.time()
         if (uid, order) in _BUYURTMA_KORILGAN or (uid, order) in _BUYURTMA_JARAYON:
             return web.json_response({'ok': True, 'takror': True})
@@ -7935,6 +8309,8 @@ async def buyurtma_endpoint(request):
                                         kel_ogoh, tel_ogoh, tayyor=tayyor))
         finally:
             _BUYURTMA_JARAYON.discard((uid, order))
+        # BUGUN296: mijozga botda buyurtma xabari (tarkib · jami · «💳 To'lash» · «🧾 To'landim») — fonda, javobni kutdirmaydi
+        loop.run_in_executor(None, _chek_mijozga_xabar, uid, order)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
         for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
@@ -8013,7 +8389,7 @@ def _buyurtma_sheet_dict(uid, b):
     """Bitta buyurtma → Apps Script `buyurtmaYoz` ma'lumoti."""
     return {'order': b.get('order'), 'user_id': str(uid), 'ts': b.get('ts'), 'holat': b.get('holat'),
             'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts'), 'jami': b.get('jami'), 'tur': b.get('tur', ''),
-            'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''), 'admin_xabar': b.get('admin_xabar') or None,
+            'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''), 'admin_xabar': b.get('admin_xabar') or None, 'chek': b.get('chek') or '',
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in (b.get('tovar') or [])]}
 
 
@@ -8080,6 +8456,8 @@ def _mijoz_sheet_birlash(j):
                      'jami': b.get('jami'), 'tur': b.get('tur') or '', 'ism': b.get('ism') or '', 'tel': b.get('tel') or '',
                      'til': b.get('til') or '', 'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts'),
                      'admin_xabar': b.get('admin_xabar') or ''}   # BUGUN295
+            if 'chek' in b:   # BUGUN296: eski Apps Script ustunni bermaydi — shunda botdagi qiymat saqlanadi
+                yozuv['chek'] = b.get('chek') or ''
             i = next((n for n, x in enumerate(m['buyurtma']) if x.get('order') == order), -1)
             if i >= 0:
                 m['buyurtma'][i] = dict(m['buyurtma'][i], **yozuv)   # BUGUN295: faqat botdagi (nik, joy, _xabar) saqlanadi
