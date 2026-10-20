@@ -6300,7 +6300,8 @@ async def handle_update(data):
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
-                       json={'callback_query_id': cq_id}, timeout=5)
+                       json={'callback_query_id': cq_id, **({'text': "✔️ Bu bosqich bajarilgan — holat xabar matnida"}
+                                                            if cq_data == 'bh:-' else {})}, timeout=5)
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
@@ -7393,12 +7394,16 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
             return '—'
         s = f'{n:g}$ × {d} = {round(n * d, 2):g}$' if d > 1 else f'{n:g}$'
         return s + (f' 🎟 (Store {round(n + c, 2):g}$)' if c > 0 else '')
+    def _nom(e, m):   # 2011: tovar nomi — Store'dagi kartaga havola (Owner: «qaysi tovar ekanini bilishim uchun»)
+        t = html_escape(_buyurtma_sarlavha(e, m, ranglar))
+        n = str(e.get('num', '')).strip()
+        return f'<a href="https://t.me/{BOT_USERNAME}?startapp=elon_{html_escape(n)}">{t}</a>' if n.isdigit() else t
     if len(qatorlar) == 1:
-        tovar = (f"📱 <b>{html_escape(_buyurtma_sarlavha(elon, model, ranglar))}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
+        tovar = (f"📱 <b>{_nom(elon, model)}</b> · e'lon №{html_escape(elon.get('num', ''))}\n"
                  + (f"🔢 <b>{donalar[0]} dona</b> · {html_escape(_dona(narxlar[0], donalar[0], cheg[0]))}\n" if donalar[0] > 1 else ''))
     else:
         tovar = f"🧺 <b>Savatdan — {len(qatorlar)} ta tovar:</b>\n" + ''.join(
-            f"{i}. <b>{html_escape(_buyurtma_sarlavha(e, m, ranglar))}</b> · №{html_escape(e.get('num', ''))}"
+            f"{i}. <b>{_nom(e, m)}</b> · №{html_escape(e.get('num', ''))}"
             f" · {html_escape(_dona(n, d, c))}\n"
             for i, ((e, m), n, d, c) in enumerate(zip(qatorlar, narxlar, donalar, cheg), 1))
     jami_s = 'Jami ' if (len(qatorlar) > 1 or donalar[0] > 1) else ''
@@ -7480,14 +7485,19 @@ def _buyurtma_holat_matn(text, entities, holat, ts):
 
 
 def _buyurtma_klava(uid, order, holat, bron_nums):
-    """Adminga boradigan buyurtma xabarining tugmalari: Mijozga yozish · (joriy holat) · keyingi holatlar · bronni bekor qilish."""
+    """Adminga boradigan buyurtma xabarining tugmalari: Mijozga yozish · holat bosqichlari · bronni bekor qilish.
+    2011: bosqichlar DOIM bir joyda — [✅ To'lov keldi | 🚚 Yo'lda] [📦 Yetkazildi]; bajarilgani «✔️ To'landi» bo'ladi (bosilsa
+    holat o'zgarmaydi, faqat «bajarilgan» deydi). NEGA: Owner 2026-10-20 — bosgandan keyin «📍 ✅ To'lov keldi» yana tugmadek
+    chiqdi, «Yo'lda» joyidan ko'chdi — nima o'zgargani tushunilmadi."""
     qator = [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]
-    if holat != 'kutilmoqda':
-        qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
     if holat in _HOLAT_TARTIB:
-        keyingi = [{'text': f'{_HOLAT_ADMIN[h][0]} {_HOLAT_ADMIN[h][1]}', 'callback_data': f'bh:{h}:{uid}:{order}'}
-                   for h in _HOLAT_TARTIB[_HOLAT_TARTIB.index(holat) + 1:]]
-        qator += [keyingi[i:i + 2] for i in range(0, len(keyingi), 2)]
+        i = _HOLAT_TARTIB.index(holat)
+        t = [{'text': f'✔️ {_HOLAT_QATOR[h][1]}', 'callback_data': 'bh:-'} if _HOLAT_TARTIB.index(h) <= i else
+             {'text': f'{_HOLAT_ADMIN[h][0]} {_HOLAT_ADMIN[h][1]}', 'callback_data': f'bh:{h}:{uid}:{order}'}
+             for h in _HOLAT_TARTIB[1:]]
+        qator += [t[:2], t[2:]]
+    else:   # bekor — tugma emas, holat
+        qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
     qator += [[{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
                 'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]
     return {'inline_keyboard': qator}
