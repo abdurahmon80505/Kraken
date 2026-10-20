@@ -7745,6 +7745,8 @@ def _chek_boshla(uid, order, user=None):
                 if x is not b and x.get('chek') == 'kut':
                     x['chek'] = ''
                     _mijoz_sync_belgila('b', uid, x.get('order'))
+            if b.get('chek') != 'kut' or not b.get('chek_ts'):
+                b['chek_ts'] = int(time.time())   # BUGUN305: 1 soatlik eslatma shu paytdan hisoblanadi (qayta bosish uni uzaytirmaydi)
             b['chek'] = 'kut'
             _mijoz_saqlash()
             _mijoz_sync_belgila('b', uid, order)
@@ -7947,6 +7949,89 @@ async def chek_boshla(uid, user, order):
         await blok(_chek_boshla, uid, order, user)
     except Exception as e:
         logger.error(f'chek_boshla: {type(e).__name__}')
+
+
+# ══ BUGUN305: chek kelmasa — adminga eslatma ══
+# Mijoz «To'landim» bosdi (chek = 'kut'), lekin 1 soat chek yubormadi → adminga BITTA eslatma (takror yo'q: chek_esl).
+# Vaqt (chek_ts) va belgi (chek_esl) buyurtma yozuvida — Sheets'dagi «Buyurtmalar» varag'iga ham yoziladi, shuning uchun bot uxlab
+# qolsa yoki Render qayta yonsa ham eslatma yo'qolmaydi: fon sikli har daqiqa tekshiradi, bot qayta yonsa Sheets'dan o'qigach davom etadi.
+# 🌙 Tunda (Toshkent 23:00–08:00) yuborilmaydi — 08:00 dan keyin birinchi tekshiruvda ketadi. Chek kelsa (chek = 'HH:MM'),
+# buyurtma to'langan / bekor bo'lsa — eslatma ketmaydi.
+CHEK_ESLATMA_S = 3600
+CHEK_ESLATMA_ORALIQ_S = 60
+
+
+def _chek_tun(ts):
+    """Toshkent vaqti bilan 23:00–08:00 (jim soatlar)."""
+    soat = int(_kk_vaqt(ts)[11:13])
+    return soat >= 23 or soat < 8
+
+
+def _chek_eslatma_matn(b, hozir=None):
+    o = html_escape(b.get('order', ''))
+    bosilgan = _kk_vaqt(b.get('chek_ts') or time.time())[-5:]
+    return (f"⏰ <b>Chek kelmadi</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
+            f"🧾 «To'landim» bosilgan: {bosilgan}\n\n"
+            f"⏳ To'lov kutilmoqda\n🕒 {_kk_vaqt(hozir or time.time())}")
+
+
+def _chek_eslatma_yubor(uid, b, hozir=None):
+    """Adminga: eslatma + «✅ To'lov keldi» + «✍️ Mijozga yozish». Natija — _kk_tg natijasi."""
+    tolandi = _HOLAT_ADMIN['tolandi']
+    klava = {'inline_keyboard': [
+        [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f"bh:tolandi:{uid}:{b.get('order')}"}],
+        [{'text': '✍️ Mijozga yozish', 'url': f'tg://user?id={uid}'}]]}
+    natija, _ = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': _chek_eslatma_matn(b, hozir), 'parse_mode': 'HTML',
+                                       'reply_markup': klava, 'link_preview_options': {'is_disabled': True}}, urinish=2)
+    return natija
+
+
+def _chek_eslatma_ish(hozir=None):
+    """Bir tekshiruv. Qaytaradi — yuborilgan eslatmalar soni. «kut» holatda vaqti yozilmagan eski buyurtma — hisob hozirdan boshlanadi."""
+    hozir = int(hozir if hozir is not None else time.time())
+    if _chek_tun(hozir):
+        return 0
+    nomzod = []
+    with _MIJOZ_LOCK:
+        for uid, m in list(_MIJOZ.items()):
+            for b in m['buyurtma']:
+                if b.get('chek') != 'kut' or b.get('holat') != 'kutilmoqda' or b.get('chek_esl'):
+                    continue
+                if not b.get('chek_ts'):
+                    b['chek_ts'] = hozir
+                    _mijoz_saqlash()
+                    _mijoz_sync_belgila('b', uid, b.get('order'))
+                elif hozir - int(b['chek_ts']) >= CHEK_ESLATMA_S:
+                    nomzod.append((uid, b.get('order')))
+    yuborildi = 0
+    for uid, order in nomzod:
+        with _MIJOZ_LOCK:   # yuborishdan oldin qayta tekshiramiz va band qilamiz (chek kelgan bo'lishi mumkin; ikki marta ketmasin)
+            b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+            if not b or b.get('chek') != 'kut' or b.get('holat') != 'kutilmoqda' or b.get('chek_esl'):
+                continue
+            b['chek_esl'] = 'x'
+            _mijoz_saqlash()
+            b = dict(b)
+        natija = _chek_eslatma_yubor(uid, b, hozir)
+        # 'noaniq' — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki eslatma bo'lmasin); aniq rad etilsa — keyingi tekshiruvda qayta
+        qiymat = _kk_vaqt(hozir)[-5:] if natija in ('yuborildi', 'noaniq') else ''
+        _chek_belgi(uid, order, chek_esl=qiymat)
+        if qiymat:
+            yuborildi += 1
+    return yuborildi
+
+
+async def chek_eslatma_loop():
+    """BUGUN305: har daqiqada — 1 soat chek kelmagan buyurtmalar uchun adminga eslatma."""
+    await asyncio.sleep(120)   # ishga tushganda avval mijoz_sync_loop Sheets'dan yuklab olsin
+    while True:
+        try:
+            n = await blok(_chek_eslatma_ish)
+            if n:
+                logger.info(f'chek: {n} ta eslatma adminga yuborildi')
+        except Exception as e:
+            logger.error(f'chek_eslatma_loop: {type(e).__name__}')
+        await asyncio.sleep(CHEK_ESLATMA_ORALIQ_S)
 
 
 # ══ BUGUN295: buyurtma yo'qolmasin ══
@@ -8390,6 +8475,7 @@ def _buyurtma_sheet_dict(uid, b):
     return {'order': b.get('order'), 'user_id': str(uid), 'ts': b.get('ts'), 'holat': b.get('holat'),
             'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts'), 'jami': b.get('jami'), 'tur': b.get('tur', ''),
             'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''), 'admin_xabar': b.get('admin_xabar') or None, 'chek': b.get('chek') or '',
+            'chek_ts': b.get('chek_ts'), 'chek_esl': b.get('chek_esl') or '',   # BUGUN305
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in (b.get('tovar') or [])]}
 
 
@@ -8458,6 +8544,9 @@ def _mijoz_sheet_birlash(j):
                      'admin_xabar': b.get('admin_xabar') or ''}   # BUGUN295
             if 'chek' in b:   # BUGUN296: eski Apps Script ustunni bermaydi — shunda botdagi qiymat saqlanadi
                 yozuv['chek'] = b.get('chek') or ''
+            if 'chek_ts' in b:   # BUGUN305: «To'landim» vaqti va eslatma belgisi — bot qayta yonsa ham qoladi
+                yozuv['chek_ts'] = b.get('chek_ts')
+                yozuv['chek_esl'] = b.get('chek_esl') or ''
             i = next((n for n, x in enumerate(m['buyurtma']) if x.get('order') == order), -1)
             if i >= 0:
                 m['buyurtma'][i] = dict(m['buyurtma'][i], **yozuv)   # BUGUN295: faqat botdagi (nik, joy, _xabar) saqlanadi
@@ -9030,6 +9119,7 @@ async def main():
     asyncio.create_task(keep_alive())
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
     asyncio.create_task(buyurtma_xabar_loop())   # BUGUN295: adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham)
+    asyncio.create_task(chek_eslatma_loop())   # BUGUN305: 1 soat chek kelmasa — adminga bitta eslatma
     asyncio.create_task(mijoz_bot_navbat_loop())   # BUGUN232: javob bermagan botStart'lar — fonda qayta
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
