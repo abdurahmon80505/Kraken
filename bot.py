@@ -6989,9 +6989,18 @@ def check_init_data(init_data, max_age=86400):
         if not h:
             return None
         check = '\n'.join(f'{k}={v}' for k, v in sorted(got.items()))
-        secret = hmac.new(b'WebAppData', BOT_TOKEN.encode(), hashlib.sha256).digest()
-        calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(calc, h):
+        # 3086: Mini App eski bot orqali ham ochiladi (eski kanal postlari, ulashilgan havolalar) - Telegram initData ni
+        # o'sha botning tokeni bilan imzolaydi. Ikkalasi ham Owner'ning boti: yangi token, bo'lmasa ESKI_BOT_TOKEN.
+        imzo_ok = False
+        for tok in (BOT_TOKEN, ESKI_BOT_TOKEN):
+            if not tok:
+                continue
+            secret = hmac.new(b'WebAppData', tok.encode(), hashlib.sha256).digest()
+            calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(calc, h):
+                imzo_ok = True
+                break
+        if not imzo_ok:
             return None
         if _t.time() - int(got.get('auth_date', 0) or 0) > max_age:
             return None   # eskirgan
