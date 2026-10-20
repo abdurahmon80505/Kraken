@@ -487,28 +487,43 @@ START_CAPTION = (
     "🇷🇺 <b>Все актуальные смартфоны уже на нашем сайте</b>\n\n"
     "Kirish uchun bosing / Нажмите, чтобы перейти 👇"
 )
-START_ANIM = 'CgACAgIAAxkBAAMvaf3qQRiu8Kk4qBQZdISLTSIIDJYAAsGZAAJG3OhLX3fB57eReYE7BA'
 START_KB = {"inline_keyboard": [[{
     "text": "🛍 Saytga kirish / Перейти на сайт",
     "web_app": {"url": SAYT_URL}
 }]]}
 
 
+START_RASM = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
+_start_rasm = {'file_id': ''}
+
+
 def send_start(chat_id):
+    """/start: rasm + caption (matn) + tugma. Caption 1024 belgidan oshsa — rasm alohida, keyin matn + tugma.
+    Rasm yuborilmasa (fayl yo'q, Telegram xatosi) — oddiy matn + tugma: mijoz baribir saytga kira oladi."""
+    sig = len(START_CAPTION) <= 1024
+    maydon = {'chat_id': chat_id}
+    if sig:
+        maydon.update(caption=START_CAPTION, parse_mode='HTML', reply_markup=START_KB)
     try:
-        r = req.post(f'{TG_API}/sendAnimation', json={
-            'chat_id': chat_id,
-            'animation': START_ANIM,
-            'caption': START_CAPTION,
-            'parse_mode': 'HTML',
-            'reply_markup': START_KB,
-        }, timeout=10)
-        if r.status_code == 200 and r.json().get('ok'):
+        if _start_rasm['file_id']:
+            r = req.post(f'{TG_API}/sendPhoto', json=dict(maydon, photo=_start_rasm['file_id']), timeout=15)
+        else:
+            forma = {k: (v if isinstance(v, (str, int)) else json.dumps(v, ensure_ascii=False)) for k, v in maydon.items()}
+            with open(START_RASM, 'rb') as f:
+                r = req.post(f'{TG_API}/sendPhoto', data=forma, files={'photo': ('kanal_xush_kelibsiz.png', f, 'image/png')}, timeout=30)
+        j = r.json() if r.status_code == 200 else {}
+        if j.get('ok'):
+            fotolar = (j.get('result') or {}).get('photo') or []
+            if fotolar and fotolar[-1].get('file_id'):
+                _start_rasm['file_id'] = fotolar[-1]['file_id']
+            if not sig:
+                send_msg(chat_id, START_CAPTION, START_KB)
             return
-        logger.error(f'sendAnimation: {r.text[:200]}')
+        _start_rasm['file_id'] = ''
+        logger.error(f'/start sendPhoto: {r.text[:200]}')
     except Exception as e:
-        logger.error(f'sendAnimation: {e}')
-    send_msg(chat_id, START_CAPTION, START_KB)   # zaxira: animatsiyasiz
+        logger.error(f'/start sendPhoto: {e}')
+    send_msg(chat_id, START_CAPTION, START_KB)   # zaxira: rasmsiz
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3402,6 +3417,32 @@ def is_member(user_id):
         logger.error(f'getChatMember: {e}')
         return False
 
+def _tech_azomi(user_id):
+    """BUGUN204: asosiy kanal (Nuqta tech) a'zoligi: True / False / None (tekshirib bo'lmadi — masalan bot u kanalda admin emas).
+    Kanal: env TECH_KANAL_ID (@username yoki -100…), bo'sh bo'lsa @nuqta_tech."""
+    kanal = TECH_KANAL or '@nuqta_tech'
+    try:
+        r = req.get(f'{TG_API}/getChatMember', params={'chat_id': kanal, 'user_id': user_id}, timeout=6)
+        j = r.json()
+    except Exception as e:
+        logger.error(f'getChatMember (asosiy kanal): {type(e).__name__}')
+        return None
+    if isinstance(j, dict) and j.get('ok') and isinstance(j.get('result'), dict):
+        return _azo(j['result'])
+    logger.error(f"getChatMember (asosiy kanal {kanal}): {str((j or {}).get('description', ''))[:80]} — bot u kanalda admin bo'lishi kerak")
+    return None
+
+def yetishmagan_kanallar(user_id):
+    """BUGUN204: konkursga ikkala kanalga a'zolik shart. A'zo BO'LMAGAN kanallar ro'yxati, tartib: ['tech', 'mobile'];
+    bo'sh — hammasiga a'zo. Mobile: tekshirib bo'lmasa — a'zo emas (avvalgidek). Asosiy kanal: tekshirib bo'lmasa
+    (None — bot u kanalda admin emas / tarmoq) — to'sib QO'YILMAYDI, jurnalga yoziladi: aks holda hech kim qatnasha olmay qolardi."""
+    yet = []
+    if _tech_azomi(user_id) is False:
+        yet.append('tech')
+    if not is_member(user_id):
+        yet.append('mobile')
+    return yet
+
 # BUGUN232: 2026-10-16 22:05 getKonkurs 10 s da javob bermadi → sayt /kirish_holat «kirmagan» oldi, /start «aktiv konkurs
 # yo'q» deyishi mumkin edi. Endi: 20 s + qayta urinish; bir vaqtda bitta so'rov (parallel chaqiruvlar o'sha natijani oladi —
 # 20 kishi /start bossa Apps Script'ga 20 ta so'rov ketmaydi); Apps Script baribir javob bermasa — oxirgi olingan
@@ -4803,12 +4844,28 @@ async def handle_tozala(chat_id, text):
     await blok(send_msg, chat_id, f"Tugadi: {total} ta xabar o'chirildi.")
 
 
-def not_member_msg(chat_id):
+def azo_kanal_tugmalari(yetishmagan=None):
+    """BUGUN204: «a'zo emas» xabarlarida FAQAT a'zo bo'lmagan kanal(lar) — tartib: 1) asosiy (Nuqta tech), 2) Nuqta tech · Mobile.
+    yetishmagan — ['tech', 'mobile'] dan (None — ikkalasi). Asosiy kanal manzili: env TECH_KANAL_ID @username bo'lsa — o'sha,
+    aks holda (bo'sh yoki -100…) @nuqta_tech."""
+    yetishmagan = ['tech', 'mobile'] if yetishmagan is None else yetishmagan
+    tech = TECH_KANAL.lstrip('@') if TECH_KANAL.startswith('@') else 'nuqta_tech'
+    q = []
+    if 'tech' in yetishmagan:
+        q.append([{"text": f"📢 {BREND}", "url": f"https://t.me/{tech}"}])
+    if 'mobile' in yetishmagan:
+        q.append([{"text": f"📢 {YON_KANAL['mobile'][0]}", "url": CHANNEL_LINK}])
+    return q
+
+def not_member_msg(chat_id, yetishmagan=None):
+    yetishmagan = ['tech', 'mobile'] if yetishmagan is None else yetishmagan
+    nomlar = [BREND if k == 'tech' else YON_KANAL['mobile'][0] for k in ('tech', 'mobile') if k in yetishmagan]
+    ro = "\n".join(f"{i}) {n}" for i, n in enumerate(nomlar, 1))
+    kop = len(nomlar) > 1
     return send_msg(chat_id,
-        "❗ <b>Konkursda qatnashish uchun kanalga a'zo bo'ling!</b>\n"
-        "❗ <b>Для участия подпишитесь на канал!</b>",
-        keyboard={"inline_keyboard": [
-            [{"text": f"📢 {CHANNEL} ga a'zo bo'lish", "url": CHANNEL_LINK}],
+        f"❗ <b>Konkursda qatnashish uchun {'kanallarga' if kop else 'kanalga'} a'zo bo'ling:</b>\n{ro}\n\n"
+        f"❗ <b>Для участия подпишитесь на {'каналы' if kop else 'канал'}:</b>\n{ro}",
+        keyboard={"inline_keyboard": azo_kanal_tugmalari(yetishmagan) + [
             [{"text": "✅ A'zo bo'ldim — qatnashish", "callback_data": "check_member"}]
         ]})
 
@@ -4821,8 +4878,9 @@ async def start_konkurs_flow(chat_id, user):
     if not _kk_aktivmi(k) or not _kk_korsatsinmi(k, user.get('id', chat_id)):
         return 'yopiq', await blok(send_msg, chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
 
-    if not await blok(is_member, chat_id):
-        return 'obuna', await blok(not_member_msg, chat_id)
+    yet = await blok(yetishmagan_kanallar, chat_id)
+    if yet:
+        return 'obuna', await blok(not_member_msg, chat_id, yet)
 
     user_states[chat_id] = {
         'step': 'phone',
@@ -4867,9 +4925,10 @@ async def handle_phone(chat_id, phone, user):
         await _kk_captcha_tugma(chat_id)
         return
 
-    if not await blok(is_member, chat_id):
+    yet = await blok(yetishmagan_kanallar, chat_id)
+    if yet:
         user_states[chat_id] = state          # a'zo bo'lgach qaytadan so'ramaymiz
-        await blok(not_member_msg, chat_id)
+        await blok(not_member_msg, chat_id, yet)
         return
 
     username = state.get('username') or user.get('username', '')
@@ -6307,13 +6366,14 @@ async def handle_update(data):
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
                 await blok(yonalish_post, cq_chat, cq_data[4:])
             if cq_data == 'check_member' and cq_chat:
-                if await blok(is_member, cq_chat):
+                yet = await blok(yetishmagan_kanallar, cq_chat)
+                if not yet:
                     await start_konkurs_flow(cq_chat, cq_user)
                 else:
                     await blok(send_msg, cq_chat,
-                        "❌ Hali a'zo emassiz! Avval kanalga a'zo bo'ling.",
-                        {"inline_keyboard": [
-                            [{"text": "📢 Kanalga a'zo bo'lish", "url": CHANNEL_LINK}],
+                        "❌ Hali a'zo emassiz! Avval kanallarga a'zo bo'ling.\n"
+                        "❌ Вы ещё не подписаны! Сначала подпишитесь на каналы.",
+                        {"inline_keyboard": azo_kanal_tugmalari(yet) + [
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
             # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
