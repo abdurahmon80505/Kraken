@@ -215,42 +215,113 @@ _TARMOQ_XATO = (req.Timeout, req.ConnectionError)   # BUGUN232: _sheet_oqi qayta
 req = _TgReq(req)
 
 
+# 3110 (Owner, 2026-10-21): /guruh ochgan mavzular GURUH da faqat xotirada edi — bot qayta ishga tushganda yo'qolar, /guruh
+# esa yangilarini ochar edi (25 ta mavzu to'plandi). Endi qator Apps Script «Script Properties» ga (ADMIN_GURUH, action
+# guruhHolat) yoziladi va ishga tushganda o'qiladi. Jadvaldagi qator env ADMIN_GURUH dan USTUN; jadval bo'sh bo'lsa env
+# (bo'lsa) jadvalga ko'chiriladi. Jadval o'qilmaguncha /guruh mavzu OCHMAYDI (takror bo'lmasin).
+_guruh_holat = {'yuklandi': False, 'saqlanmagan': False}
+
+
+def guruh_sheet_oqi():
+    """Jadvaldagi ADMIN_GURUH qatori ('' — hali yo'q) yoki None (tarmoq / eski Apps Script)."""
+    j = _kk_sheet('guruhHolat', timeout=20)
+    return str(j.get('qator') or '') if j and j.get('ok') else None
+
+
+def guruh_sheet_yoz(qator):
+    j = _kk_sheet('guruhHolat', timeout=20, yoz=1, qator=qator)
+    return bool(j and j.get('ok') and j.get('qator') == qator)
+
+
+def guruh_yuklash():
+    """Jadvaldagi GURUH ni xotiraga oladi. True — tayyor (yoki jadval umuman ulanmagan: eskicha, faqat env)."""
+    global GURUH
+    if _guruh_holat['yuklandi']:
+        return True
+    if not SHEET_URL or not API_KEY:
+        _guruh_holat['yuklandi'] = True
+        return True
+    qator = None
+    for urinish in range(3):
+        qator = guruh_sheet_oqi()
+        if qator is not None:
+            break
+        time.sleep(3)
+    if qator is None:
+        logger.error("guruh: jadvaldan o'qib bo'lmadi (tarmoq yoki Apps Script eski)")
+        return False
+    g = guruh_oqi(qator)
+    if g:
+        GURUH = g
+        logger.info(f"guruh: jadvaldan yuklandi ({len(g) - 1} mavzu)")
+    elif GURUH.get('id'):
+        _guruh_holat['saqlanmagan'] = not guruh_sheet_yoz(guruh_qator(GURUH))   # env dagi qator — jadvalga ko'chadi
+    _guruh_holat['yuklandi'] = True
+    return True
+
+
+async def guruh_tiklash():
+    """Ishga tushganda (fonda): webhook kutmaydi."""
+    try:
+        await blok(guruh_yuklash)
+    except Exception as e:
+        logger.error(f'guruh_tiklash: {type(e).__name__}')
+
+
 def guruh_sozla(chat, forum, xabar_chat):
-    """/guruh (guruhda, admin): mavzularni ochadi, GURUH ni xotirada yoqadi, env qatorini yozib beradi.
-    MS3.2: guruh allaqachon sozlangan bo'lsa — faqat YO'Q mavzular ochiladi (eskilari takrorlanmaydi)."""
+    """/guruh (guruhda, admin): YO'Q mavzularni ochadi (borlari takrorlanmaydi), GURUH ni xotirada yoqadi va jadvalga
+    saqlaydi — bot qayta ishga tushsa ham shu to'plam. Oxirida ishlatilayotgan mavzular ro'yxati chiqadi."""
     global GURUH
     if not forum:
         send_msg(xabar_chat, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: guruh sozlamalari → Topics → yoqing, "
                              "keyin /guruh ni qayta yuboring.")
         return
-    if GURUH.get('id') == chat and all(GURUH.get(k) for k, _ in GURUH_MAVZULAR):
-        g = GURUH
-    else:
-        g = dict(GURUH) if GURUH.get('id') == chat else {'id': chat}
-        yangi = [(k, nom) for k, nom in GURUH_MAVZULAR if not g.get(k)]
-        for k, nom in yangi:
-            try:
-                j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
-            except Exception as e:
-                j = {'description': str(e)}
-            if not j.get('ok'):
-                send_msg(xabar_chat, f"⚠️ «{nom}» mavzusi ochilmadi: <code>{html_escape(str(j.get('description', '')))}</code>\n"
-                                     "Botni guruhga admin qiling va «Mavzularni boshqarish» huquqini bering, keyin /guruh.")
-                return
-            g[k] = j['result']['message_thread_id']
+    if not guruh_yuklash():
+        send_msg(xabar_chat, "⚠️ Saqlangan mavzular jadvaldan o'qilmadi — takror mavzu ochilmasin deb to'xtadim. "
+                             "1 daqiqadan keyin /guruh ni qayta yuboring.")
+        return
+    g = dict(GURUH) if GURUH.get('id') == chat else {'id': chat}
+    yangi = [(k, nom) for k, nom in GURUH_MAVZULAR if not g.get(k)]
+    ochildi, xato = [], None
+    for k, nom in yangi:
+        try:
+            j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
+        except Exception as e:
+            j = {'description': str(e)}
+        if not j.get('ok'):
+            xato = (nom, str(j.get('description', '')))
+            break
+        g[k] = j['result']['message_thread_id']
+        ochildi.append((k, nom))
+    if ochildi:   # chala bo'lsa ham saqlanadi: ochilgan mavzu yo'qolmasin, qayta /guruh faqat qolganini ochadi
         GURUH = g
-        for k, nom in yangi:
-            send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga rasm tashlang: chala e'lon shu bo'limga yaratiladi."
-                     if k.startswith('rasm_') else
-                     f"{nom} — shu mavzuga rasm tashlang: e'lon ochilmaydi, rasm «Rasmlar» omboriga tushadi (saytda "
-                     "«🖼 Rasmlardan tanlash»). Izohga e'lon raqamini (masalan 213) yozsangiz — rasm o'sha e'longa qo'shiladi."
-                     if k == 'rasmlar' else
-                     f"{nom} — saytdagi AI yordamchi hisoboti shu yerga keladi (Toshkent: 05, 10, 15, 20, 01)."
-                     if k == 'ai' else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
-    send_msg(xabar_chat, "✅ Guruh tayyor — hozirdan xabarlar shu yerga keladi (bot qayta ishga tushguncha).\n"
-                         "Doimiy bo'lishi uchun Render → Environment → <b>ADMIN_GURUH</b> = quyidagi qator "
-                         "(bosib nusxalang), keyin Manual Deploy:\n"
-                         f"<code>{guruh_qator(g)}</code>")
+        _guruh_holat['saqlanmagan'] = True
+    if _guruh_holat['saqlanmagan']:
+        _guruh_holat['saqlanmagan'] = not guruh_sheet_yoz(guruh_qator(GURUH))
+    for k, nom in ochildi:
+        send_msg(Joy(chat, g[k]), f"{nom} — shu mavzuga rasm tashlang: chala e'lon shu bo'limga yaratiladi."
+                 if k.startswith('rasm_') else
+                 f"{nom} — shu mavzuga rasm tashlang: e'lon ochilmaydi, rasm «Rasmlar» omboriga tushadi (saytda "
+                 "«🖼 Rasmlardan tanlash»). Izohga e'lon raqamini (masalan 213) yozsangiz — rasm o'sha e'longa qo'shiladi."
+                 if k == 'rasmlar' else
+                 f"{nom} — saytdagi AI yordamchi hisoboti shu yerga keladi (Toshkent: 05, 10, 15, 20, 01)."
+                 if k == 'ai' else f"{nom} — shu mavzuga shu turdagi xabarlar keladi.")
+    if xato:
+        send_msg(xabar_chat, f"⚠️ «{xato[0]}» mavzusi ochilmadi: <code>{html_escape(xato[1])}</code>\n"
+                             "Botni guruhga admin qiling va «Mavzularni boshqarish» huquqini bering, keyin /guruh.")
+        if not ochildi:
+            return
+    if GURUH.get('id') != chat:
+        return
+    royxat = '\n'.join(f'• <a href="https://t.me/c/{str(chat)[4:]}/{GURUH[k]}">{nom}</a>'
+                       for k, nom in GURUH_MAVZULAR if GURUH.get(k))
+    bosh = (f"✅ Guruh tayyor — {len(ochildi)} ta yangi mavzu ochildi." if ochildi else
+            "ℹ️ Mavzular allaqachon bor — yangi mavzu ochilmadi.")
+    oxir = ("Doimiy saqlandi: bot qayta ishga tushsa ham <b>shu mavzular</b> ishlaydi (oxirgi /guruh)."
+            if not _guruh_holat['saqlanmagan'] else
+            "⚠️ Doimiy saqlab bo'lmadi — bot qayta ishga tushsa yo'qoladi. Birozdan keyin /guruh ni qayta yuboring.")
+    send_msg(xabar_chat, f"{bosh}\nBot hozir shu mavzularni ishlatyapti:\n{royxat}\n{oxir}")
+
 
 # Premium emoji ID'lari (base emoji -> custom_emoji_id)
 PREMIUM = {
@@ -550,6 +621,7 @@ XUSH_KANALLAR = tuple(os.environ.get('XUSH_KANALLAR', '').split()) or (TEST_CHAN
 # env TECH_KANAL_ID (@nuqta_tech yoki -100…) — bo'sh bo'lsa hub o'chiq. Yo'nalish kanallari manzili — yuqoridagi YON_KANAL
 # (env KANAL_MOBILE / KANAL_CAMERA / KANAL_PC); sukut — K10 manzillari. Sinov: TECH_KANAL_ID = TEST kanal.
 TECH_KANAL = os.environ.get('TECH_KANAL_ID', '').strip()
+TECH_SUKUT = '@nuqta_tech'   # 3110: env bo'sh bo'lsa ham tech kanalga kirish kuzatiladi (hub xush kelibsizi — faqat env bilan)
 HUB_YONALISHLAR = (   # BUGUN213: tartib PC · Kamera · Smartfon (foydalanuvchi)
     ('💻 PC', YON_KANAL['pc'][1]),
     ('📷 Kamera', YON_KANAL['camera'][1]),
@@ -725,7 +797,7 @@ def xush_kimga(cm):
         return None
     yangi = cm.get('new_chat_member') or {}
     user = yangi.get('user') or {}
-    if not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL,)) and not yon_kanal_kaliti(cm.get('chat')):
+    if not any(_kanal_mos(cm.get('chat'), k) for k in XUSH_KANALLAR + (TECH_KANAL or TECH_SUKUT,)) and not yon_kanal_kaliti(cm.get('chat')):
         return None   # BUGUN213: uchala yo'nalish kanali (YON_KANAL) — HAR KIMGA o'z xush kelibsizi
     if user.get('is_bot') or not user.get('id'):
         return None
@@ -782,6 +854,42 @@ def xush_yubor(chat_id, uid, hub=False, yon=''):
     return True, ''
 
 
+# 3110 (Owner, 2026-10-21): tech kanalga kirgan odam — adminga darhol «✅ … tech kanalga kirdi»; 1 daqiqadan keyin Mobile
+# kanal a'zoligi tekshiriladi: a'zo — «📱 … Mobile'ga kirdi», a'zo emas — «🔴 … Mobile'ga kirmadi» (Owner mijozga Mobile
+# havolasini o'zi yuboradi — ism bosilsa lichka ochiladi). Mijozga avtomatik xabar YO'Q. Taymer xotirada: 1 daqiqa ichida
+# bot qayta ishga tushsa — shu odamning tekshiruvi tushib qoladi. Mobile kanalda bot admin bo'lishi shart (getChatMember).
+MOBILE_KUTISH_S = 60
+
+
+def _kirgan_nom(user):
+    """Admin xabarida ism-havola: username bo'lsa t.me, bo'lmasa tg://user?id (lichka ochiladi)."""
+    ism = ' '.join(x for x in (user.get('first_name'), user.get('last_name')) if x) or user.get('username') or str(user.get('id'))
+    un = str(user.get('username') or '')
+    havola = f'https://t.me/{un}' if re.fullmatch(r'\w{5,32}', un) else f"tg://user?id={user.get('id')}"
+    return f'<a href="{havola}">{html_escape(ism)}</a>'
+
+
+def _mobile_tekshir(user):
+    azo = _kanal_azomi('@' + YON_KANAL['mobile'][1], user['id'], 'Mobile kanal')
+    nom = _kirgan_nom(user)
+    if azo is None:
+        msg = f"⚠️ {nom} — Mobile a'zoligini tekshirib bo'lmadi (bot Mobile kanalda admin bo'lishi kerak)"
+    else:
+        msg = f"📱 {nom} Mobile'ga kirdi" if azo else f"🔴 <b>{nom} Mobile'ga kirmadi</b>"
+    send_msg(admin_joy('mijoz'), msg)
+
+
+def _mobile_rejalash(user):
+    t = threading.Timer(MOBILE_KUTISH_S, _mobile_tekshir, args=(user,))
+    t.daemon = True
+    t.start()
+
+
+def tech_kirdi(user):
+    send_msg(admin_joy('mijoz'), f"✅ {_kirgan_nom(user)} tech kanalga kirdi")
+    _mobile_rejalash(user)
+
+
 def kanal_xush_kelibsiz(cm):
     """`chat_member` → yangi a'zoga xush kelibsiz (fonda, `blok` bilan). Natija: 'yuborildi' | 'xato' | ''."""
     uid = xush_kimga(cm)
@@ -796,12 +904,17 @@ def kanal_xush_kelibsiz(cm):
         _xush['yuborilgan'][(chat.get('id'), uid)] = hozir
         if len(_xush['yuborilgan']) > 5000:
             _xush['yuborilgan'] = {k: t for k, t in _xush['yuborilgan'].items() if hozir - t < 3600}
+    tech = _kanal_mos(chat, TECH_KANAL or TECH_SUKUT)
+    if tech:
+        tech_kirdi((cm.get('new_chat_member') or {}).get('user') or {'id': uid})   # 3110: «ishladi» xabari o'rniga
+        if not TECH_KANAL:
+            return ''   # hub o'chiq (env bo'sh) — xush kelibsiz yuborilmaydi, faqat kuzatuv
     yon = '' if _kanal_mos(chat, TECH_KANAL) else yon_kanal_kaliti(chat)   # BUGUN213: yo'nalish kanali — o'z yo'nalishi posti
     ok, xato = xush_yubor(chat.get('id'), uid, hub=_kanal_mos(chat, TECH_KANAL), yon=yon)   # B38: tech kanal — hub
     kanal = html_escape('@' + chat['username'] if chat.get('username') else str(chat.get('id', '')))
     if ok:
         logger.info(f'xush kelibsiz: {uid} -> {kanal}')
-        if not _xush['ishladi']:
+        if not _xush['ishladi'] and not tech:
             _xush['ishladi'] = True
             ism = html_escape(((cm.get('new_chat_member') or {}).get('user') or {}).get('first_name', '') or str(uid))
             send_msg(admin_joy('mijoz'), f"✅ Kanal xush kelibsiz ishladi: <b>{ism}</b> {kanal} ga qo'shildi — unga "
@@ -3417,20 +3530,23 @@ def is_member(user_id):
         logger.error(f'getChatMember: {e}')
         return False
 
-def _tech_azomi(user_id):
-    """BUGUN204: asosiy kanal (Nuqta tech) a'zoligi: True / False / None (tekshirib bo'lmadi — masalan bot u kanalda admin emas).
-    Kanal: env TECH_KANAL_ID (@username yoki -100…), bo'sh bo'lsa @nuqta_tech."""
-    kanal = TECH_KANAL or '@nuqta_tech'
+def _kanal_azomi(kanal, user_id, nom='kanal'):
+    """Kanal a'zoligi: True / False / None (tekshirib bo'lmadi — masalan bot u kanalda admin emas)."""
     try:
         r = req.get(f'{TG_API}/getChatMember', params={'chat_id': kanal, 'user_id': user_id}, timeout=6)
         j = r.json()
     except Exception as e:
-        logger.error(f'getChatMember (asosiy kanal): {type(e).__name__}')
+        logger.error(f'getChatMember ({nom}): {type(e).__name__}')
         return None
     if isinstance(j, dict) and j.get('ok') and isinstance(j.get('result'), dict):
         return _azo(j['result'])
-    logger.error(f"getChatMember (asosiy kanal {kanal}): {str((j or {}).get('description', ''))[:80]} — bot u kanalda admin bo'lishi kerak")
+    logger.error(f"getChatMember ({nom} {kanal}): {str((j or {}).get('description', ''))[:80]} — bot u kanalda admin bo'lishi kerak")
     return None
+
+def _tech_azomi(user_id):
+    """BUGUN204: asosiy kanal (Nuqta tech) a'zoligi: True / False / None (tekshirib bo'lmadi — masalan bot u kanalda admin emas).
+    Kanal: env TECH_KANAL_ID (@username yoki -100…), bo'sh bo'lsa @nuqta_tech."""
+    return _kanal_azomi(TECH_KANAL or TECH_SUKUT, user_id, 'asosiy kanal')
 
 def yetishmagan_kanallar(user_id):
     """BUGUN204: konkursga ikkala kanalga a'zolik shart. A'zo BO'LMAGAN kanallar ro'yxati, tartib: ['tech', 'mobile'];
@@ -9202,6 +9318,7 @@ async def main():
     asyncio.create_task(mijoz_bot_navbat_loop())   # BUGUN232: javob bermagan botStart'lar — fonda qayta
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
+    asyncio.create_task(guruh_tiklash())   # 3110: /guruh mavzulari jadvaldan (qayta ishga tushsa ham qoladi)
     # Bot ishga tushganda: e'lon xotirasi (G10.3) + oxirgi elon raqami — BITTA yuklashdan
     try:
         if await blok(elon_cache_load) and _ELON_CACHE['by_num']:   # BUGUN232: alohida ipda — Sheets kechiksa webhook to'xtamaydi
