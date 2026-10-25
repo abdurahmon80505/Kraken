@@ -1758,7 +1758,37 @@ def belgi_src(elon):
     return src
 
 
-def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None):
+# 3189 (A60, Owner 2026-10-25): post OXIRI — e'lon va rang guruhi postida bir xil. Matn oxirida 📞 admin (telefon + @),
+#   kanallar; tugmalar — «🛒 Sotib olish» (shu e'lon Mini App'da) va «🛍 Boshqa e'lonlar» (sayt bosh sahifasi). «Admin» /
+#   «Kanal» tugmalari olib tashlandi. Kanallar qayerda — POST_SHABLON: 1 — Yangiliklar tugmada, yo'nalish kanali matnda ·
+#   2 — ikkalasi tugmada · 3 — ikkalasi matnda (sukut — Owner matni shunday; 3 xil sinov TEST kanalga yuborildi, tanlasa — shu raqam).
+POST_SHABLON = 3
+YON_EMOJI = {'mobile': '📱', 'pc': '💻', 'camera': '📷'}
+
+
+def post_oxiri(sahifa, yonalish, shablon=None):
+    """(aloqa <p>…</p>, tugma qatorlari) — sahifa: startapp qiymati («elon_307»), yonalish — YON_KANAL kaliti."""
+    shablon = shablon or POST_SHABLON
+    kanal_nomi, kanal = YON_KANAL[yonalish if yonalish in YON_KANAL else 'mobile']
+    yon = (f"{YON_EMOJI.get(yonalish, '📱')} {kanal_nomi.replace(' · ', ' ')}", kanal)   # «📱 Nuqta tech Mobile»
+    yangi = (f'💡 {BREND} • Yangiliklar', TECH_SUKUT.lstrip('@'))
+    matnda, tugmada = {1: ([yon], [yangi]), 2: ([], [yon, yangi])}.get(shablon, ([yon, yangi], []))
+    tel_href = re.sub(r'[^\d+]', '', ALOQA_TEL)
+    aloqa = (f'<p>📞 <a href="tel:{tel_href}">{html_escape(ALOQA_TEL)}</a> · @{ADMIN_USERNAME}'
+             + ''.join(f'<br/><a href="https://t.me/{u}">{html_escape(n)}</a>' for n, u in matnda) + '</p>')
+    tugmalar = (
+        '<tg-button-row>'
+        f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp={sahifa}">🛒 Sotib olish</tg-button>'
+        '</tg-button-row>'
+        '<tg-button-row>'
+        f'<tg-button type="url" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Boshqa e\'lonlar</tg-button>'
+        '</tg-button-row>'
+        + ('<tg-button-row>' + ''.join(f'<tg-button type="url" url="https://t.me/{u}">{html_escape(n)}</tg-button>' for n, u in tugmada)
+           + '</tg-button-row>' if tugmada else ''))
+    return aloqa, tugmalar
+
+
+def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None, shablon=None):
     """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow.
     v9 (BUGUN31, B28): kollaj=True — admin tugma bilan kollajga o'tkazgan post (sukut — slideshow).
@@ -1808,11 +1838,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     # v4: RASM TEPADA, matn pastda — kanaldagi eski postga yaqin (foydalanuvchi so'radi);
     #     holati ikki tilda IKKI qator (bitta qatorga qo'shilgani «xunuk» edi)
     # ALOQA (2026-10-07): kanal — e'lon yuborilgan yo'nalishniki (Mobile → «Nuqta tech · Mobile» @nuqta_tech_mobile, …)
-    kanal_nomi, kanal = YON_KANAL[yonalish if yonalish in YON_KANAL else post_yonalish(elon, models_by_id)]
-    tel_href = re.sub(r'[^\d+]', '', ALOQA_TEL)
-    aloqa = (f'<p>📞 <a href="tel:{tel_href}">{html_escape(ALOQA_TEL)}</a><br/>'
-             f'📩 @{ADMIN_USERNAME}<br/>'
-             f'🪐 <a href="https://t.me/{kanal}">{html_escape(kanal_nomi)}</a></p>')
+    aloqa, tugmalar = post_oxiri(f'elon_{num}', yonalish if yonalish in YON_KANAL else post_yonalish(elon, models_by_id), shablon)
     # v5: bloklar orasida BO'SH JOY (Telegram rich'da paragraflar orasiga margin qo'ymaydi —
     #     bo'sh paragraf \u00a0 bilan). Holati + narx BITTA blok. Foydalanuvchi ko'rsatdi:
     #     xarakteristika / bo'sh / holati·holati·narx / bo'sh / tugma
@@ -1833,17 +1859,8 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
         + f'<p>{e("money")} Narxi / Цена: {narx}' + (f'<br/>{soni_qatori(elon)}' if soni_qatori(elon) else '') + '</p>'   # B13: qoldiq
         + BOSH
-        + aloqa   # ALOQA (2026-10-07): raqam (bosilsa qo'ng'iroq), admin, yo'nalish kanali
-        + '<tg-button-row>'
-          # v3: «Saytni ochish» — BUTUN sayt (startapp=home). Foydalanuvchi: «forwardda e'lonni
-          #     to'liq ko'rib bo'lgan odamga shu e'lonni saytda ko'rishdan naf yo'q — boshqa
-          #     e'lonlarni ko'rgani yaxshi»
-          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Saytni ochish / Открыть сайт</tg-button>'
-          '</tg-button-row>'
-        + '<tg-button-row>'
-          f'<tg-button type="url" url="https://t.me/{ADMIN_USERNAME}">✉️ Admin</tg-button>'
-          f'<tg-button type="url" url="https://t.me/{kanal}">🪐 Kanal</tg-button>'   # v8: lampa (K logo) → 🪐 (foydalanuvchi)
-          '</tg-button-row>'
+        + aloqa   # ALOQA (2026-10-07): raqam (bosilsa qo'ng'iroq), admin, kanal(lar) — 3189: post_oxiri
+        + tugmalar   # 3189 (A60): «🛒 Sotib olish» (shu e'lon) + «🛍 Boshqa e'lonlar»; v3 dagi «Saytni ochish» va Admin / Kanal tugmalari o'rnida
     )
 
 
@@ -2946,7 +2963,7 @@ def _guruh_rasmlar(g):
     return [str(u).strip() for u in v if str(u or '').strip()] if isinstance(v, list) else []
 
 
-def guruh_post_qur(g, azolar, models, havolalar=None):
+def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
     """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>)."""
     havolalar = havolalar or {}
     juft = [belgi_ajrat(u) for u in _guruh_rasmlar(g)] or [rasm_joylari(e)[0] for e in azolar if rasm_joylari(e)]
@@ -2963,14 +2980,26 @@ def guruh_post_qur(g, azolar, models, havolalar=None):
     faol = [e for e in azolar if elon_status(e) != 'sold']
     narxlar = [n for n in (_narx_son(e) for e in faol) if n]
     farqli = len(set(narxlar)) > 1
+    # 3189 (A55): juft guruh — telefon + g'ilof / aksessuar (rang emas): «…$ dan» yo'q, har qatorda o'z nomi va narxi
+    aralash = len({elon_turi(e, models) == 'phone' for e in azolar}) > 1
     if not faol:
         narx = '<p>Qolmadi / Нет в наличии</p>'
-    elif not narxlar:
+    elif not narxlar or aralash:
         narx = ''
     elif farqli:
         narx = f'<p><b>{fmt(min(narxlar))}$ dan</b> / <b>от {fmt(min(narxlar))}$</b></p>'
     else:
         narx = f'<p><b>{fmt(narxlar[0])}$</b></p>'
+
+    # 3189 (A62, Owner 2026-10-25): guruh posti ham TO'LIQ — narx, holati, aloqa. Holati hammasida bir xil — bitta qator,
+    #     farqli — har rang qatorida
+    hol = lambda e: holati_matni(e.get('condition', 'used') or 'used', str(e.get('cycle', '') or '').replace('.0', ''))
+    hollar = {hol(e) for e in faol}
+    holat = ''
+    if len(hollar) == 1:
+        cuz, cru, cem = next(iter(hollar))
+        holat = (f'<p>{html_escape(cem)} Holati: <b>{html_escape(cuz)}</b><br/>'
+                 f'{html_escape(cem)} Состояние: <b>{html_escape(cru)}</b></p>')
 
     qatorlar = []
     for e in azolar:
@@ -2978,13 +3007,16 @@ def guruh_post_qur(g, azolar, models, havolalar=None):
         cuz = clean_color(e.get('color') or '').strip() or elon_nomi(e, models.get(str(e.get('specId', '') or ''), {}), 'uz')
         cru = clean_color(rang_ru(e)).strip()   # BUGUN260-7: colorRu bo'sh — rang lug'atidan
         nom = html_escape(cuz.upper()) + (f' / {html_escape(cru.upper())}' if cru and cru.upper() != cuz.upper() else '')
+        if aralash:
+            nom = html_escape(elon_nomi(e, models.get(str(e.get('specId', '') or ''), {}), 'uz'))
         if elon_status(e) == 'sold':
             qatorlar.append(f'• <s>{nom}</s> — qolmadi / нет')
             continue
         url = havolalar.get(num) or f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}'
         p = _narx_son(e)
-        qatorlar.append(f'• <a href="{html_escape(url)}">{nom}</a>' + (f' — {fmt(p)}$' if farqli and p else ''))
-    ranglar = '<p><b>Ranglari / Цвета:</b><br/>' + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
+        qatorlar.append(f'• <a href="{html_escape(url)}">{nom}</a>' + (f' — {fmt(p)}$' if (farqli or aralash) and p else '')
+                        + (f' · {html_escape(hol(e)[0])} / {html_escape(hol(e)[1])}' if len(hollar) > 1 else ''))
+    ranglar = ('<p><b>Tanlang / Выберите:</b><br/>' if aralash else '<p><b>Ranglari / Цвета:</b><br/>') + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
 
     izoh = html_escape(str(g.get('izoh') or '').strip()).replace('\n', '<br/>')
     izoh_ru = html_escape(str(g.get('izohRu') or '').strip()).replace('\n', '<br/>')
@@ -2997,15 +3029,17 @@ def guruh_post_qur(g, azolar, models, havolalar=None):
 
     birinchi = _gnum(faol[0] if faol else (azolar[0] if azolar else {}))
     sahifa = f'elon_{birinchi}' if birinchi else 'home'
+    aloqa, tugmalar = post_oxiri(sahifa, post_yonalish(azolar[0], models) if azolar else 'mobile', shablon)
     return (
         media
         + f'<p><b>{sarlavha}</b></p>'
+        + holat
         + narx
         + ranglar
         + mosligi
-        + '<tg-button-row>'
-          f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp={sahifa}">🛍 Saytda ko\'rish / Смотреть на сайте</tg-button>'
-          '</tg-button-row>'
+        + '<p> </p>'
+        + aloqa
+        + tugmalar   # 3189: e'lon postidagi kabi — «Saytda ko'rish» o'rniga «🛒 Sotib olish» + «🛍 Boshqa e'lonlar»
     )
 
 
@@ -3200,10 +3234,10 @@ def guruh_ranglar_fon(gid):
 #    ikkalasi ham ishlamaydi: id test postga yozilib, e'lon asosiy kanalga hech qachon chiqmay qolardi.
 OMMAVIY_ORALIQ_S = 4                      # postlar orasi (Telegram kanalga ~20 xabar/daqiqa; 429 — _429_bilan kutadi)
 OMMAVIY_XATO_KETMA_KET = 5                # shuncha ketma-ket xato — to'xtaydi (bot kanalda admin emas va h.k.)
-# NEGA shu tartib: Telegram kanalni PASTDAN ochadi — yangi kirgan odam birinchi bo'lib oxirgi postlarni ko'radi. Eng
-# qimmat / qiziq tovar (telefon) — eng pastda, konkurs posti tagida; qism va g'ilof — tepada. Tur ichida — eskisi birinchi
-# (raqami katta — yangiroq e'lon pastroqda).
-OMMAVIY_TARTIB = ('part', 'case', 'accessory', 'camera', 'phone')
+# 3189 (A61, Owner 2026-10-25): ommaviyda FAQAT smartfon — g'ilof / qism / aksessuar chiqmaydi (juft guruhdagi telefon —
+# alohida posti bilan, g'ilofsiz). Ikki yarim: «/ommaviy boshla 1» — eskilari (raqami kichik), «… 2» — qolgani; eskisi birinchi.
+# Yarim chegarasi — HAMMA faol telefonlar (kanalga chiqqani ham) raqam bo'yicha teng ikkiga: 1-yarim chiqqach 2-yarim siljimaydi.
+# (3184.5 da hamma tur: qism → g'ilof → aksessuar → kamera → telefon tartibida edi.)
 _OMMAVIY = {'ish': False, 'toxta': False}
 KANAL_TOMCHI_BOSHI = os.environ.get('KANAL_TOMCHI_BOSHI', '').strip()   # «2026-11-01» (Toshkent) — bo'sh: tomchi O'CHIQ
 KANAL_TOMCHI_KUN = 15
@@ -3211,9 +3245,15 @@ TOMCHI_SOAT = (10, 21)                    # Toshkent: kunlik postlar shu oraliqd
 _TOMCHI = {'sana': None, 'vaqtlar': [], 'yuborildi': 0, 'xato': set(), 'jim': False}
 
 
-def kanal_navbat(tartib='ommaviy'):
-    """Kanalga hali chiqmagan narsalar [{'num', 'tur', 'gid'?, 'soni'?}]. tartib='ommaviy' — OMMAVIY_TARTIB, tur ichida
-    eskisi birinchi; 'tomchi' — faqat raqam bo'yicha (kelgan tartibda)."""
+def _ommaviy_chegara(items, models, faol):
+    """1-yarimning oxirgi raqami: faol telefonlar (kanalga chiqqan-chiqmagan) raqam bo'yicha, toq bo'lsa 1-yarim bittaga ko'p."""
+    nums = sorted(_gnum(e) for e in items if faol(e) and elon_turi(e, models) == 'phone')
+    return nums[(len(nums) - 1) // 2] if nums else 0
+
+
+def kanal_navbat(tartib='ommaviy', yarim=None):
+    """Kanalga hali chiqmagan narsalar [{'num', 'tur', 'gid'?, 'soni'?}], raqam bo'yicha (eskisi birinchi).
+    tartib='ommaviy' — faqat smartfon (3189); yarim 1 / 2 — shu yarmi (_ommaviy_chegara). 'tomchi' — hamma tur."""
     with _elon_cache_lock:
         items = list(_ELON_CACHE['by_num'].values())
         models = dict(_ELON_CACHE['models'])
@@ -3230,16 +3270,22 @@ def kanal_navbat(tartib='ommaviy'):
             korildi.add(gid)
             g, azolar, _ = guruh_ol(gid)
             azolar = [a for a in azolar if faol(a)]
-            if g and azolar and not guruh_kanal_oqi(g).get('m'):
-                out.append({'gid': gid, 'num': min(_gnum(a) for a in azolar), 'tur': elon_turi(azolar[0], models),
-                            'soni': len(azolar)})
+            turlar = {elon_turi(a, models) for a in azolar}
+            if tartib == 'ommaviy' and 'phone' in turlar and len(turlar) > 1:
+                # 3189: juft guruh (telefon + g'ilof) — ommaviyda telefon o'z posti bilan, g'ilof chiqmaydi
+                out += [{'num': _gnum(a), 'tur': 'phone'} for a in azolar if elon_turi(a, models) == 'phone' and not kanal_msg_id(a)]
+            elif g and azolar and not guruh_kanal_oqi(g).get('m'):
+                out.append({'gid': gid, 'num': min(_gnum(a) for a in azolar),
+                            'tur': 'phone' if turlar == {'phone'} else elon_turi(azolar[0], models), 'soni': len(azolar)})
             continue
         if not kanal_msg_id(e):
             out.append({'num': _gnum(e), 'tur': elon_turi(e, models)})
     if tartib == 'ommaviy':
-        out.sort(key=lambda x: (OMMAVIY_TARTIB.index(x['tur']) if x['tur'] in OMMAVIY_TARTIB else 0, x['num']))
-    else:
-        out.sort(key=lambda x: x['num'])
+        out = [x for x in out if x['tur'] == 'phone']
+        if yarim in (1, 2):
+            chegara = _ommaviy_chegara(items, models, faol)
+            out = [x for x in out if (x['num'] <= chegara) == (yarim == 1)]
+    out.sort(key=lambda x: x['num'])
     return out
 
 
@@ -3278,29 +3324,24 @@ def _navbat_yubor(x):
     return kanal_post(x['num'], None, False)
 
 
-def _tur_soni(navbat):
-    soni = {}
-    for x in navbat:
-        soni[x['tur']] = soni.get(x['tur'], 0) + 1
-    return ' · '.join(f"{TUR_NOMI.get(t, ('', t))[0]} {TUR_NOMI.get(t, ('', t, t))[1]} {n}"
-                      for t, n in sorted(soni.items(), key=lambda tn: OMMAVIY_TARTIB.index(tn[0]) if tn[0] in OMMAVIY_TARTIB else 0))
-
-
 def ommaviy_holat():
     """/ommaviy — nima, qayerga, qancha vaqt (yubormaydi)."""
     navbat = kanal_navbat()
+    yarimlar = [kanal_navbat(yarim=1), kanal_navbat(yarim=2)]
     with _elon_cache_lock:
         bor = sorted(_gnum(e) for e in _ELON_CACHE['by_num'].values()
-                     if elon_status(e) == 'active' and kanal_msg_id(e) and not guruh_idsi(e))
+                     if elon_status(e) == 'active' and kanal_msg_id(e) and not guruh_idsi(e)
+                     and elon_turi(e, _ELON_CACHE['models']) == 'phone')
     guruh = sum(1 for x in navbat if x.get('gid'))
     kanallar = sorted(set().union(*(_navbat_kanallari(x) for x in navbat))) if navbat else []
-    q = [f"📣 <b>Kanalga ommaviy yuborish</b> — navbatda <b>{len(navbat)}</b> ta post"
+    q = [f"📣 <b>Kanalga ommaviy yuborish</b> — faqat smartfon, navbatda <b>{len(navbat)}</b> ta post"
          + (f" ({guruh} tasi rang guruhi — bitta post)" if guruh else '')]
     if navbat:
-        q.append(_tur_soni(navbat))
         q.append(f"Kanal: {html_escape(', '.join(kanallar))}")
-        q.append(f"Vaqt: ~{max(1, round(len(navbat) * (OMMAVIY_ORALIQ_S + 1.5) / 60))} daqiqa (har post orasi {OMMAVIY_ORALIQ_S} s)")
-        q.append("Tartib: qism → g'ilof → aksessuar → kamera → telefon (kanalda eng pastda — telefonlar), tur ichida eskisi birinchi")
+        for i, y in enumerate(yarimlar, 1):
+            q.append(f"{i}-yarim{' (eskilari)' if i == 1 else ''}: {len(y)} ta" + (f" — {html_escape(_navbat_nomi(y[0]))} … {html_escape(_navbat_nomi(y[-1]))}" if y else '')
+                     + (f", ~{max(1, round(len(y) * (OMMAVIY_ORALIQ_S + 1.5) / 60))} daqiqa" if y else ''))
+        q.append(f"Tartib: eskisi birinchi (har post orasi {OMMAVIY_ORALIQ_S} s); g'ilof / qism / aksessuar ommaviyda chiqmaydi")
     if bor:
         q.append(f"Kanalda posti bor (o'tkaziladi): №{', №'.join(str(n) for n in bor[:15])}" + (' …' if len(bor) > 15 else '')
                  + " — TEST kanaldagi post bo'lsa, avval /postochir")
@@ -3310,25 +3351,25 @@ def ommaviy_holat():
     if _OMMAVIY['ish']:
         q.append("⏳ Hozir yuborilyapti — to'xtatish: /ommaviy toxtat")
     elif navbat and not xato:
-        q.append("Boshlash: /ommaviy boshla · to'xtatish: /ommaviy toxtat (keyin «boshla» — qolganidan davom)")
+        q.append("Boshlash: /ommaviy boshla 1 (keyin /ommaviy boshla 2) · to'xtatish: /ommaviy toxtat (keyin o'sha «boshla» — qolganidan davom)")
     q.append(tomchi_holat())
     return '\n'.join(q)
 
 
-def ommaviy_ish(chat):
-    """/ommaviy boshla (fonda): navbat kanalga, orasi OMMAVIY_ORALIQ_S; har 20 tada va oxirida adminga hisob."""
+def ommaviy_ish(chat, yarim):
+    """/ommaviy boshla 1|2 (fonda): shu yarim kanalga, orasi OMMAVIY_ORALIQ_S; har 20 tada va oxirida adminga hisob."""
     if _OMMAVIY['ish']:
         send_msg(chat, "⏳ Ommaviy yuborish allaqachon ketyapti — /ommaviy toxtat")
         return
     _OMMAVIY.update(ish=True, toxta=False)
     try:
         elon_cache_load()   # id'lar Sheets'dagidek (boshqa joydan chiqqani qayta ketmasin)
-        navbat = kanal_navbat()
+        navbat = kanal_navbat(yarim=yarim)
         xato = navbat_test_xato(navbat)
         if xato or not navbat:
-            send_msg(chat, html_escape(xato) if xato else "📭 Kanalga chiqmagan faol e'lon yo'q.")
+            send_msg(chat, html_escape(xato) if xato else f"📭 {yarim}-yarimda kanalga chiqmagan smartfon yo'q.")
             return
-        send_msg(chat, f"▶️ Ommaviy yuborish boshlandi: {len(navbat)} ta post, ~{max(1, round(len(navbat) * (OMMAVIY_ORALIQ_S + 1.5) / 60))} daqiqa. "
+        send_msg(chat, f"▶️ Ommaviy yuborish boshlandi ({yarim}-yarim): {len(navbat)} ta post, ~{max(1, round(len(navbat) * (OMMAVIY_ORALIQ_S + 1.5) / 60))} daqiqa. "
                        "To'xtatish: /ommaviy toxtat")
         chiqdi, xatolar, ketma = 0, [], 0
         for i, x in enumerate(navbat):
@@ -3348,15 +3389,16 @@ def ommaviy_ish(chat):
                     break
             if (i + 1) % 20 == 0 and i + 1 < len(navbat):
                 send_msg(chat, f"📣 {i + 1}/{len(navbat)} — {chiqdi} ta chiqdi")
-        qoldi = len(kanal_navbat())
-        izoh = (f"{'⏸ To' + chr(39) + 'xtatildi' if _OMMAVIY['toxta'] else '✅ Tugadi'}: {chiqdi} ta post kanalga chiqdi"
-                + (f", navbatda {qoldi} ta qoldi — davom: /ommaviy boshla" if qoldi else ''))
+        qoldi = len(kanal_navbat(yarim=yarim))
+        izoh = (f"{'⏸ To' + chr(39) + 'xtatildi' if _OMMAVIY['toxta'] else '✅ Tugadi'} ({yarim}-yarim): {chiqdi} ta post kanalga chiqdi"
+                + (f", navbatda {qoldi} ta qoldi — davom: /ommaviy boshla {yarim}" if qoldi else '')
+                + (" · keyingisi: /ommaviy boshla 2" if yarim == 1 and not qoldi and kanal_navbat(yarim=2) else ''))
         if xatolar:
             izoh += '\n⚠️ ' + '\n⚠️ '.join(html_escape(str(x)) for x in xatolar[:10]) + (' …' if len(xatolar) > 10 else '')
         send_msg(chat, izoh)
     except Exception as e:
         logger.error(f'ommaviy_ish: {type(e).__name__}: {e}')
-        send_msg(chat, f"❌ Ommaviy yuborish to'xtadi: <code>{html_escape(type(e).__name__)}</code> — /ommaviy boshla (qolganidan)")
+        send_msg(chat, f"❌ Ommaviy yuborish to'xtadi: <code>{html_escape(type(e).__name__)}</code> — /ommaviy boshla {yarim} (qolganidan)")
     finally:
         _OMMAVIY['ish'] = False
 
@@ -3456,13 +3498,16 @@ async def tomchi_loop():
 
 
 def kanal_navbat_buyruq(chat, text):
-    """/ommaviy [boshla|toxtat] · /tomchi (admin)."""
+    """/ommaviy [boshla 1|2 | toxtat] · /tomchi (admin)."""
     qism = text.split()
     cmd, arg = qism[0].split('@')[0], (qism[1].lower() if len(qism) > 1 else '')
     if cmd == '/tomchi':
         send_msg(chat, tomchi_holat())
     elif arg in ('boshla', 'start'):
-        _fonda(ommaviy_ish, chat)
+        if len(qism) > 2 and qism[2] in ('1', '2'):
+            _fonda(ommaviy_ish, chat, int(qism[2]))
+        else:
+            send_msg(chat, "Qaysi yarim? /ommaviy boshla 1 (eskilari) yoki /ommaviy boshla 2 — holat: /ommaviy")
     elif arg in ('toxtat', "to'xtat", 'stop'):
         _OMMAVIY['toxta'] = True
         send_msg(chat, "⏸ To'xtatilmoqda (joriy post tugagach)." if _OMMAVIY['ish'] else "Ommaviy yuborish ketmayapti.")
