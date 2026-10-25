@@ -1855,17 +1855,15 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     #     spec tepasidagi bo'sh joy olib tashlandi («juda katta bo'lib ketdi»)
     # v9 (BUGUN31, B21): rasm TAGIDAGI bo'sh joy olib tashlandi \u2014 \u00absuring\u00bb izohi (v8) ketgach u ortiqcha qolgan edi;
     #     foydalanuvchi: \u00abrasm tagida biroz bo'shliq bor \u2014 yo'qotish kerak shuni\u00bb
-    BOSH = '<p>\u00a0</p>'
+    # 3191.1 (Owner, namuna 2026-10-26): bo'sh paragraf (BOSH) yo'q — bloklar orasida faqat Telegram'ning o'z paragraf
+    #     oralig'i («yarim qatorcha»); BOSH u bilan qo'shilib 2 baravar katta bo'shliq berardi
     return (
         media
         + f'<p><b>{tur_emoji} {title}</b><br/>#{tur} #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
         + spec
-        + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
-        + BOSH   # 3191 (Owner namunasi): bo'sh qator faqat narx atrofida — narx ajralib turadi
         + f'<p>{e("money")} Narxi / Цена: {narx}' + (f'<br/>{soni_qatori(elon)}' if soni_qatori(elon) else '') + '</p>'   # B13: qoldiq
-        + BOSH
         + aloqa   # ALOQA (2026-10-07): raqam (bosilsa qo'ng'iroq), admin, kanal(lar) — 3189: post_oxiri
         + tugmalar   # 3189 (A60): «🛒 Sotib olish» (shu e'lon) + «🛍 Boshqa e'lonlar»; v3 dagi «Saytni ochish» va Admin / Kanal tugmalari o'rnida
     )
