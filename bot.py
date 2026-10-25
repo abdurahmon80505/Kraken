@@ -101,17 +101,16 @@ SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash
 # PASTKI o'ngda, logo rangida (fon #134E4A — logo foni, 90%; belgi oq — logo yozuvi), Montserrat qalin. Joyi — markaz bo'yicha
 # (lxc/lyc — belgi o'lchamiga bog'liq emas): bo'yi 88% — Telegram 4:5 ramkasi 3:4 rasmning pastidan ~3%, 0.70 nisbatlida ~6%
 # kesadi, belgi to'liq ichkarida; o'ng chetda — o'rtadagi slayd nuqtalariga tegmaydi. O'lchami — eski belgidan ~8% katta
-# (eski 118×80 px w-1600 da). Ikki ko'rinish, Owner tanlaydi (KEYINGI_BELGI_TUR, sukut 'a'):
-#   a — yumaloq tugma «›» (106 px doira) · b — kapsula «Suring ›» (293×86 px).
+# (eski 118×80 px w-1600 da).
+# 3184.9 (Owner 2026-10-25: «dumaloq yoqdi, strelka chaprog'ida + juda qirrali — rounded, o'rtaga, transparent, logodek»):
+# faqat doira qoldi (kapsula «Suring ›» olib tashlandi). Shrift «›» emas — chizilgan: doira 112 px (ik_canvas, r-max), logo
+# kabi o-50; strelka — ikkita oq kapsula (43×12, r-max — uchlari va burilishi yumaloq), ±45° burilgan, markazlari doira
+# markazidan ±11 px — strelka qutisi doira markazida (chap / o'ng bo'sh joy 40 / 39 px). Strelka shaffof emas: ikki kapsula
+# burilishda ustma-ust tushadi, shaffof bo'lsa o'sha joy dog' bo'lib ko'rinadi.
 KEYINGI_BELGI = os.environ.get('KEYINGI_BELGI', '1') != '0'
-KEYINGI_BELGI_LAYERLAR = {
-    'a': ('l-text,i-%E2%80%BA,ff-Montserrat,tg-b,fs-150,co-FFFFFF,bg-134E4AE6,pa-24_32,r-max,'
-          'lxc-bw_mul_0.89,lyc-bh_mul_0.88,l-end'),
-    'b': ('l-text,i-Suring%20%E2%80%BA,ff-Montserrat,tg-b,fs-56,co-FFFFFF,bg-134E4AE6,pa-16_34,r-max,'
-          'lxc-bw_mul_0.84,lyc-bh_mul_0.88,l-end'),
-}
-KEYINGI_BELGI_TUR = os.environ.get('KEYINGI_BELGI_TUR', 'a').strip().lower()
-KEYINGI_BELGI_LAYER = KEYINGI_BELGI_LAYERLAR.get(KEYINGI_BELGI_TUR, KEYINGI_BELGI_LAYERLAR['a'])
+KEYINGI_BELGI_LAYER = ('l-image,i-ik_canvas,bg-134E4A,w-112,h-112,r-max,o-50,lxc-bw_mul_0.89,lyc-bh_mul_0.88,l-end'
+                       ':l-image,i-ik_canvas,bg-FFFFFF,w-43,h-12,r-max,rt-45,lxc-bw_mul_0.89,lyc-bh_mul_0.88_sub_11,l-end'
+                       ':l-image,i-ik_canvas,bg-FFFFFF,w-43,h-12,r-max,rt-315,lxc-bw_mul_0.89,lyc-bh_mul_0.88_add_11,l-end')
 
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
@@ -1742,12 +1741,11 @@ def rich_media(rasmlar, kollaj=False, rasm_src=None):
     return f'<tg-slideshow>{imgs}</tg-slideshow>'
 
 
-def keyingi_belgi(url, tur=None):
-    """Tayyor ImageKit manzilga (`…?tr=…`) «suring» belgisi layer'ini qo'shadi. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi.
-    tur — 'a' / 'b' (3184.8 sinovi); None — KEYINGI_BELGI_TUR."""
+def keyingi_belgi(url):
+    """Tayyor ImageKit manzilga (`…?tr=…`) «suring» belgisi layer'larini qo'shadi. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi."""
     if not KEYINGI_BELGI or 'ik.imagekit.io' not in url or '?tr=' not in url and '&tr=' not in url:
         return url
-    return url + ':' + (KEYINGI_BELGI_LAYERLAR.get(tur) or KEYINGI_BELGI_LAYER)
+    return url + ':' + KEYINGI_BELGI_LAYER
 
 
 def belgi_src(elon):
