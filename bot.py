@@ -5445,17 +5445,30 @@ async def _kk_son_xabari(konkurs_id, soni):
     await _kk_admin(f"🎁 Konkursda {soni} kishi")
 
 
+def _tg_mid(r):
+    """Telegram javobidan birinchi xabar raqami (sendMediaGroup — ro'yxat). Xato / tushunarsiz — None."""
+    try:
+        j = r.json() if r is not None and r.status_code == 200 else None
+        res = j.get('result') if isinstance(j, dict) and j.get('ok') else None
+        if isinstance(res, list):
+            res = res[0] if res else None
+        mid = res.get('message_id') if isinstance(res, dict) else None
+        return int(mid) if mid else None
+    except Exception:
+        return None
+
+
 def send_konkurs_channel_post(chat_id, text, images, reply_markup):
     """Konkurs natijasini kanalga yuboradi (HTML parse_mode):
     1 rasm  -> sendPhoto (caption + tugma birga)
-    ko'p rasm -> sendMediaGroup (caption 1-rasmga) + tugma alohida qisqa xabar."""
+    ko'p rasm -> sendMediaGroup (caption 1-rasmga) + tugma alohida qisqa xabar.
+    3185: postning (ko'p rasmda — 1-rasm, matni shunda) message_id sini qaytaradi; yuborilmadi — None."""
     imgs = [i for i in (images or []) if i][:10]
     if not imgs:
-        req.post(f'{TG_API}/sendMessage', json={
+        return _tg_mid(req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': text,
             'parse_mode': 'HTML', 'reply_markup': reply_markup
-        }, timeout=10)
-        return
+        }, timeout=10))
     caption_fits = len(text) <= 1000
     if len(imgs) == 1:
         r = req.post(f'{TG_API}/sendPhoto', json={
@@ -5464,12 +5477,11 @@ def send_konkurs_channel_post(chat_id, text, images, reply_markup):
             'reply_markup': reply_markup
         }, timeout=15)
         if r.status_code == 200 and r.json().get('ok'):
-            return
-        req.post(f'{TG_API}/sendMessage', json={
+            return _tg_mid(r)
+        return _tg_mid(req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': text,
             'parse_mode': 'HTML', 'reply_markup': reply_markup
-        }, timeout=10)
-        return
+        }, timeout=10))
     # Ko'p rasm — caption 1-rasmga biriktiriladi (matn+rasm birga)
     media = []
     for i, u in enumerate(imgs):
@@ -5478,16 +5490,18 @@ def send_konkurs_channel_post(chat_id, text, images, reply_markup):
             item['caption'] = text
             item['parse_mode'] = 'HTML'
         media.append(item)
-    req.post(f'{TG_API}/sendMediaGroup', json={'chat_id': chat_id, 'media': media}, timeout=20)
+    mid = _tg_mid(req.post(f'{TG_API}/sendMediaGroup', json={'chat_id': chat_id, 'media': media}, timeout=20))
     if caption_fits:
         req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': '🛍', 'reply_markup': reply_markup
         }, timeout=10)
     else:
-        req.post(f'{TG_API}/sendMessage', json={
+        # matn sig'madi — rasmlar matnsiz ketdi, post matni shu xabarda: havola shunga
+        mid = _tg_mid(req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': text,
             'parse_mode': 'HTML', 'reply_markup': reply_markup
-        }, timeout=10)
+        }, timeout=10)) or mid
+    return mid
 
 
 def _maxfiy(e):
@@ -6898,8 +6912,17 @@ async def handle_update(data):
                     "url": f"https://t.me/{BOT_USERNAME}?startapp=konkurs"
                 }]]}
                 kanal = TEST_CHANNEL if _kk_sinovmi(k.get('prize')) else CHANNEL   # sinov — asosiy kanalga emas
-                await blok(send_konkurs_channel_post, kanal, anons, pics, markup)
+                mid = await blok(send_konkurs_channel_post, kanal, anons, pics, markup)
                 await blok(send_msg, chat_id, f"✅ Konkurs anonsi kanalga yuborildi: {kanal}")
+                # 3185: saytdagi «Do'stlarga ulashish» shu postni ulashadi — havola konkursga o'zi yoziladi
+                havola = post_havola(kanal, mid)
+                if havola and '/t.me/c/' not in havola:   # yopiq kanal posti — do'st ocholmaydi
+                    r = await _kk_sorov('konkursPostHavola', urinish=2, id=k['id'], havola=havola)
+                    if r and r.get('ok'):
+                        _konkurs_cache['time'] = 0
+                        await blok(send_msg, chat_id, f"🔗 Saytdagi «Do'stlarga ulashish» endi shu postni ulashadi:\n{havola}")
+                    else:
+                        await blok(send_msg, chat_id, f"⚠️ Post havolasi saytga yozilmadi — admin panelda qo'lda qo'ying:\n{havola}")
 
         elif text == '/konkurstimer' and adm:
             # Admin zaxira: aktiv konkurs taymerini qayta o'rnatadi + holatni ko'rsatadi
