@@ -520,8 +520,8 @@ def elon_qavs(item, lang='uz'):
 
 def holati_matni(cond, cycle):
     """condition + cycle bo'yicha (uz_qator, ru_qator, emoji) qaytaradi."""
-    sikl_uz = f" ({cycle}tsikl)" if cycle else ""
-    sikl_ru = f" ({cycle}цикл)" if cycle else ""
+    sikl_uz = f" ({cycle} tsikl)" if cycle else ""   # 3184.5: «98 tsikl» (ilgari «98tsikl»)
+    sikl_ru = f" ({cycle} цикл)" if cycle else ""
     if cond == 'new':
         return ("Yangi ochilmagan!", "Новое запечатанное!", "📦")
     if cond == 'openbox':
@@ -1535,7 +1535,7 @@ def build_elon(item, models_by_id):
     if color_clean:
         add(f" {color_clean}")
     add("\n")
-    add(f"#phone #{num}\n")
+    add(f"#{elon_turi(item, models_by_id)} #{num}\n")   # 3184.5: tur bo'yicha (ilgari hammasi #phone)
     if mos_txt:
         add(f"🔗 {mos_txt}\n")
     if izoh_txt:
@@ -1767,6 +1767,10 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     cycle = str(elon.get('cycle', '') or '').replace('.0', '')
     cond_uz, cond_ru, cond_emoji = holati_matni(elon.get('condition', 'used') or 'used', cycle)
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
+    # 3184.5: sarlavha emojisi va tegi — e'lon turidan (ilgari hammasi 📱 #phone: g'ilof ham, zaryadlovchi ham).
+    #     Telefon (premium) — G logo, avvalgidek
+    tur = elon_turi(elon, models_by_id)
+    tur_emoji = e("google") if tur == 'phone' else TUR_NOMI.get(tur, TUR_NOMI['phone'])[0]
 
     # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     media = rich_media(images_of(elon), kollaj, rasm_src)
@@ -1810,7 +1814,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     BOSH = '<p>\u00a0</p>'
     return (
         media
-        + f'<p><b>{e("google")} {title}</b><br/>#phone #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
+        + f'<p><b>{tur_emoji} {title}</b><br/>#{tur} #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
         + spec
         + BOSH
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
@@ -2215,9 +2219,10 @@ def kanal_rich_yubor(num, elon, models, chat, message_id=None, kollaj=False, yon
     return natija
 
 
-def kanal_post(num, yonalish=None):
+def kanal_post(num, yonalish=None, olx=True):
     """E'lonni kanalga rich post qiladi, id yozadi. (mid, '') / (None, xato).
-    yonalish — saytda e'lon yuborilgan bo'lim (postdagi kanal shuniki; ALOQA 2026-10-07)."""
+    yonalish — saytda e'lon yuborilgan bo'lim (postdagi kanal shuniki; ALOQA 2026-10-07).
+    olx=False (3184.5, ommaviy / tomchi) — OLX albomi yuborilmaydi (90 ta albom OLX mavzusini to'ldirmasin)."""
     elon, models = elon_cache_get(num)
     if not elon:
         return None, "e'lon topilmadi"
@@ -2242,11 +2247,15 @@ def kanal_post(num, yonalish=None):
     if not postlar:
         return None, '; '.join(xatolar)
     mid = postlar[0][1]
-    kanal_id_yoz(num, kanal_id_matn(postlar))
+    # 3184.5: aksessuar / g'ilof / qismning ALOHIDA posti — id doim «mobile:123» ko'rinishida (to'plam id'si — oddiy son):
+    #     shunda toplam_postmi uni to'plam deb, tahrirda to'plam ko'rinishiga aylantirib yubormaydi
+    alohida_tur = elon_turi(elon, models) in TOPLAM_TURLAR
+    kanal_id_yoz(num, ' '.join(f'{y}:{int(m)}' for y, m in postlar) if alohida_tur else kanal_id_matn(postlar))
     if xatolar:
         send_msg(admin_joy('post'), f"⚠️ №{num} ba'zi kanalga chiqmadi: <code>{html_escape('; '.join(xatolar))}</code>")
     # A26: e'lon kanalga chiqdi — OLX bo'limiga matn + belgili albom (fonda: sayt / buyruq javobi kutib qolmasin)
-    threading.Thread(target=olx_albom, args=(num,), daemon=True).start()
+    if olx:
+        threading.Thread(target=olx_albom, args=(num,), daemon=True).start()
     return mid, ''
 
 
@@ -2404,8 +2413,8 @@ def toplam_postmi(elon, models):
     if guruh_idsi(elon):
         # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
         return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
-    if elon_turi(elon, models) in TOPLAM_TURLAR:
-        return True
+    if elon_turi(elon, models) in TOPLAM_TURLAR and ':' not in str(elon.get('channel_message_id', '') or ''):
+        return True   # 3184.5: id «mobile:123» — o'z alohida posti (kanal_post), to'plam emas
     return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
 
 
@@ -3167,6 +3176,286 @@ def guruh_ranglar_fon(gid):
         send_msg(admin_joy('post'), izoh)
     except Exception as e:
         logger.error(f'guruh_ranglar_fon {gid}: {e}')
+
+
+# ── 3184.5 (2026-10-25): kanalga OMMAVIY yuborish (konkursdan oldin — eski e'lonlar) va 15 kunlik TOMCHI ──
+# Owner: «test kanalga 4–5 ta; yaxshi bo'lsa kanalga eskilarni hammasini yuboramiz, so'ng konkurs — kirgan odam eski
+# e'lonlarni ko'radi; keyin yangi e'lonlar birin-ketin, 15 kun ichida».
+# Navbat — kanalda posti YO'Q faol e'lonlar (soni 0 — yo'q) + posti yo'q rang guruhlari (bitta guruh posti; a'zolari alohida emas).
+# Chiqqani `channel_message_id` (guruh — Guruhlar.kanal_message_id) bilan belgilanadi — qayta yuborilmaydi; to'xtasa —
+# «/ommaviy boshla» qaytadan: qolganidan davom etadi. OLX albomi yuborilmaydi (90 ta albom OLX mavzusini to'ldirmasin).
+# 🔴 Navbatdagi biror post TEST kanalga tushadigan bo'lsa (env POST_CHANNEL_ID / POST_KANALLAR / GURUH_KANAL_ID yo'q) —
+#    ikkalasi ham ishlamaydi: id test postga yozilib, e'lon asosiy kanalga hech qachon chiqmay qolardi.
+OMMAVIY_ORALIQ_S = 4                      # postlar orasi (Telegram kanalga ~20 xabar/daqiqa; 429 — _429_bilan kutadi)
+OMMAVIY_XATO_KETMA_KET = 5                # shuncha ketma-ket xato — to'xtaydi (bot kanalda admin emas va h.k.)
+# NEGA shu tartib: Telegram kanalni PASTDAN ochadi — yangi kirgan odam birinchi bo'lib oxirgi postlarni ko'radi. Eng
+# qimmat / qiziq tovar (telefon) — eng pastda, konkurs posti tagida; qism va g'ilof — tepada. Tur ichida — eskisi birinchi
+# (raqami katta — yangiroq e'lon pastroqda).
+OMMAVIY_TARTIB = ('part', 'case', 'accessory', 'camera', 'phone')
+_OMMAVIY = {'ish': False, 'toxta': False}
+KANAL_TOMCHI_BOSHI = os.environ.get('KANAL_TOMCHI_BOSHI', '').strip()   # «2026-11-01» (Toshkent) — bo'sh: tomchi O'CHIQ
+KANAL_TOMCHI_KUN = 15
+TOMCHI_SOAT = (10, 21)                    # Toshkent: kunlik postlar shu oraliqda teng taqsim
+_TOMCHI = {'sana': None, 'vaqtlar': [], 'yuborildi': 0, 'xato': set(), 'jim': False}
+
+
+def kanal_navbat(tartib='ommaviy'):
+    """Kanalga hali chiqmagan narsalar [{'num', 'tur', 'gid'?, 'soni'?}]. tartib='ommaviy' — OMMAVIY_TARTIB, tur ichida
+    eskisi birinchi; 'tomchi' — faqat raqam bo'yicha (kelgan tartibda)."""
+    with _elon_cache_lock:
+        items = list(_ELON_CACHE['by_num'].values())
+        models = dict(_ELON_CACHE['models'])
+        guruhlar = set((_ELON_CACHE.get('guruhlar') or {}).keys())
+    faol = lambda e: elon_status(e) == 'active' and soni_val(e) != 0
+    out, korildi = [], set()
+    for e in items:
+        if not faol(e):
+            continue
+        gid = guruh_idsi(e)
+        if gid and gid in guruhlar:
+            if gid in korildi:
+                continue
+            korildi.add(gid)
+            g, azolar, _ = guruh_ol(gid)
+            azolar = [a for a in azolar if faol(a)]
+            if g and azolar and not guruh_kanal_oqi(g).get('m'):
+                out.append({'gid': gid, 'num': min(_gnum(a) for a in azolar), 'tur': elon_turi(azolar[0], models),
+                            'soni': len(azolar)})
+            continue
+        if not kanal_msg_id(e):
+            out.append({'num': _gnum(e), 'tur': elon_turi(e, models)})
+    if tartib == 'ommaviy':
+        out.sort(key=lambda x: (OMMAVIY_TARTIB.index(x['tur']) if x['tur'] in OMMAVIY_TARTIB else 0, x['num']))
+    else:
+        out.sort(key=lambda x: x['num'])
+    return out
+
+
+def _navbat_nomi(x):
+    return f"guruh {x['gid']} ({x['soni']} rang)" if x.get('gid') else f"№{x['num']}"
+
+
+def _navbat_kanallari(x):
+    """Shu narsa qaysi kanal(lar)ga tushadi."""
+    if x.get('gid'):
+        _, azolar, models = guruh_ol(x['gid'])
+        return {guruh_kanali(azolar, models)}
+    elon, models = elon_cache_get(x['num'])
+    return {post_kanal(y) for y in elon_yonalishlar(elon, models) if y in YON_KANAL} or {POST_CHANNEL}
+
+
+def navbat_test_xato(navbat):
+    """'' — hammasi asosiy kanal(lar)ga; aks holda sabab (TEST kanalga tushadiganlar)."""
+    test = [x for x in navbat if TEST_CHANNEL in _navbat_kanallari(x)]
+    if not test:
+        return ''
+    guruh = any(x.get('gid') for x in test)
+    return (f"⛔ {len(test)} tasi TEST kanalga ({TEST_CHANNEL}) tushadi: {', '.join(_navbat_nomi(x) for x in test[:5])}"
+            + (' …' if len(test) > 5 else '') + ".\nAsosiy kanal sozlanmagan — Render → Environment: POST_CHANNEL_ID"
+            + (" (yoki POST_KANALLAR)" if not POST_KANALLAR else '') + (", GURUH_KANAL_ID=asl" if guruh else '') + '.')
+
+
+def _navbat_yubor(x):
+    """Navbatdagi bittasi kanalga. (mid, xato)."""
+    if x.get('gid'):
+        r = _guruh_ish(x['gid'], _guruh_yubor, False)
+        return (None, 'guruh posti hozir yuborilmoqda') if r is None else (r[0], r[1])
+    elon, _ = elon_cache_get(x['num'])
+    if elon and kanal_msg_id(elon):
+        return kanal_msg_id(elon), ''   # orada chiqib bo'lgan (avto-post / tomchi) — qayta yo'q
+    return kanal_post(x['num'], None, False)
+
+
+def _tur_soni(navbat):
+    soni = {}
+    for x in navbat:
+        soni[x['tur']] = soni.get(x['tur'], 0) + 1
+    return ' · '.join(f"{TUR_NOMI.get(t, ('', t))[0]} {TUR_NOMI.get(t, ('', t, t))[1]} {n}"
+                      for t, n in sorted(soni.items(), key=lambda tn: OMMAVIY_TARTIB.index(tn[0]) if tn[0] in OMMAVIY_TARTIB else 0))
+
+
+def ommaviy_holat():
+    """/ommaviy — nima, qayerga, qancha vaqt (yubormaydi)."""
+    navbat = kanal_navbat()
+    with _elon_cache_lock:
+        bor = sorted(_gnum(e) for e in _ELON_CACHE['by_num'].values()
+                     if elon_status(e) == 'active' and kanal_msg_id(e) and not guruh_idsi(e))
+    guruh = sum(1 for x in navbat if x.get('gid'))
+    kanallar = sorted(set().union(*(_navbat_kanallari(x) for x in navbat))) if navbat else []
+    q = [f"📣 <b>Kanalga ommaviy yuborish</b> — navbatda <b>{len(navbat)}</b> ta post"
+         + (f" ({guruh} tasi rang guruhi — bitta post)" if guruh else '')]
+    if navbat:
+        q.append(_tur_soni(navbat))
+        q.append(f"Kanal: {html_escape(', '.join(kanallar))}")
+        q.append(f"Vaqt: ~{max(1, round(len(navbat) * (OMMAVIY_ORALIQ_S + 1.5) / 60))} daqiqa (har post orasi {OMMAVIY_ORALIQ_S} s)")
+        q.append("Tartib: qism → g'ilof → aksessuar → kamera → telefon (kanalda eng pastda — telefonlar), tur ichida eskisi birinchi")
+    if bor:
+        q.append(f"Kanalda posti bor (o'tkaziladi): №{', №'.join(str(n) for n in bor[:15])}" + (' …' if len(bor) > 15 else '')
+                 + " — TEST kanaldagi post bo'lsa, avval /postochir")
+    xato = navbat_test_xato(navbat)
+    if xato:
+        q.append(html_escape(xato))
+    if _OMMAVIY['ish']:
+        q.append("⏳ Hozir yuborilyapti — to'xtatish: /ommaviy toxtat")
+    elif navbat and not xato:
+        q.append("Boshlash: /ommaviy boshla · to'xtatish: /ommaviy toxtat (keyin «boshla» — qolganidan davom)")
+    q.append(tomchi_holat())
+    return '\n'.join(q)
+
+
+def ommaviy_ish(chat):
+    """/ommaviy boshla (fonda): navbat kanalga, orasi OMMAVIY_ORALIQ_S; har 20 tada va oxirida adminga hisob."""
+    if _OMMAVIY['ish']:
+        send_msg(chat, "⏳ Ommaviy yuborish allaqachon ketyapti — /ommaviy toxtat")
+        return
+    _OMMAVIY.update(ish=True, toxta=False)
+    try:
+        elon_cache_load()   # id'lar Sheets'dagidek (boshqa joydan chiqqani qayta ketmasin)
+        navbat = kanal_navbat()
+        xato = navbat_test_xato(navbat)
+        if xato or not navbat:
+            send_msg(chat, html_escape(xato) if xato else "📭 Kanalga chiqmagan faol e'lon yo'q.")
+            return
+        send_msg(chat, f"▶️ Ommaviy yuborish boshlandi: {len(navbat)} ta post, ~{max(1, round(len(navbat) * (OMMAVIY_ORALIQ_S + 1.5) / 60))} daqiqa. "
+                       "To'xtatish: /ommaviy toxtat")
+        chiqdi, xatolar, ketma = 0, [], 0
+        for i, x in enumerate(navbat):
+            if _OMMAVIY['toxta']:
+                break
+            if i:
+                _uxla(OMMAVIY_ORALIQ_S)
+            mid, x_ = _429_bilan(_navbat_yubor, x)
+            if mid:
+                chiqdi, ketma = chiqdi + 1, 0
+            else:
+                ketma += 1
+                xatolar.append(f'{_navbat_nomi(x)}: {x_}')
+                logger.error(f'ommaviy {_navbat_nomi(x)}: {x_}')
+                if ketma >= OMMAVIY_XATO_KETMA_KET:
+                    xatolar.append(f'{ketma} ta ketma-ket xato — to\'xtadi')
+                    break
+            if (i + 1) % 20 == 0 and i + 1 < len(navbat):
+                send_msg(chat, f"📣 {i + 1}/{len(navbat)} — {chiqdi} ta chiqdi")
+        qoldi = len(kanal_navbat())
+        izoh = (f"{'⏸ To' + chr(39) + 'xtatildi' if _OMMAVIY['toxta'] else '✅ Tugadi'}: {chiqdi} ta post kanalga chiqdi"
+                + (f", navbatda {qoldi} ta qoldi — davom: /ommaviy boshla" if qoldi else ''))
+        if xatolar:
+            izoh += '\n⚠️ ' + '\n⚠️ '.join(html_escape(str(x)) for x in xatolar[:10]) + (' …' if len(xatolar) > 10 else '')
+        send_msg(chat, izoh)
+    except Exception as e:
+        logger.error(f'ommaviy_ish: {type(e).__name__}: {e}')
+        send_msg(chat, f"❌ Ommaviy yuborish to'xtadi: <code>{html_escape(type(e).__name__)}</code> — /ommaviy boshla (qolganidan)")
+    finally:
+        _OMMAVIY['ish'] = False
+
+
+def _tomchi_boshi():
+    from datetime import date
+    try:
+        return date.fromisoformat(KANAL_TOMCHI_BOSHI[:10]) if KANAL_TOMCHI_BOSHI else None
+    except ValueError:
+        return None
+
+
+def _tomchi_vaqtlar(kun, q):
+    """Kunning q ta posti vaqti (unix): TOMCHI_SOAT oralig'i q bo'lakka, har bo'lak o'rtasida (10:00–21:00, 3 ta → 11:50, 15:30, 19:10)."""
+    from datetime import datetime, timezone, timedelta
+    bosh = datetime(kun.year, kun.month, kun.day, TOMCHI_SOAT[0], tzinfo=timezone(timedelta(hours=5))).timestamp()
+    uzun = (TOMCHI_SOAT[1] - TOMCHI_SOAT[0]) * 3600
+    return [bosh + uzun * (i + 0.5) / q for i in range(q)]
+
+
+def tomchi_reja(hozir, jami):
+    """Bugungi reja: {'holat': 'ochiq'|'kutadi'|'yoqilgan'|'tugadi', 'kun', 'bugun', 'chiqdi', 'keyingi', 'jami'}.
+    Kunlik soni = navbatdagilar / qolgan kunlar (yuqoriga yaxlit) — kun boshida (yoki bot qayta ishga tushganda) hisoblanadi;
+    yangi kelgani ertangi hisobga qo'shiladi. Qayta ishga tushganda o'tib ketgan vaqtlar yuborilmaydi (birdan 5 ta post
+    tashlanmasin) — ular qolgan kunlarga taqsimlanadi."""
+    from datetime import datetime, timezone, timedelta
+    bugun = datetime.fromtimestamp(hozir, timezone(timedelta(hours=5))).date()
+    boshi = _tomchi_boshi()
+    if not boshi:
+        return {'holat': 'ochiq', 'jami': jami, 'bugun': -(-jami // KANAL_TOMCHI_KUN)}
+    kun = (bugun - boshi).days + 1
+    if kun < 1:
+        return {'holat': 'kutadi', 'jami': jami, 'kun': kun, 'boshi': boshi}
+    if kun > KANAL_TOMCHI_KUN:
+        return {'holat': 'tugadi', 'jami': jami, 'kun': kun}
+    if _TOMCHI['sana'] != bugun:
+        q = -(-jami // (KANAL_TOMCHI_KUN - kun + 1))
+        vaqtlar = _tomchi_vaqtlar(bugun, q) if q else []
+        _TOMCHI.update(sana=bugun, vaqtlar=vaqtlar, yuborildi=sum(1 for t in vaqtlar if t <= hozir))
+    keyingi = next((t for t in _TOMCHI['vaqtlar'][_TOMCHI['yuborildi']:]), None)
+    return {'holat': 'yoqilgan', 'jami': jami, 'kun': kun, 'bugun': len(_TOMCHI['vaqtlar']), 'chiqdi': _TOMCHI['yuborildi'],
+            'keyingi': keyingi}
+
+
+def tomchi_holat(hozir=None):
+    """«💧 Kanal navbati: bugun 3, jami 41 …» — /tomchi va /ommaviy oxirida."""
+    from datetime import datetime, timezone, timedelta
+    hozir = time.time() if hozir is None else hozir
+    navbat = [x for x in kanal_navbat('tomchi') if x['num'] not in _TOMCHI['xato']]
+    r = tomchi_reja(hozir, len(navbat))
+    if r['holat'] == 'ochiq':
+        return (f"💧 Tomchi O'CHIQ. Yoqilsa — kanal navbati: bugun {r['bugun']}, jami {r['jami']} "
+                f"({KANAL_TOMCHI_KUN} kunga, {TOMCHI_SOAT[0]}:00–{TOMCHI_SOAT[1]}:00). Yoqish — Render env KANAL_TOMCHI_BOSHI=YYYY-MM-DD")
+    if r['holat'] == 'kutadi':
+        return f"💧 Tomchi {r['boshi']:%d.%m} dan boshlanadi — kanal navbati: jami {r['jami']}"
+    if r['holat'] == 'tugadi':
+        return f"💧 Tomchi tugadi ({KANAL_TOMCHI_KUN} kun) — navbatda {r['jami']} ta qoldi"
+    vaqt = f", keyingisi {datetime.fromtimestamp(r['keyingi'], timezone(timedelta(hours=5))):%H:%M}" if r['keyingi'] else ''
+    return (f"💧 Kanal navbati: bugun {r['bugun']} ({r['chiqdi']} tasi o'tdi{vaqt}), jami {r['jami']} · "
+            f"{r['kun']}/{KANAL_TOMCHI_KUN}-kun" + (" · ⏸ ommaviy yuborish ketyapti" if _OMMAVIY['ish'] else ''))
+
+
+def tomchi_qadam(hozir):
+    """Fonda har daqiqa: vaqti kelgan bo'lsa navbatdagi BITTA narsa kanalga (eskisi birinchi). True — post yuborildi."""
+    if not _tomchi_boshi() or _OMMAVIY['ish']:
+        return False
+    navbat = [x for x in kanal_navbat('tomchi') if x['num'] not in _TOMCHI['xato']]
+    r = tomchi_reja(hozir, len(navbat))
+    if r['holat'] != 'yoqilgan' or not navbat or _TOMCHI['yuborildi'] >= sum(1 for t in _TOMCHI['vaqtlar'] if t <= hozir):
+        return False
+    xato = navbat_test_xato(navbat[:1])
+    if xato:
+        if not _TOMCHI['jim']:
+            _TOMCHI['jim'] = True   # bir marta — har daqiqa emas
+            send_msg(admin_joy('post'), '💧 Tomchi to\'xtab turibdi.\n' + html_escape(xato))
+        return False
+    x = navbat[0]
+    _TOMCHI['yuborildi'] += 1
+    mid, x_ = _429_bilan(_navbat_yubor, x)
+    if mid:
+        send_msg(admin_joy('post'), f"💧 {_navbat_nomi(x)} kanalga chiqdi (id {mid}).\n{tomchi_holat(hozir)}")
+        return True
+    _TOMCHI['xato'].add(x['num'])   # takror urinib navbatni to'sib qo'ymasin — admin qo'lda (/post)
+    send_msg(admin_joy('post'), f"⚠️ 💧 {_navbat_nomi(x)} kanalga chiqmadi: <code>{html_escape(x_)}</code> — navbatdan chiqarildi, /post {x['num']}")
+    return False
+
+
+async def tomchi_loop():
+    """KANAL_TOMCHI_BOSHI bo'lsa — har daqiqa tomchi_qadam (alohida ipda). Xato — bot yiqilmaydi."""
+    await asyncio.sleep(90)   # ishga tushish yuki o'tsin, e'lon xotirasi yuklansin
+    while True:
+        try:
+            await blok(tomchi_qadam, time.time())
+        except Exception as e:
+            logger.error(f'tomchi: {type(e).__name__}')
+        await asyncio.sleep(60)
+
+
+def kanal_navbat_buyruq(chat, text):
+    """/ommaviy [boshla|toxtat] · /tomchi (admin)."""
+    qism = text.split()
+    cmd, arg = qism[0].split('@')[0], (qism[1].lower() if len(qism) > 1 else '')
+    if cmd == '/tomchi':
+        send_msg(chat, tomchi_holat())
+    elif arg in ('boshla', 'start'):
+        _fonda(ommaviy_ish, chat)
+    elif arg in ('toxtat', "to'xtat", 'stop'):
+        _OMMAVIY['toxta'] = True
+        send_msg(chat, "⏸ To'xtatilmoqda (joriy post tugagach)." if _OMMAVIY['ish'] else "Ommaviy yuborish ketmayapti.")
+    else:
+        send_msg(chat, ommaviy_holat())
 
 
 def guruh_tahrir(gid, yangila=False):
@@ -6807,6 +7096,11 @@ async def handle_update(data):
                 asyncio.create_task(kanal_buyruq(chat_id, cmd, m_num.group(0)))
             return
 
+        # 3184.5: kanalga ommaviy yuborish (eski e'lonlar) va 15 kunlik tomchi holati — fonda
+        if adm and text.split() and text.split()[0].split('@')[0] in ('/ommaviy', '/tomchi'):
+            asyncio.create_task(blok(kanal_navbat_buyruq, chat_id, text))
+            return
+
         # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
         if text.startswith('/stat') and adm:
             asyncio.create_task(handle_stat(chat_id, text))
@@ -9553,6 +9847,8 @@ async def main():
         logger.error(f'init elon_cache: {e}')
     asyncio.create_task(elon_cache_loop())   # kuniga bir marta ehtiyot yuklash
     asyncio.create_task(ai_hisobot_loop())   # BUGUN244: «🤖 AI yordamchi» mavzusiga har 5 soatda hisobot
+    if KANAL_TOMCHI_BOSHI:
+        asyncio.create_task(tomchi_loop())   # 3184.5: 15 kunlik tomchi (env yo'q — o'chiq)
     logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
     while True:
         await asyncio.sleep(3600)
