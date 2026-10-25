@@ -1769,6 +1769,9 @@ POST_SHABLON = 2
 #   primary (ko'k), Boshqa e'lonlar — success (yashil), kanallar — danger (to'q sariq namunaga eng yaqini; Bot API'da boshqasi
 #   yo'q: danger / success / primary, link — faqat callback).
 POST_TUGMA = 1
+# 3191.2 (Owner 2026-10-26): narx qatori — 1: butun qator qalin «💰 Narxi / Цена: 390$» (ilgari faqat raqam qalin edi) ·
+#   2: <h3> sarlavha (biroz kattaroq; Owner: shrifti serifga o'xshab ketadi — sinov uchun, Owner ko'rib tanlaydi).
+POST_NARX = 1
 YON_EMOJI = {'mobile': '📱', 'pc': '💻', 'camera': '📷'}
 
 
@@ -1794,7 +1797,7 @@ def post_oxiri(sahifa, yonalish, shablon=None, tugma=None):
 
 
 def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None, shablon=None,
-                    tugma=None):
+                    tugma=None, narx_k=None):
     """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow.
     v9 (BUGUN31, B28): kollaj=True — admin tugma bilan kollajga o'tkazgan post (sukut — slideshow).
@@ -1826,11 +1829,18 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
     if elon_status(elon) == 'sold':
         # B13 soni: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi)
-        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + ('<b>❗️QOLMADI❗️</b>' if kop_donali(elon) else '<b>❗️SOTILDI❗️</b>')
+        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + ('❗️QOLMADI❗️' if kop_donali(elon) else '❗️SOTILDI❗️')
     elif old and old != price:
-        narx = f'<s>{html_escape(old)}$</s> <b>{html_escape(price)}$</b>'
+        narx = f'<s>{html_escape(old)}$</s> {html_escape(price)}$'
     else:
-        narx = f'<b>{html_escape(price)}$</b>'
+        narx = f'{html_escape(price)}$'
+    # 3191.2: butun narx qatori qalin (POST_NARX 1) yoki <h3> (2); qoldiq («📦 N dona bor») — oddiy, alohida
+    narx = f'{e("money")} Narxi / Цена: {narx}'
+    soni = soni_qatori(elon)
+    if (narx_k or POST_NARX) == 2:
+        narx_blok = f'<h3>{narx}</h3>' + (f'<p>{soni}</p>' if soni else '')
+    else:
+        narx_blok = f'<p><b>{narx}</b>' + (f'<br/>{soni}' if soni else '') + '</p>'   # B13: qoldiq
 
     # v4: uz va ru jadvallari orasida chiziq (<hr/>) va sarlavha — foydalanuvchi:
     #     «o'zbekcha tugashi bilan ruscha boshlangan, 6-bo'limdek bo'lib ketgan»
@@ -1863,7 +1873,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
         + spec
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
-        + f'<p>{e("money")} Narxi / Цена: {narx}' + (f'<br/>{soni_qatori(elon)}' if soni_qatori(elon) else '') + '</p>'   # B13: qoldiq
+        + narx_blok
         + aloqa   # ALOQA (2026-10-07): raqam (bosilsa qo'ng'iroq), admin, kanal(lar) — 3189: post_oxiri
         + tugmalar   # 3189 (A60): «🛒 Sotib olish» (shu e'lon) + «🛍 Boshqa e'lonlar»; v3 dagi «Saytni ochish» va Admin / Kanal tugmalari o'rnida
     )
