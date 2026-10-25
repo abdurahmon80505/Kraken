@@ -3705,72 +3705,124 @@ def _kk_sheet(action, timeout=30, **params):
 
 
 # BUGUN173 (2026-10-14): /start → Mijozlar.yangi_bot (yangi bot) yoki eski_bot (eski botga yozgan) — Apps Script botStart.
-# Birinchi vaqt yozadi (Apps Script qayta yozmaydi). Fonda: webhook kutmaydi; xato — faqat logda (xabar buzilmaydi).
-_MIJOZ_BOT_YOZILGAN = set()   # (kanal, user_id) — shu jarayonda yozilganlar: har /start'da Sheets'ga bormaslik uchun
+# 3176 (2026-10-25): konkurs oqimi — /start va kanalga a'zo / chiqish voqealari NAVBATGA yoziladi, fonda har MIJOZ_KOP_S
+# soniyada BITTA POST bilan (≤ MIJOZ_KOP_MAX ta) Apps Script botStartKop'ga. Ilgari har /start — alohida so'rov: yuzlab odam
+# bir daqiqada kirsa Apps Script'ning bir vaqtdagi so'rov chegarasiga urilardi. Javob yo'q / qulf band — navbatda qoladi,
+# keyingi safar qayta (Apps Script birinchi vaqtni qayta yozmaydi — qayta yuborish xavfsiz). Webhook kutmaydi.
+_MIJOZ_BOT_YOZILGAN = set()   # (kanal, user_id, manba) — shu jarayonda navbatga tushganlar: har /start'da takror yubormaslik
+_MIJOZ_KOP = []               # [{tur, user_id, …, vaqt}] — eng eskisi boshida
+_MIJOZ_KOP_QULF = threading.Lock()
+MIJOZ_KOP_S = 3
+MIJOZ_KOP_MAX = 40            # Apps Script MJ_KOP_MAX = 50
+MIJOZ_KOP_CHEGARA = 20000     # xotira himoyasi: Apps Script uzoq yotsa — eng eskisi tashlanadi (logda)
+_mijoz_kop_xato = {'vaqt': 0.0}
 
 
-async def mijoz_bot_qayd(user, kanal):
-    """user — Telegram 'from' (id, username, first_name, language_code). kanal: 'yangi' | 'eski'."""
+def _tk_hozir():
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(time.time() + 5 * 3600))   # Toshkent (UTC+5, yozgi vaqt yo'q)
+
+
+def _mijoz_navbatga(d):
+    with _MIJOZ_KOP_QULF:
+        _MIJOZ_KOP.append(d)
+        if len(_MIJOZ_KOP) > MIJOZ_KOP_CHEGARA:
+            del _MIJOZ_KOP[:len(_MIJOZ_KOP) - MIJOZ_KOP_CHEGARA]
+            logger.error(f'mijoz navbati {MIJOZ_KOP_CHEGARA} dan oshdi — eng eskilari tashlandi')
+
+
+async def mijoz_bot_qayd(user, kanal, manba=''):
+    """user — Telegram 'from' (id, username, first_name, language_code). kanal: 'yangi' | 'eski'.
+    manba — /start parametri (konkurs posti havolasi va h.k.; Apps Script tozalaydi, bo'sh — 'bot')."""
     try:
         uid = str((user or {}).get('id') or '')
-        if not uid or (kanal, uid) in _MIJOZ_BOT_YOZILGAN:
+        manba = str(manba or '')[:64]
+        if not uid or (kanal, uid, manba) in _MIJOZ_BOT_YOZILGAN:
             return
-        til = 'ru' if str(user.get('language_code') or '').lower().startswith('ru') else 'uz'
-        par = {'user_id': uid, 'kanal': kanal, 'username': user.get('username') or '',
-               'ism': user.get('first_name') or '', 'til': til}
-        j = await blok(_kk_sheet, 'botStart', timeout=30, **par)   # BUGUN232: 15 → 30 s (10-15 19:20 — 15 s yetmadi)
-        if j and j.get('ok'):
-            _mijoz_bot_yozildi(kanal, uid)
-        elif j is None and SHEET_URL and API_KEY:
-            # BUGUN232: Apps Script javob bermadi (ReadTimeout / tarmoq) — yozuv yo'qolmasin: navbatga, fonda qayta.
-            # botStart takror yozmaydi (birinchi vaqt qoladi) — qayta yuborish xavfsiz.
-            with _MIJOZ_BOT_NAVBAT_QULF:
-                _MIJOZ_BOT_NAVBAT.setdefault((kanal, uid), par)
+        if len(_MIJOZ_BOT_YOZILGAN) > 20000:
+            _MIJOZ_BOT_YOZILGAN.clear()
+        _MIJOZ_BOT_YOZILGAN.add((kanal, uid, manba))
+        _mijoz_navbatga({'tur': 'start', 'user_id': uid, 'kanal': kanal, 'username': user.get('username') or '',
+                         'ism': user.get('first_name') or '', 'til': user.get('language_code') or '', 'manba': manba,
+                         'vaqt': _tk_hozir()})
     except Exception as e:
         logger.error(f'mijoz bot qayd ({kanal}): {type(e).__name__}')
 
 
-# BUGUN232: botStart navbati — (kanal, user_id) → so'rov maydonlari. Faqat Apps Script javob bermaganlar (ok:false — aniq
-# rad, qayta yuborilmaydi). Fonda har MIJOZ_BOT_NAVBAT_S soniyada (mijoz_bot_navbat_loop).
-_MIJOZ_BOT_NAVBAT = {}
-_MIJOZ_BOT_NAVBAT_QULF = threading.Lock()
-MIJOZ_BOT_NAVBAT_S = 30
+def mijoz_kanal_qayd(cm):
+    """`chat_member`: kanalga a'zo bo'ldi / chiqdi → Mijozlar.kanal_obuna (+ a'zo bo'lganda manba — taklif havolasi nomi,
+    masalan konkurs posti uchun yaratilgan havola). Faqat navbatga — tarmoq yo'q (webhook ichida chaqirsa bo'ladi)."""
+    try:
+        if not isinstance(cm, dict):
+            return ''
+        eski, yangi = cm.get('old_chat_member') or {}, cm.get('new_chat_member') or {}
+        user = yangi.get('user') or {}
+        if user.get('is_bot') or not user.get('id') or _azo(eski) == _azo(yangi):
+            return ''
+        chat = cm.get('chat') or {}
+        holat = 'a' if _azo(yangi) else 'c'
+        _mijoz_navbatga({'tur': 'kanal', 'user_id': str(user['id']), 'username': user.get('username') or '',
+                         'ism': user.get('first_name') or '', 'til': user.get('language_code') or '',
+                         'kanal': chat.get('username') or str(chat.get('id') or ''), 'holat': holat,
+                         'havola': ((cm.get('invite_link') or {}).get('name') or '')[:64] if holat == 'a' else '',
+                         'vaqt': _tk_hozir()})
+        return holat
+    except Exception as e:
+        logger.error(f'mijoz kanal qayd: {type(e).__name__}')
+        return ''
 
 
-def _mijoz_bot_yozildi(kanal, uid):
-    if len(_MIJOZ_BOT_YOZILGAN) > 20000:
-        _MIJOZ_BOT_YOZILGAN.clear()
-    _MIJOZ_BOT_YOZILGAN.add((kanal, uid))
+def _kk_post(action, timeout=40, **body):
+    """Apps Script doPost — kalit TANADA (katta to'plam GET URL'ga sig'maydi). {ok: …} → dict, aks holda None.
+    🔴 Logga faqat xato turi (URL / kalit yo'q)."""
+    if not SHEET_URL or not API_KEY:
+        logger.error(f'sheet POST {action}: SHEET_URL yoki API_KEY env bo\'sh')
+        return None
+    try:
+        r = req.post(SHEET_URL, data=json.dumps(dict(body, action=action, key=API_KEY), ensure_ascii=False).encode('utf-8'),
+                     headers={'Content-Type': 'text/plain;charset=utf-8'}, timeout=timeout)
+        j = json.loads(r.text) if (r.text or '').lstrip().startswith('{') else None
+        if not (isinstance(j, dict) and 'ok' in j):
+            logger.error(f'sheet POST {action}: javob {r.status_code}, JSON emas ({len(r.text or "")} belgi)')
+            return None
+        return j
+    except Exception as e:
+        logger.error(f'sheet POST {action}: {type(e).__name__}')
+        return None
 
 
-def _mijoz_bot_navbat_yubor():
-    """Navbatdagi botStart'larni yozadi (bloklaydi — faqat fon oqimida). Apps Script yana javob bermasa — to'xtaydi,
-    qolgani navbatda (keyingi safar). Nechta yozilganini qaytaradi."""
-    with _MIJOZ_BOT_NAVBAT_QULF:
-        ish = list(_MIJOZ_BOT_NAVBAT.items())
-    yozildi = 0
-    for k, par in ish:
-        j = None if k in _MIJOZ_BOT_YOZILGAN else _kk_sheet('botStart', timeout=40, **par)
-        if j is None and k not in _MIJOZ_BOT_YOZILGAN:
-            break
-        with _MIJOZ_BOT_NAVBAT_QULF:
-            _MIJOZ_BOT_NAVBAT.pop(k, None)
-        if j and j.get('ok'):
-            _mijoz_bot_yozildi(*k)
-            yozildi += 1
-    if yozildi:
-        logger.info(f'mijoz bot qayd: navbatdan {yozildi} ta yozildi, qoldi {len(_MIJOZ_BOT_NAVBAT)}')
-    return yozildi
+def _mijoz_kop_yubor():
+    """Navbat boshidan ≤ MIJOZ_KOP_MAX tasini botStartKop bilan yozadi (bloklaydi — faqat fon oqimida).
+    Yozildi — navbatdan olinadi; yo'q — joyida qoladi. Nechta yozilganini qaytaradi (0 — yozilmadi yoki bo'sh)."""
+    with _MIJOZ_KOP_QULF:
+        to_plam = _MIJOZ_KOP[:MIJOZ_KOP_MAX]
+    if not to_plam:
+        return 0
+    j = _kk_post('botStartKop', royxat=to_plam)
+    if not (j and j.get('ok')):
+        hozir = time.time()
+        if hozir - _mijoz_kop_xato['vaqt'] >= 600:
+            _mijoz_kop_xato['vaqt'] = hozir
+            logger.error(f'mijoz navbati: yozilmadi ({(j or {}).get("msg") or "javob yo`q"}), navbatda {len(_MIJOZ_KOP)}')
+        return 0
+    with _MIJOZ_KOP_QULF:
+        # faqat shu oqim boshidan oladi, qolganlar oxiriga qo'shiladi — boshdagi len(to_plam) ta aynan yuborilganlar
+        del _MIJOZ_KOP[:len(to_plam)]
+    return len(to_plam)
 
 
-async def mijoz_bot_navbat_loop():
+async def mijoz_kop_loop():
     while True:
-        await asyncio.sleep(MIJOZ_BOT_NAVBAT_S)
-        if _MIJOZ_BOT_NAVBAT:
-            try:
-                await blok(_mijoz_bot_navbat_yubor)
-            except Exception as e:
-                logger.error(f'mijoz bot navbat: {type(e).__name__}')
+        await asyncio.sleep(MIJOZ_KOP_S)
+        try:
+            n = MIJOZ_KOP_MAX
+            while n == MIJOZ_KOP_MAX:   # navbat to'la bo'lsa — kutmasdan ketma-ket
+                n = await blok(_mijoz_kop_yubor) if _MIJOZ_KOP else 0
+            if not _MIJOZ_KOP:
+                continue
+            if n == 0:
+                await asyncio.sleep(12)   # Apps Script javob bermadi / qulf band — biroz kutib qayta
+        except Exception as e:
+            logger.error(f'mijoz navbat: {type(e).__name__}')
 
 
 _KK_BLOK_BELGI = ('blocked', 'deactivated', 'chat not found', 'peer_id_invalid', 'user not found',
@@ -6486,6 +6538,7 @@ async def handle_update(data):
         if data.get('chat_member'):
             asyncio.create_task(blok(kanal_xush_kelibsiz, data['chat_member']))
             asyncio.create_task(blok(kanal_chiqdi, data['chat_member']))   # BUGUN147: qatnashchi kanaldan chiqdi
+            mijoz_kanal_qayd(data['chat_member'])   # 3176: Mijozlar.kanal_obuna (faqat navbatga — tarmoqsiz)
             return
 
         message = data.get('message', {})
@@ -6663,11 +6716,12 @@ async def handle_update(data):
             return
 
         if text.startswith('/start'):
-            # BUGUN173: yangi botga /start → Mijozlar.yangi_bot (fonda; 7:30 konkurs e'lonidan chetda qoladi)
-            if message.get('chat', {}).get('type') == 'private':
-                asyncio.create_task(mijoz_bot_qayd(user, 'yangi'))
             parts = text.split(' ', 1)
             deep = parts[1].strip() if len(parts) > 1 else ''
+            # BUGUN173: yangi botga /start → Mijozlar.yangi_bot (fonda; 7:30 konkurs e'lonidan chetda qoladi)
+            # 3176: + manba — /start parametri (konkurs posti, e'lon…); chek_<raqam> — buyurtma raqami, manba emas
+            if message.get('chat', {}).get('type') == 'private':
+                asyncio.create_task(mijoz_bot_qayd(user, 'yangi', manba='' if deep.startswith('chek_') else deep))
             if deep.startswith('chek_') and message.get('chat', {}).get('type') == 'private' and user.get('id'):
                 # BUGUN296: saytdagi «🧾 To'landim — chek yuborish» → ?start=chek_<buyurtma raqami> (konkurs / hub chiqmaydi)
                 asyncio.create_task(chek_boshla(user['id'], user, deep[5:].upper()))
@@ -9364,7 +9418,7 @@ async def main():
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
     asyncio.create_task(buyurtma_xabar_loop())   # BUGUN295: adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham)
     asyncio.create_task(chek_eslatma_loop())   # BUGUN305: 1 soat chek kelmasa — adminga bitta eslatma
-    asyncio.create_task(mijoz_bot_navbat_loop())   # BUGUN232: javob bermagan botStart'lar — fonda qayta
+    asyncio.create_task(mijoz_kop_loop())   # 3176: /start + kanal voqealari — to'plab, fonda (BUGUN232 navbati o'rniga)
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
     asyncio.create_task(guruh_tiklash())   # 3110: /guruh mavzulari jadvaldan (qayta ishga tushsa ham qoladi)
