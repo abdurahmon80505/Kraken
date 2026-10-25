@@ -1772,7 +1772,13 @@ POST_TUGMA = 1
 # 3191.2 (Owner 2026-10-26): narx qatori — 1: butun qator qalin «💰 Narxi / Цена: 390$» (ilgari faqat raqam qalin edi) ·
 #   2: <h4> sarlavha (3191.3, Owner 2026-10-26 01:38: «H3 emas h4» — biroz kattaroq; shrifti serifga o'xshab ketishi mumkin —
 #   sinov uchun, Owner ko'rib tanlaydi).
-POST_NARX = 1
+#   3191.4 (Owner 2026-10-26 02:27, №311 ni o'zi tahrirlab): heading yo'q, oddiy matn, narx tepasida va pastida divider (<hr/>) —
+#   3: narx bullet bilan («• 💰 Narxi / Цена: 390$») · 4: bullet'siz oddiy qator.
+#   3191.5 (Owner 2026-10-26 03:16: «narxni bullet'ni olib tashlab center qil»): 5 (C) — narx <aside> ichida, divider'lar orasida.
+#   Rich formatda markazlash faqat <aside> (pull quote — «centered text») va jadval katagida (align); <p> da align yo'q.
+#   <hr/> (RichBlockDivider) maydonsiz — enini Telegram o'zi chizadi (o'rtada qisqa chiziq), uzaytirib bo'lmaydi.
+#   3191.6 (Boss qarori, Owner 03:16 so'zi bo'yicha): sukut — 5 (C); 1 / 2 / 3 / 4 — muqobil sifatida qoladi.
+POST_NARX = 5
 YON_EMOJI = {'mobile': '📱', 'pc': '💻', 'camera': '📷'}
 
 
@@ -1836,9 +1842,17 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     else:
         narx = f'{html_escape(price)}$'
     # 3191.2: butun narx qatori qalin (POST_NARX 1) yoki <h4> (2); qoldiq («📦 N dona bor») — oddiy, alohida
+    # 3191.4: 3 / 4 — oddiy matn, ikki <hr/> orasida; 3 — <ul> bullet, 4 — <p>. Qoldiq — narx tagida, chiziqlar ichida
+    # 3191.5: 5 — markazda (<aside>), qoldiq o'sha blokda <br/> bilan
     narx = f'{e("money")} Narxi / Цена: {narx}'
     soni = soni_qatori(elon)
-    if (narx_k or POST_NARX) == 2:
+    narx_k = narx_k or POST_NARX
+    if narx_k == 5:
+        narx_blok = f'<hr/><aside>{narx}' + (f'<br/>{soni}' if soni else '') + '</aside><hr/>'
+    elif narx_k in (3, 4):
+        narx_blok = '<hr/>' + (f'<ul><li>{narx}</li></ul>' if narx_k == 3 else f'<p>{narx}</p>') + (
+            f'<p>{soni}</p>' if soni else '') + '<hr/>'
+    elif narx_k == 2:
         narx_blok = f'<h4>{narx}</h4>' + (f'<p>{soni}</p>' if soni else '')
     else:
         narx_blok = f'<p><b>{narx}</b>' + (f'<br/>{soni}' if soni else '') + '</p>'   # B13: qoldiq
