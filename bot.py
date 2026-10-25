@@ -83,22 +83,25 @@ YON_KANAL = {   # yo'nalish kaliti (jadval «Yo'nalishlar») → (kanal nomi K5,
 
 # ── A26 / B36: SUV BELGISI — kanal posti va OLX albomi rasmlariga logo (ImageKit overlay, rasm qayta ishlanmaydi) ──
 # Logo ImageKit'da bir marta yuklangan: kraken/nuqta-tech_avatar-yashil.png (2026-10-06). Doira (r-max), 50% shaffof,
-# o'lchami — rasm ENIning 15% (sayt SUV_BELGI.olcham bilan bir xil), sukut joyi — chap o'rta (markaz: eni 11.5%, bo'yi 50%).
+# o'lchami — rasm ENIning 13.8% (3184.6, Owner 2026-10-25: «logo biroz katta, 5–10% kichik» — 15% dan ~8% kam; sayt
+# SUV_BELGI.olcham hali 0.15 — admin oynasidagi ko'rinish), sukut joyi — chap o'rta (markaz: eni 10.9%, bo'yi 50%).
 # Joy har rasmga alohida — sayt admin tahrir oynasida tanlaydi va rasm manzili OXIRIGA yozadi: «…jpg#nb=X,Y» (markaz, %
 # — eni va bo'yidan) yoki «#nb=0» (belgisiz). Belgisiz manzil — sukut joy. «#» — fragment: eski kod uni kesmasa ham brauzer
 # rasmni baribir oladi. Bot manzilni ishlatishdan OLDIN belgi qismini kesadi (images_of, _ik_olcham — `belgi_ajrat`).
 # SUV_BELGI=0 (env) — belgi o'chadi (rasmlar avvalgidek).
 SUV_BELGI = os.environ.get('SUV_BELGI', '1') != '0'
 SUV_BELGI_RASM = 'kraken/nuqta-tech_avatar-yashil.png'
-SUV_BELGI_OLCHAM = 0.15
+SUV_BELGI_OLCHAM = 0.138
 SUV_BELGI_CHET = 0.04
 SUV_BELGI_SHAFFOF = 50
 SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash bilan bir xil)
 # BUGUN148 §2: 2+ rasmli e'londa 1-rasmning o'ng yuqori burchagida «›››» belgisi (ImageKit matn layer'i, logo kabi usul —
 # resize'dan keyin `:` bilan). Foydalanuvchi: «postda odamlar 1-rasmni ko'rib, qolganini ko'rmasligi mumkin». uz/ru matn emas.
+# 3184.6: tepadan 8% (ilgari 1.5%). Nega: Telegram slideshow ramkasi 4:5 — 3:4 rasmning tepa / pastidan ~4% kesadi, belgi
+# yarmi ko'rinmay qolardi (Owner skrinshoti, №256). 8% — 3:4 da ham, 0.70 nisbatli rasmda ham to'liq ichkarida.
 KEYINGI_BELGI = os.environ.get('KEYINGI_BELGI', '1') != '0'
 KEYINGI_BELGI_LAYER = ('l-text,i-%E2%80%BA%E2%80%BA%E2%80%BA,fs-90,co-FFFFFF,bg-00000099,pa-22,r-40,'
-                       'lx-bw_mul_0.88,ly-bh_mul_0.015,l-end')
+                       'lx-bw_mul_0.88,ly-bh_mul_0.08,l-end')
 
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
