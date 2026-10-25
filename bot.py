@@ -5966,6 +5966,7 @@ def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
 
 INLINE_SAHIFA = 50            # Telegram: bitta javobda ≤ 50 natija
 INLINE_KUTISH = 5.0           # rasm yuklanishini kutish (s) — so'ng tayyori rich, qolgani karta
+INLINE_EKRAN = 6              # 9000: telefonda birinchi ekranga sig'adigan natija — faqat shularning rasmi kutiladi
 # BUGUN19 §1 (S130 = b + ovozsiz, 2026-09-26): rasm TEST kanalga yuklanadi (lichka toza qoladi).
 # BUGUN148 (2026-10-13, foydalanuvchi: «deploydan keyin qayta jo'natmasin, yozib qo'ysin sheets'da»): file_id Elonlar'ning
 # `rasm_file_id` ustuniga yoziladi — JSON {kalit: file_id}. Kalit: rasm URL'i (toza); 2+ rasmli e'londa 1-rasm «›››» belgili —
@@ -6021,11 +6022,55 @@ def _num_int(elon):
         return 0
 
 
+# 9000 (2026-10-25, Owner: «@bot so'z → darrov natija»): «telefon», «zaryad» nomda yo'q — e'lonning TURKUMI nomi ham
+# qidiriladi (Turkumlar varag'i: «Zaryadlovchilar», «Kabellar», «Наушники»; turkumsiz — bo'lim nomi TUR_NOMI). Turkum nomida
+# yo'q so'zlar — bo'lim bo'yicha, so'z boshi mos kelsa («telefonlar», «чехол»). Nomda bo'lsa ham topiladi («phone» — iPhone).
+INLINE_TUR_SOZ = {
+    'phone': ('telefon', 'телефон', 'phone', 'smartfon', 'смартфон'),
+    'camera': ('kamera', 'камера', 'camera'),
+    'accessory': ('aksessuar', 'аксессуар'),
+    'case': ('chexol', 'чехол', 'case'),
+    'part': ('zapchast', 'запчаст', 'ehtiyot'),
+}
+# 9000: e'lon → (bo'lim, toza nomlar, toza turkum nomlari) — har harf bosilganda qayta hisoblanmaydi. Jadval qayta yuklansa
+# (vaqt, seriyalar, turkumlar, modellar boshqa) — kesh yangidan.
+_INLINE_IDX = {'v': None, 'd': {}}
+
+
+def _inline_turkum(e, models, tur):
+    """E'lon turkumining nomlari (uz, ru): model → lineyka → Turkumlar varag'i; topilmasa — bo'lim nomi."""
+    model = (models or {}).get(str(e.get('specId', '') or ''), {})
+    sk = str((model or {}).get('series', '') or '')
+    ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None) or {}
+    tk = str(ser.get('turkum', '') or '').strip().lower()
+    t = next((t for t in (_ELON_CACHE.get('turkumlar') or []) if tk and str(t.get('key', '')).strip().lower() == tk), None)
+    nomlar = [t.get('labelUz'), t.get('labelRu')] if t else list(TUR_NOMI.get(tur, ('', '', ''))[1:])
+    return [_inline_norm(n) for n in nomlar if n]
+
+
+def _inline_tur_sozmi(w, tur):
+    return any(w.startswith(p) for p in INLINE_TUR_SOZ.get(tur, ()))
+
+
+def _inline_ind(e, models):
+    c = _ELON_CACHE
+    v = (c.get('time'), id(c.get('series')), id(c.get('turkumlar')), id(models))
+    if _INLINE_IDX['v'] != v:
+        _INLINE_IDX['v'], _INLINE_IDX['d'] = v, {}
+    k = tuple(str(e.get(x, '') or '') for x in ('num', 'specId', 'nameUz', 'nameRu', 'name'))
+    r = _INLINE_IDX['d'].get(k)
+    if r is None:
+        tur = elon_turi(e, models or {})
+        r = (tur, [_inline_norm(n) for n in inline_nomlari(e, models) if n], _inline_turkum(e, models, tur))
+        _INLINE_IDX['d'][k] = r
+    return r
+
+
 def inline_topish(query, by_num, models):
     """So'rov bo'yicha FAOL e'lonlar (yangisi birinchi). Sotilgan/o'chirilgan/kutilayotgan — yo'q.
     '' — hammasi; '248' / '#248' / '№248' — shu raqamli e'lon BIRINCHI, keyin nomida shu son borlari
     («15» — №15 va iPhone 15'lar); matn — nomida HAMMA so'zlar bor e'lonlar (harf katta-kichikligi,
-    uz/ru, bo'shliq farqsiz)."""
+    uz/ru, bo'shliq farqsiz). Turkum / bo'lim so'zi («telefon», «zaryad», «kabel», …) — nomda bo'lmasa ham mos (9000)."""
     faol = [e for e in (by_num or {}).values() if isinstance(e, dict) and elon_status(e) == 'active']
     faol.sort(key=lambda e: (_elon_vaqti(e), _num_int(e)), reverse=True)
     q = str(query or '').strip()
@@ -6043,8 +6088,9 @@ def inline_topish(query, by_num, models):
     for e in faol:
         if any(e is b for b in birinchi):
             continue
-        nomlar = [_inline_norm(n) for n in inline_nomlari(e, models) if n]
-        if any(all(w in n for w in sozlar) for n in nomlar):
+        tur, nomlar, turkum = _inline_ind(e, models)
+        turdagi = {w for w in sozlar if _inline_tur_sozmi(w, tur) or (len(w) >= 3 and any(w in t for t in turkum))}
+        if any(all(w in n or w in turdagi for w in sozlar) for n in nomlar):
             natija.append(e)
     return natija
 
@@ -6345,7 +6391,7 @@ def _inline_karta(num, elon, model, sarlavha=None, izoh=None):
         'id': karta['id'],
         'title': sarlavha,
         'description': izoh,
-        'thumbnail_url': karta['thumbnail_url'],
+        'thumbnail_url': _ik_olcham(images_of(elon)[0], 'w-200,q-70'),   # 9000: ro'yxatda kichik rasm (rich bilan bir xil)
         'input_message_content': {
             'message_text': karta['caption'],
             'parse_mode': 'HTML',
@@ -6381,8 +6427,10 @@ async def inline_javob(iq):
             _fid_jadvaldan(e)       # jadvaldagi file_id — qayta yuklanmaydi (BUGUN148)
         urls = [k for e in sahifa for k in inline_kalitlari(e)]
         rasm_navbatga(urls)
+        # 9000: faqat birinchi ekrandagilar kutiladi (navbatda ular oldinda) — «telefon» 50 ta natijada 500 rasm kutilmaydi
+        kut = [k for e in sahifa[:INLINE_EKRAN] for k in inline_kalitlari(e)]
         oxiri = time.monotonic() + INLINE_KUTISH
-        while any(u in _rasm_kutilmoqda for u in urls) and time.monotonic() < oxiri:
+        while any(u in _rasm_kutilmoqda for u in kut) and time.monotonic() < oxiri:
             await asyncio.sleep(0.25)
 
         natijalar = [n for n in (inline_natija(e, models) for e in sahifa) if n]
@@ -6396,9 +6444,10 @@ async def inline_javob(iq):
         }, timeout=15)
         # Rich natija rad etilsa (hali jonli sinalmagan) — ro'yxat bo'sh qolmasin: shu so'rovga faqat kartalar
         javob = r.json() if hasattr(r, 'json') else {}
-        if not javob.get('ok') and not all(n.get('type') == 'photo' for n in natijalar):
+        if not javob.get('ok') and any('rich_message' in n.get('input_message_content', {}) for n in natijalar):
             logger.error(f"inline rich rad etildi: {javob.get('description')} — kartalar bilan qayta")
-            kartalar = [k for k in (_share_result(_num_int(e), e, (models or {}).get(str(e.get('specId', '') or ''), {}))
+            # 9000: zaxira ham article karta (BUGUN43) — photo natija ro'yxatda nomsiz «Photo» bo'lib chiqardi
+            kartalar = [k for k in (_inline_karta(_num_int(e), e, (models or {}).get(str(e.get('specId', '') or ''), {}))
                                     for e in sahifa) if k]
             await blok(req.post, f'{TG_API}/answerInlineQuery', json={
                 'inline_query_id': iq.get('id'), 'results': kartalar, 'next_offset': keyingi,
