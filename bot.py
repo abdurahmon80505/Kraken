@@ -95,13 +95,23 @@ SUV_BELGI_OLCHAM = 0.138
 SUV_BELGI_CHET = 0.04
 SUV_BELGI_SHAFFOF = 50
 SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash bilan bir xil)
-# BUGUN148 §2: 2+ rasmli e'londa 1-rasmning o'ng yuqori burchagida «›››» belgisi (ImageKit matn layer'i, logo kabi usul —
-# resize'dan keyin `:` bilan). Foydalanuvchi: «postda odamlar 1-rasmni ko'rib, qolganini ko'rmasligi mumkin». uz/ru matn emas.
-# 3184.6: tepadan 8% (ilgari 1.5%). Nega: Telegram slideshow ramkasi 4:5 — 3:4 rasmning tepa / pastidan ~4% kesadi, belgi
-# yarmi ko'rinmay qolardi (Owner skrinshoti, №256). 8% — 3:4 da ham, 0.70 nisbatli rasmda ham to'liq ichkarida.
+# BUGUN148 §2: 2+ rasmli e'londa 1-rasmda «o'ngga suring» belgisi (ImageKit matn layer'i, logo kabi usul — resize'dan keyin
+# `:` bilan). Foydalanuvchi: «postda odamlar 1-rasmni ko'rib, qolganini ko'rmasligi mumkin». 3184.8 gacha — o'ng yuqorida «›››».
+# 3184.8 (Owner 2026-10-25: «tepaga emas, pastga; qop-qora «›››» xunuk — logo rangida, 5–10% kattaroq, boshqacharoq»):
+# PASTKI o'ngda, logo rangida (fon #134E4A — logo foni, 90%; belgi oq — logo yozuvi), Montserrat qalin. Joyi — markaz bo'yicha
+# (lxc/lyc — belgi o'lchamiga bog'liq emas): bo'yi 88% — Telegram 4:5 ramkasi 3:4 rasmning pastidan ~3%, 0.70 nisbatlida ~6%
+# kesadi, belgi to'liq ichkarida; o'ng chetda — o'rtadagi slayd nuqtalariga tegmaydi. O'lchami — eski belgidan ~8% katta
+# (eski 118×80 px w-1600 da). Ikki ko'rinish, Owner tanlaydi (KEYINGI_BELGI_TUR, sukut 'a'):
+#   a — yumaloq tugma «›» (106 px doira) · b — kapsula «Suring ›» (293×86 px).
 KEYINGI_BELGI = os.environ.get('KEYINGI_BELGI', '1') != '0'
-KEYINGI_BELGI_LAYER = ('l-text,i-%E2%80%BA%E2%80%BA%E2%80%BA,fs-90,co-FFFFFF,bg-00000099,pa-22,r-40,'
-                       'lx-bw_mul_0.88,ly-bh_mul_0.08,l-end')
+KEYINGI_BELGI_LAYERLAR = {
+    'a': ('l-text,i-%E2%80%BA,ff-Montserrat,tg-b,fs-150,co-FFFFFF,bg-134E4AE6,pa-24_32,r-max,'
+          'lxc-bw_mul_0.89,lyc-bh_mul_0.88,l-end'),
+    'b': ('l-text,i-Suring%20%E2%80%BA,ff-Montserrat,tg-b,fs-56,co-FFFFFF,bg-134E4AE6,pa-16_34,r-max,'
+          'lxc-bw_mul_0.84,lyc-bh_mul_0.88,l-end'),
+}
+KEYINGI_BELGI_TUR = os.environ.get('KEYINGI_BELGI_TUR', 'a').strip().lower()
+KEYINGI_BELGI_LAYER = KEYINGI_BELGI_LAYERLAR.get(KEYINGI_BELGI_TUR, KEYINGI_BELGI_LAYERLAR['a'])
 
 _konkurs_cache = {'data': None, 'time': 0}
 user_states = {}
@@ -1732,16 +1742,17 @@ def rich_media(rasmlar, kollaj=False, rasm_src=None):
     return f'<tg-slideshow>{imgs}</tg-slideshow>'
 
 
-def keyingi_belgi(url):
-    """Tayyor ImageKit manzilga (`…?tr=…`) «›››» belgisi layer'ini qo'shadi. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi."""
+def keyingi_belgi(url, tur=None):
+    """Tayyor ImageKit manzilga (`…?tr=…`) «suring» belgisi layer'ini qo'shadi. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi.
+    tur — 'a' / 'b' (3184.8 sinovi); None — KEYINGI_BELGI_TUR."""
     if not KEYINGI_BELGI or 'ik.imagekit.io' not in url or '?tr=' not in url and '&tr=' not in url:
         return url
-    return url + ':' + KEYINGI_BELGI_LAYER
+    return url + ':' + (KEYINGI_BELGI_LAYERLAR.get(tur) or KEYINGI_BELGI_LAYER)
 
 
 def belgi_src(elon):
     """{toza rasm manzili: belgili manzil} — kanal postining rich rasmlari uchun (rich_media rasm_src).
-    BUGUN148: 2+ rasm bo'lsa 1-rasmga «›››» belgisi ham (keyingi_belgi)."""
+    BUGUN148: 2+ rasm bo'lsa 1-rasmga «suring» belgisi ham (keyingi_belgi)."""
     joylar = rasm_joylari(elon)
     src = {t: belgili(t, j) for t, j in joylar}
     if len(joylar) >= 2:
@@ -6424,7 +6435,7 @@ INLINE_KUTISH = 5.0           # rasm yuklanishini kutish (s) — so'ng tayyori r
 INLINE_EKRAN = 6              # 9000: telefonda birinchi ekranga sig'adigan natija — faqat shularning rasmi kutiladi
 # BUGUN19 §1 (S130 = b + ovozsiz, 2026-09-26): rasm TEST kanalga yuklanadi (lichka toza qoladi).
 # BUGUN148 (2026-10-13, foydalanuvchi: «deploydan keyin qayta jo'natmasin, yozib qo'ysin sheets'da»): file_id Elonlar'ning
-# `rasm_file_id` ustuniga yoziladi — JSON {kalit: file_id}. Kalit: rasm URL'i (toza); 2+ rasmli e'londa 1-rasm «›››» belgili —
+# `rasm_file_id` ustuniga yoziladi — JSON {kalit: file_id}. Kalit: rasm URL'i (toza); 2+ rasmli e'londa 1-rasm «suring» belgili —
 # kalit `URL#b`. Kalit rasm manzili bilan bog'liq: rasm almashsa eski file_id o'zi tushib qoladi (jadvalga qayta yozilganda).
 # 🔴 Ombor botining file_id si bu botda ISHLAMAYDI — ko'chirilmaydi, Store boti o'zi yuklaydi.
 RASM_YUKLASH_CHAT = TEST_CHANNEL
@@ -6589,7 +6600,7 @@ def _chat_xatosi(r):
 
 
 def _fid_manba(kalit):
-    """Kalit → yuklanadigan manzil: `URL#b` — «›››» belgili 1-rasm, aks holda oddiy w-1600."""
+    """Kalit → yuklanadigan manzil: `URL#b` — «suring» belgili 1-rasm, aks holda oddiy w-1600."""
     if kalit.endswith('#b'):
         return keyingi_belgi(_ik_olcham(kalit[:-2], 'w-1600,q-85'))
     return _ik_olcham(kalit, 'w-1600,q-85')
@@ -6610,7 +6621,7 @@ def _fid_h(manba):
 
 
 def kanal_manbalari(elon):
-    """Kanal posti rasmlari — Telegram yuklaydigan manzillar (logo; 2+ rasmda 1-si «›››» belgili), ≤10."""
+    """Kanal posti rasmlari — Telegram yuklaydigan manzillar (logo; 2+ rasmda 1-si «suring» belgili), ≤10."""
     src = belgi_src(elon)
     return [src.get(u, u) for u in images_of(elon)[:10]]
 
