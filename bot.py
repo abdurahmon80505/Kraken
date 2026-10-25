@@ -1770,7 +1770,8 @@ POST_SHABLON = 2
 #   yo'q: danger / success / primary, link — faqat callback).
 POST_TUGMA = 1
 # 3191.2 (Owner 2026-10-26): narx qatori — 1: butun qator qalin «💰 Narxi / Цена: 390$» (ilgari faqat raqam qalin edi) ·
-#   2: <h3> sarlavha (biroz kattaroq; Owner: shrifti serifga o'xshab ketadi — sinov uchun, Owner ko'rib tanlaydi).
+#   2: <h4> sarlavha (3191.3, Owner 2026-10-26 01:38: «H3 emas h4» — biroz kattaroq; shrifti serifga o'xshab ketishi mumkin —
+#   sinov uchun, Owner ko'rib tanlaydi).
 POST_NARX = 1
 YON_EMOJI = {'mobile': '📱', 'pc': '💻', 'camera': '📷'}
 
@@ -1834,11 +1835,11 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
         narx = f'<s>{html_escape(old)}$</s> {html_escape(price)}$'
     else:
         narx = f'{html_escape(price)}$'
-    # 3191.2: butun narx qatori qalin (POST_NARX 1) yoki <h3> (2); qoldiq («📦 N dona bor») — oddiy, alohida
+    # 3191.2: butun narx qatori qalin (POST_NARX 1) yoki <h4> (2); qoldiq («📦 N dona bor») — oddiy, alohida
     narx = f'{e("money")} Narxi / Цена: {narx}'
     soni = soni_qatori(elon)
     if (narx_k or POST_NARX) == 2:
-        narx_blok = f'<h3>{narx}</h3>' + (f'<p>{soni}</p>' if soni else '')
+        narx_blok = f'<h4>{narx}</h4>' + (f'<p>{soni}</p>' if soni else '')
     else:
         narx_blok = f'<p><b>{narx}</b>' + (f'<br/>{soni}' if soni else '') + '</p>'   # B13: qoldiq
 
