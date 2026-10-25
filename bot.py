@@ -3825,6 +3825,103 @@ async def mijoz_kop_loop():
             logger.error(f'mijoz navbat: {type(e).__name__}')
 
 
+# ── 3184: SAVAT ESLATMASI va TAKROR QATORLAR — kimga (tanlov) va belgi Apps Script'da (savatEslatmaOl), bot faqat yuboradi.
+# NEGA bot (Apps Script vaqt trigger'i emas): yangi trigger / tashqi so'rov egasidan qo'lda «Allow» so'raydi; bot esa Telegram'ga
+# allaqachon yozadi — 429 ni kutadi, bloklaganni ajratadi (_kk_tg). SAVAT_ESLATMA (Render env): 'quruq' (sukut) — hech kimga
+# yozilmaydi, logda faqat id oxirgi 3 raqami, til, № · 'ochiq' — yuboriladi · 'yoq' — o'chiq. Faqat 10:00–21:00 (Toshkent),
+# 30 daqiqada bir, bir chaqiruvda ≤ 30 ta. Belgi YUBORISHDAN OLDIN qo'yiladi (qulf ichida) — tarmoq uzilsa ham ikki marta ketmaydi.
+SAVAT_ESL_S = 1800
+SAVAT_ESL_MAX = 30           # Apps Script SAVAT_ESL_MAX
+SAVAT_ESL_SOAT = (10, 21)    # Apps Script SAVAT_ESL_SOAT
+SAVAT_ESL_MATN = {'uz': ("Savatingizda tovar qoldi — u hali sotuvda 📱 Ko'rish 👇", 'Savat'),
+                  'ru': ('В корзине остался товар — он ещё в продаже 📱 Посмотреть 👇', 'Корзина')}
+
+
+def _savat_rejim():
+    r = (os.environ.get('SAVAT_ESLATMA') or 'quruq').strip().lower()
+    return r if r in ('quruq', 'ochiq', 'yoq') else 'quruq'
+
+
+def _savat_oyna(t=None):
+    soat = time.gmtime((time.time() if t is None else t) + 5 * 3600).tm_hour
+    return SAVAT_ESL_SOAT[0] <= soat < SAVAT_ESL_SOAT[1]
+
+
+def _savat_xabar(til):
+    matn, tugma = SAVAT_ESL_MATN['ru' if til == 'ru' else 'uz']
+    return matn, {'inline_keyboard': [[{'text': tugma, 'web_app': {'url': SAYT_URL + '?p=cart'}}]]}
+
+
+def _savat_yubor(royxat, tg=None, uxla=0.1):
+    """royxat — [{uid, til, nums}] → (yuborildi soni, [bloklagan uid]). Har xabar orasida uxla s (Telegram: ~30 xabar / s)."""
+    tg = tg or _kk_tg
+    n, bl = 0, []
+    for x in (royxat or [])[:SAVAT_ESL_MAX]:
+        uid = str(x.get('uid') or '')
+        if not uid.isdigit():
+            continue
+        matn, markup = _savat_xabar(x.get('til'))
+        h, _ = tg('sendMessage', {'chat_id': int(uid), 'text': matn, 'reply_markup': markup})
+        if h == 'yuborildi':
+            n += 1
+        elif h == 'bloklagan':
+            bl.append(uid)
+        time.sleep(uxla)
+    return n, bl
+
+
+def _savat_eslatma_bir(t=None):
+    """Bir aylanish. → (rejim, natija dict) yoki None (o'chiq / oyna tashqarisi / Apps Script javob bermadi)."""
+    rejim = _savat_rejim()
+    if rejim == 'yoq' or not _savat_oyna(t):
+        return None
+    j = _kk_post('savatEslatmaOl', rejim=rejim)
+    if not (j and j.get('ok')):
+        logger.error(f'savat eslatma: ro`yxat olinmadi ({(j or {}).get("msg") or "javob yo`q"})')
+        return None
+    if rejim == 'quruq':
+        r = [f'{x.get("id")} {x.get("til")} ' + ' '.join('№' + str(n) for n in (x.get('nums') or [])) for x in (j.get('royxat') or [])]
+        logger.info(f'savat eslatma (quruq): {j.get("jami", 0)} ta' + (' — ' + ', '.join(r) if r else ''))
+        return 'quruq', {'jami': j.get('jami', 0), 'royxat': r}
+    n, bl = _savat_yubor(j.get('royxat') or [])
+    if bl:
+        _kk_post('savatEslatmaNatija', blok=bl)
+    logger.info(f'savat eslatma: {n} yuborildi, {len(bl)} bloklagan (jami {j.get("jami", 0)})')
+    return 'ochiq', {'jami': j.get('jami', 0), 'yuborildi': n, 'blok': len(bl)}
+
+
+async def savat_eslatma_loop():
+    await asyncio.sleep(300)   # ishga tushganda boshqa yuklashlar avval
+    while True:
+        try:
+            await blok(_savat_eslatma_bir)
+        except Exception as e:
+            logger.error(f'savat_eslatma_loop: {type(e).__name__}')
+        await asyncio.sleep(SAVAT_ESL_S)
+
+
+def _birlashtir_kutish(t=None):
+    """Keyingi 04:00 (Toshkent) gacha necha soniya."""
+    t = time.time() if t is None else t
+    tk = (t + 5 * 3600) % 86400
+    return (4 * 3600 - tk) % 86400 or 86400
+
+
+async def mijoz_birlashtir_loop():
+    """Kunda bir marta, 04:00: bir user_id — bitta Mijozlar qatori (ortiqchasi Mijozlar_birlashtirildi ga). Logda — faqat sonlar."""
+    while True:
+        await asyncio.sleep(_birlashtir_kutish())
+        try:
+            j = await blok(_kk_post, 'mijozBirlashtir', 120)
+            if j and j.get('ok'):
+                logger.info(f'mijoz birlashtirish: {j.get("guruh", 0)} odam, {j.get("olindi", 0)} qator olindi, qoldi {j.get("qator", 0)}')
+            else:
+                logger.error(f'mijoz birlashtirish: {(j or {}).get("msg") or "javob yo`q"}')
+        except Exception as e:
+            logger.error(f'mijoz_birlashtir_loop: {type(e).__name__}')
+        await asyncio.sleep(60)
+
+
 _KK_BLOK_BELGI = ('blocked', 'deactivated', 'chat not found', 'peer_id_invalid', 'user not found',
                   'bot was kicked', "bot can't initiate")
 
@@ -9419,6 +9516,8 @@ async def main():
     asyncio.create_task(buyurtma_xabar_loop())   # BUGUN295: adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham)
     asyncio.create_task(chek_eslatma_loop())   # BUGUN305: 1 soat chek kelmasa — adminga bitta eslatma
     asyncio.create_task(mijoz_kop_loop())   # 3176: /start + kanal voqealari — to'plab, fonda (BUGUN232 navbati o'rniga)
+    asyncio.create_task(savat_eslatma_loop())   # 3184: savatda qolgan tovar — eslatma (SAVAT_ESLATMA, sukut quruq)
+    asyncio.create_task(mijoz_birlashtir_loop())   # 3184: takror Mijozlar qatorlari — kunda bir marta, 04:00
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
     asyncio.create_task(guruh_tiklash())   # 3110: /guruh mavzulari jadvaldan (qayta ishga tushsa ham qoladi)
