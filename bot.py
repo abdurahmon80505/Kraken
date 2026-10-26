@@ -7430,7 +7430,7 @@ def fetch_elon_by_num(num):
 def preview_elon_to_admin(num, admin_chat):
     """«Menga yuborish»: bot e'lonni FAQAT adminga (lichkaga) yuboradi:
       1) OLX matni — nusxalab OLX'ga joylash uchun
-      2) Kanal eloni — rasm(lar) + premium emoji bilan (kanalga qo'lda joylash uchun)
+      2) Kanal eloni — rich C + premium emoji (kanalga qo'lda joylash uchun; 3199)
 
     Kanalga hech narsa yuborilmaydi. D2 qarori (2026-09-04): avtomatik kanal
     tizimi QAYTARILMADI — kanalni admin qo'lda boshqaradi, chunki bot edit
@@ -7462,7 +7462,14 @@ def preview_elon_to_admin(num, admin_chat):
         logger.error(f'OLX send: {e}')
 
     # ── 2) KANAL ELONI (keyin — premium emoji bilan, forward/joylash uchun) ──
+    # 3199 (Owner, 2026-10-26): kanal ko'rinishi — rich C (kanal posti bilan bir xil), premium emoji bilan: Telegram
+    # custom emoji'ni lichka / guruhga ruxsat beradi (bot egasi Premium), kanalga — yo'q. 1-rasm: logo + «›››» belgisi.
+    # Rich rad etilsa — eski caption + albom (quyida).
     send_msg(admin_chat, "📋 <b>KANAL ELONI</b> — Kanalga joylashingiz mumkin 👇")
+    mid, xato = send_rich(admin_chat, build_rich_html(elon, models, premium=True, belgi=True))
+    if mid:
+        return
+    logger.warning(f"preview №{num}: rich rad etildi ({xato}) — eski ko'rinish")
     res = send_elon_with_photos(admin_chat, text, entities, images)
     if not res:
         send_msg(admin_chat, "❌ Kanal elonini yuborishda xatolik.")
