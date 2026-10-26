@@ -1778,7 +1778,9 @@ POST_TUGMA = 1
 #   Rich formatda markazlash faqat <aside> (pull quote — «centered text») va jadval katagida (align); <p> da align yo'q.
 #   <hr/> (RichBlockDivider) maydonsiz — enini Telegram o'zi chizadi (o'rtada qisqa chiziq), uzaytirib bo'lmaydi.
 #   3191.6 (Boss qarori, Owner 03:16 so'zi bo'yicha): sukut — 5 (C); 1 / 2 / 3 / 4 — muqobil sifatida qoladi.
-POST_NARX = 5
+#   3200 (Owner 2026-10-26 22:24: «pull quote va dividerlarsiz, faqat narxni bullet qilamiz»): 6 — narx bullet bilan
+#   («• 💰 Narxi / Цена: 390$»), <hr/> ham, <aside> ham yo'q; qoldiq — tagida oddiy paragraf. Sukut — 6; 1–5 muqobil.
+POST_NARX = 6
 YON_EMOJI = {'mobile': '📱', 'pc': '💻', 'camera': '📷'}
 
 
@@ -1844,10 +1846,13 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     # 3191.2: butun narx qatori qalin (POST_NARX 1) yoki <h4> (2); qoldiq («📦 N dona bor») — oddiy, alohida
     # 3191.4: 3 / 4 — oddiy matn, ikki <hr/> orasida; 3 — <ul> bullet, 4 — <p>. Qoldiq — narx tagida, chiziqlar ichida
     # 3191.5: 5 — markazda (<aside>), qoldiq o'sha blokda <br/> bilan
+    # 3200: 6 — faqat bullet (<ul><li>), chiziq va markaz yo'q
     narx = f'{e("money")} Narxi / Цена: {narx}'
     soni = soni_qatori(elon)
     narx_k = narx_k or POST_NARX
-    if narx_k == 5:
+    if narx_k == 6:
+        narx_blok = f'<ul><li>{narx}</li></ul>' + (f'<p>{soni}</p>' if soni else '')   # 3200: chiziqsiz, quote'siz
+    elif narx_k == 5:
         narx_blok = f'<hr/><aside>{narx}' + (f'<br/>{soni}' if soni else '') + '</aside><hr/>'
     elif narx_k in (3, 4):
         narx_blok = '<hr/>' + (f'<ul><li>{narx}</li></ul>' if narx_k == 3 else f'<p>{narx}</p>') + (
@@ -7430,7 +7435,7 @@ def fetch_elon_by_num(num):
 def preview_elon_to_admin(num, admin_chat):
     """«Menga yuborish»: bot e'lonni FAQAT adminga (lichkaga) yuboradi:
       1) OLX matni — nusxalab OLX'ga joylash uchun
-      2) Kanal eloni — rich C + premium emoji (kanalga qo'lda joylash uchun; 3199)
+      2) Kanal eloni — rich (kanal posti bilan bir xil, POST_NARX sukuti) + premium emoji (kanalga qo'lda joylash uchun; 3199)
 
     Kanalga hech narsa yuborilmaydi. D2 qarori (2026-09-04): avtomatik kanal
     tizimi QAYTARILMADI — kanalni admin qo'lda boshqaradi, chunki bot edit
@@ -7462,7 +7467,7 @@ def preview_elon_to_admin(num, admin_chat):
         logger.error(f'OLX send: {e}')
 
     # ── 2) KANAL ELONI (keyin — premium emoji bilan, forward/joylash uchun) ──
-    # 3199 (Owner, 2026-10-26): kanal ko'rinishi — rich C (kanal posti bilan bir xil), premium emoji bilan: Telegram
+    # 3199 (Owner, 2026-10-26): kanal ko'rinishi — rich (kanal posti bilan bir xil; 3200 dan narx — bullet), premium emoji bilan: Telegram
     # custom emoji'ni lichka / guruhga ruxsat beradi (bot egasi Premium), kanalga — yo'q. 1-rasm: logo + «›››» belgisi.
     # Rich rad etilsa — eski caption + albom (quyida).
     send_msg(admin_chat, "📋 <b>KANAL ELONI</b> — Kanalga joylashingiz mumkin 👇")
