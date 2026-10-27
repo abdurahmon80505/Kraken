@@ -280,7 +280,17 @@ async def guruh_tiklash():
         logger.error(f'guruh_tiklash: {type(e).__name__}')
 
 
+# 3213: ikki /guruh bir vaqtda (qayta bosish, ikki qurilma) ikkalasi ham «yo'q» mavzuni ko'rib, ikki martadan ochardi (rasmdagi
+# «Rasm · Camera / Mobile / PC» takrori). Endi /guruh navbat bilan: ikkinchisi birinchisi saqlagan GURUH ni ko'radi.
+_guruh_qulf = threading.Lock()
+
+
 def guruh_sozla(chat, forum, xabar_chat):
+    with _guruh_qulf:
+        _guruh_sozla(chat, forum, xabar_chat)
+
+
+def _guruh_sozla(chat, forum, xabar_chat):
     """/guruh (guruhda, admin): YO'Q mavzularni ochadi (borlari takrorlanmaydi), GURUH ni xotirada yoqadi va jadvalga
     saqlaydi — bot qayta ishga tushsa ham shu to'plam. Oxirida ishlatilayotgan mavzular ro'yxati chiqadi."""
     global GURUH
@@ -332,7 +342,8 @@ def guruh_sozla(chat, forum, xabar_chat):
     oxir = ("Doimiy saqlandi: bot qayta ishga tushsa ham <b>shu mavzular</b> ishlaydi (oxirgi /guruh)."
             if not _guruh_holat['saqlanmagan'] else
             "⚠️ Doimiy saqlab bo'lmadi — bot qayta ishga tushsa yo'qoladi. Birozdan keyin /guruh ni qayta yuboring.")
-    send_msg(xabar_chat, f"{bosh}\nBot hozir shu mavzularni ishlatyapti:\n{royxat}\n{oxir}")
+    send_msg(xabar_chat, f"{bosh}\nBot hozir shu mavzularni ishlatyapti:\n{royxat}\n"
+                         f"Guruhdagi boshqa mavzularning hammasi ortiqcha — o'chirsangiz bo'ladi.\n{oxir}")
 
 
 # Premium emoji ID'lari (base emoji -> custom_emoji_id)
