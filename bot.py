@@ -285,14 +285,46 @@ async def guruh_tiklash():
 _guruh_qulf = threading.Lock()
 
 
-def guruh_sozla(chat, forum, xabar_chat):
+# 3213.1 (Owner 2026-10-27): guruhdagi mavzularning hammasi o'chirildi — /guruh «allaqachon bor» deb o'chgan mavzular havolasini
+# berdi (saqlangan id'ni Telegram'da tekshirmasdi). Endi har saqlangan mavzu tekshiriladi: avval reopenForumTopic (xabarsiz;
+# ochiq mavzu — «TOPIC_NOT_MODIFIED», yopig'i ochiladi), javob noaniq bo'lsa — ovozsiz sinov xabari (darhol o'chiriladi).
+_MAVZU_YOQ = ('TOPIC_ID_INVALID', 'TOPIC_DELETED', 'THREAD NOT FOUND', 'THREAD_INVALID', 'TOPIC NOT FOUND')
+
+
+def _tg_j(usul, j):
+    try:
+        return req.post(f'{TG_API}/{usul}', json=j, timeout=10).json()
+    except Exception as e:
+        return {'ok': False, 'description': f'tarmoq: {type(e).__name__}'}
+
+
+def mavzu_bormi(chat, thread):
+    """Mavzu Telegram'da bormi: True — bor, False — o'chirilgan, None — bilib bo'lmadi (tarmoq / huquq — eskisi qoladi)."""
+    j = _tg_j('reopenForumTopic', {'chat_id': chat, 'message_thread_id': thread})
+    d = str(j.get('description', '')).upper()
+    if j.get('ok') or 'NOT_MODIFIED' in d:
+        return True
+    if any(s in d for s in _MAVZU_YOQ):
+        return False
+    # chat_id — oddiy int (Joy emas): _TgReq «thread» xatosida mavzusiz qayta yubormasin
+    j = _tg_j('sendMessage', {'chat_id': int(chat), 'message_thread_id': thread, 'text': '🔎',
+                              'disable_notification': True})
+    if j.get('ok'):
+        _tg_j('deleteMessage', {'chat_id': int(chat), 'message_id': j['result']['message_id']})
+        return True
+    d = str(j.get('description', '')).upper()
+    return False if any(s in d for s in _MAVZU_YOQ) else None
+
+
+def guruh_sozla(chat, forum, xabar_chat, yangi=False):
     with _guruh_qulf:
-        _guruh_sozla(chat, forum, xabar_chat)
+        _guruh_sozla(chat, forum, xabar_chat, yangi)
 
 
-def _guruh_sozla(chat, forum, xabar_chat):
+def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
     """/guruh (guruhda, admin): YO'Q mavzularni ochadi (borlari takrorlanmaydi), GURUH ni xotirada yoqadi va jadvalga
-    saqlaydi — bot qayta ishga tushsa ham shu to'plam. Oxirida ishlatilayotgan mavzular ro'yxati chiqadi."""
+    saqlaydi — bot qayta ishga tushsa ham shu to'plam. Oxirida ishlatilayotgan mavzular ro'yxati chiqadi.
+    Saqlangan mavzu Telegram'da o'chirilgan bo'lsa — yangidan ochiladi. «/guruh yangi» — eskilarini unutib, hammasi noldan."""
     global GURUH
     if not forum:
         send_msg(xabar_chat, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: guruh sozlamalari → Topics → yoqing, "
@@ -302,7 +334,16 @@ def _guruh_sozla(chat, forum, xabar_chat):
         send_msg(xabar_chat, "⚠️ Saqlangan mavzular jadvaldan o'qilmadi — takror mavzu ochilmasin deb to'xtadim. "
                              "1 daqiqadan keyin /guruh ni qayta yuboring.")
         return
-    g = dict(GURUH) if GURUH.get('id') == chat else {'id': chat}
+    g = dict(GURUH) if GURUH.get('id') == chat and not noldan else {'id': chat}
+    ochirilgan, nomalum = [], []
+    for k, nom in GURUH_MAVZULAR:
+        if g.get(k):
+            bor = mavzu_bormi(chat, g[k])
+            if bor is False:
+                del g[k]
+                ochirilgan.append(k)
+            elif bor is None:
+                nomalum.append(nom)
     yangi = [(k, nom) for k, nom in GURUH_MAVZULAR if not g.get(k)]
     ochildi, xato = [], None
     for k, nom in yangi:
@@ -315,7 +356,7 @@ def _guruh_sozla(chat, forum, xabar_chat):
             break
         g[k] = j['result']['message_thread_id']
         ochildi.append((k, nom))
-    if ochildi:   # chala bo'lsa ham saqlanadi: ochilgan mavzu yo'qolmasin, qayta /guruh faqat qolganini ochadi
+    if ochildi or ochirilgan:   # chala bo'lsa ham saqlanadi: ochilgan mavzu yo'qolmasin, o'chgan id qolmasin
         GURUH = g
         _guruh_holat['saqlanmagan'] = True
     if _guruh_holat['saqlanmagan']:
@@ -337,8 +378,12 @@ def _guruh_sozla(chat, forum, xabar_chat):
         return
     royxat = '\n'.join(f'• <a href="https://t.me/c/{str(chat)[4:]}/{GURUH[k]}">{nom}</a>'
                        for k, nom in GURUH_MAVZULAR if GURUH.get(k))
-    bosh = (f"✅ Guruh tayyor — {len(ochildi)} ta yangi mavzu ochildi." if ochildi else
-            "ℹ️ Mavzular allaqachon bor — yangi mavzu ochilmadi.")
+    bosh = (f"✅ Guruh tayyor — {len(ochildi)} ta yangi mavzu ochildi" if ochildi else
+            "ℹ️ Mavzular allaqachon bor (Telegram'da tekshirildi) — yangi mavzu ochilmadi")
+    bosh += (" (/guruh yangi — hammasi noldan)." if noldan else
+             f" ({len(ochirilgan)} tasi o'chirilgan edi — yangidan ochildi)." if ochirilgan else ".")
+    if nomalum:
+        bosh += f"\n⚠️ Tekshirib bo'lmadi, eskisi qoldi: {', '.join(nomalum)}. Hammasini noldan: /guruh yangi"
     oxir = ("Doimiy saqlandi: bot qayta ishga tushsa ham <b>shu mavzular</b> ishlaydi (oxirgi /guruh)."
             if not _guruh_holat['saqlanmagan'] else
             "⚠️ Doimiy saqlab bo'lmadi — bot qayta ishga tushsa yo'qoladi. Birozdan keyin /guruh ni qayta yuboring.")
@@ -7058,7 +7103,8 @@ async def handle_update(data):
             if buyruq == '/guruh':
                 if user.get('id') == ADMIN_ID:
                     await blok(guruh_sozla, chat_id, bool(message['chat'].get('is_forum')),
-                               Joy(chat_id, message.get('message_thread_id')))
+                               Joy(chat_id, message.get('message_thread_id')),
+                               text.split()[1:2] == ['yangi'])   # 3213.1: «/guruh yangi» — hammasi noldan
                 return
             if GURUH.get('id') and chat_id == GURUH['id']:
                 if user.get('id') != ADMIN_ID:
