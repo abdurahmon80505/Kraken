@@ -202,9 +202,29 @@ def admin_mi(chat_id):
     return chat_id == ADMIN_ID or bool(GURUH.get('id')) and chat_id == GURUH['id']
 
 
+def _tg_user_tugmasiz(markup):
+    """3232: inline klaviaturadan «tg://user?id=…» havolali tugmalar olib tashlanadi (bo'sh qator ham).
+    (yangi markup, nechta olindi). Boshqa tugmalar (callback, web_app, https) — joyida."""
+    if not isinstance(markup, dict) or not isinstance(markup.get('inline_keyboard'), list):
+        return markup, 0
+    olindi, qatorlar = 0, []
+    for q in markup['inline_keyboard']:
+        if not isinstance(q, list):
+            qatorlar.append(q)
+            continue
+        qoldi = [t for t in q if not (isinstance(t, dict) and str(t.get('url') or '').startswith('tg://user'))]
+        olindi += len(q) - len(qoldi)
+        if qoldi:
+            qatorlar.append(qoldi)
+    return (dict(markup, inline_keyboard=qatorlar) if qatorlar else None), olindi
+
+
 class _TgReq:
     """`requests` o'rniga: send…/copy…/forward… so'rovida chat_id Joy (mavzuli) bo'lsa — message_thread_id qo'shiladi.
-    Mavzu o'chirilgan bo'lsa (400 «thread») — mavzusiz qayta yuboriladi (xabar yo'qolmasin)."""
+    Mavzu o'chirilgan bo'lsa (400 «thread») — mavzusiz qayta yuboriladi (xabar yo'qolmasin).
+    3232: Telegram «Mijozga yozish» (tg://user?id=…) tugmasini rad etsa (400 BUTTON_USER_INVALID — mijoz profili botga
+    ochiq emas) — xabar shu tugmasiz qayta yuboriladi. Ilgari butun xabar ketmasdi (№S3CZVC buyurtmasi 6 kun adminga
+    yetmadi, fon sikli har 2 daqiqada urinardi)."""
     def __init__(self, asl):
         self._asl = asl  # asl `requests` moduli (req = _TgReq(req) dan keyin global req — shu obyekt)
 
@@ -216,12 +236,35 @@ class _TgReq:
         usul = url.rsplit('/', 1)[-1]
         if (isinstance(j, dict) and getattr(j.get('chat_id'), 'thread', None)
                 and usul.startswith(('send', 'copy', 'forward')) and 'message_thread_id' not in j):
-            r = self._asl.post(url, **dict(kw, json=dict(j, message_thread_id=j['chat_id'].thread)))
+            kw2 = dict(kw, json=dict(j, message_thread_id=j['chat_id'].thread))
+            r = self._asl.post(url, **kw2)
             if r.status_code == 400 and 'thread' in (r.text or '').lower():
                 logger.warning(f'mavzu {j["chat_id"].thread} topilmadi — mavzusiz yuborildi')
+                kw2 = kw
                 r = self._asl.post(url, **kw)
+            return self._tugmasiz(url, kw2, r)
+        return self._tugmasiz(url, kw, self._asl.post(url, **kw))
+
+    def _tugmasiz(self, url, kw, r):
+        if getattr(r, 'status_code', 0) != 400 or 'button_user_invalid' not in str(getattr(r, 'text', '') or '').lower():
             return r
-        return self._asl.post(url, **kw)
+        kalit = 'json' if isinstance(kw.get('json'), dict) else 'data' if isinstance(kw.get('data'), dict) else None
+        if not kalit or 'reply_markup' not in kw[kalit]:
+            return r
+        m = kw[kalit]['reply_markup']
+        try:
+            m = json.loads(m) if isinstance(m, str) else m   # multipart (files=) — markup JSON matn
+        except ValueError:
+            return r
+        yangi, olindi = _tg_user_tugmasiz(m)
+        if not olindi:
+            return r
+        p = {k: v for k, v in kw[kalit].items() if k != 'reply_markup'}
+        if yangi:
+            p['reply_markup'] = yangi if kalit == 'json' else json.dumps(yangi, ensure_ascii=False)
+        logger.info(f"{url.rsplit('/', 1)[-1]}: tg://user tugmasi rad etildi (button_user_invalid) — "
+                    f"{olindi} tugmasiz qayta yuborildi")
+        return self._asl.post(url, **dict(kw, **{kalit: p}))
 
 
 _TARMOQ_XATO = (req.Timeout, req.ConnectionError)   # BUGUN232: _sheet_oqi qayta urinadigan xatolar (asl modul)
