@@ -2246,7 +2246,7 @@ def elon_yonalishlar(elon, models_by_id):
     (sayt `modelYonalishlar` bilan bir xil; ustunlar jadvalga «🚀 Chiqarish kuni» 6-qadamda qo'shiladi, unga qadar — mobile)."""
     # BUGUN60 Q5: e'lonning O'Z yo'nalishi (jadvalda `yonalish` ustuni — guruh mavzusidan yaratilgan yoki tahrirda tanlangan) — birinchi
     e_yon = str((elon or {}).get('yonalish', '') or '').strip().lower()
-    if e_yon in ('mobile', 'pc', 'camera'):
+    if e_yon in ('mobile', 'pc', 'camera', 'olx'):   # 3228: olx — yashirin bo'lim (kanalga chiqmaydi, YON_KANAL da yo'q)
         return [e_yon]
     model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     own = [y.lower() for y in parse_mos((model or {}).get('yonalish'))]
@@ -2560,6 +2560,8 @@ def kanal_post(num, yonalish=None, olx=True):
         return None, "e'lon topilmadi"
     if elon_status(elon) in ('deleted', 'waited'):
         return None, "chala yoki o'chirilgan e'lon postlanmaydi"
+    if 'olx' in elon_yonalishlar(elon, models):   # 3228: OLX bo'limi yashirin — faqat ulashilgan havola bilan, kanalga yo'q
+        return None, "OLX e'loni kanalga chiqmaydi"
     yon = post_yonalish(elon, models, tanlangan=yonalish)
     # MS3.1: e'lonning har yo'nalishi o'z kanaliga (saytda tanlangani birinchi — asosiy post). Kanal bir xil — bitta post
     yonlar = [yon] + [y for y in elon_yonalishlar(elon, models) if y in YON_KANAL and y != yon]
