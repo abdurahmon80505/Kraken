@@ -391,6 +391,87 @@ def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
                          f"Guruhdagi boshqa mavzularning hammasi ortiqcha — o'chirsangiz bo'ladi.\n{oxir}")
 
 
+# 3214.1 (Owner 2026-10-27): «/guruh namuna» — har saqlangan mavzuga bot o'sha yerga HAQIQATDA yuboradigan xabar turidan bittadan
+# namuna (ovozsiz, «🧪 NAMUNA —» bilan). Ma'lumot — mavjud e'lon yoki soxta «Test Mijoz»; tugmalar ishlamaydi (callback «namuna»).
+# Faqat shu buyruq bilan — kanal, mijoz, boshqa chatga hech narsa ketmaydi; mavzu ochilmaydi / o'chirilmaydi.
+_NAMUNA_TUGMA = {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": "namuna"}],
+                                     [{"text": "🗑 Postni o'chirish", "callback_data": "namuna"}]]}
+
+
+def _namuna_elon():
+    """(num, olx_matn) — eng katta raqamli faol e'lon; xotira bo'sh — (None, None)."""
+    try:
+        by_num, models = elon_cache_hammasi()
+        faol = [n for n, e in by_num.items() if str(n).isdigit() and elon_status(e) == 'active']
+        if not faol:
+            return None, None
+        num = max(faol, key=int)
+        return num, build_olx_text(by_num[num], models)[1]
+    except Exception as e:
+        logger.error(f'namuna e\'lon: {type(e).__name__}')
+        return None, None
+
+
+def guruh_namunalar(hozir=None):
+    """[(kalit, qachon, matn, tugma)] — har mavzu uchun: qaysi hodisada keladi va o'sha xabar matni (yoki None — bot yubormaydi)."""
+    hozir = int(hozir or time.time())
+    num, olx = _namuna_elon()
+    n = num or '0'
+    mijoz = _kirgan_nom({'id': ADMIN_ID, 'first_name': 'Test Mijoz'})
+    ai = ai_hisobot_matn({'savol': 3, 'mijoz': 2, 'ai': 2, 'skript': 1, 'adminga': 0,
+                          'top': [{'matn': 'iPhone 13 narxi'}, {'matn': 'yetkazib berish'}]}, hozir, hozir - 5 * 3600)
+    rasm = {k: _elon_tayyor_matn({'ok': True, 'num': '0'}, 3, k[5:]) for k, _ in GURUH_MAVZULAR if k.startswith('rasm_')}
+    return [
+        ('post', "e'lon kanalga chiqqanda (saytdan / /post / 💧 tomchi); chiqmasa — ⚠️ xato",
+         f"📣 №{n} kanalga chiqdi (id 0) — {POST_CHANNEL}", _NAMUNA_TUGMA),
+        ('olx', "saytda «Menga yuborish» bosilganda: OLX matni, keyin kanal e'loni va rasmlar albomi",
+         html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
+        ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
+        ('mijoz', "kimdir tech kanalga kirganda; 1 daqiqadan keyin Mobile a'zoligi",
+         f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'ga kirdi\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>", None),
+        ('kollaj', "bot o'zi yubormaydi («🖼 Kollajga o'tkazish» tugmasi — 📢 Postlar xabarida)", None, None),
+        *[(k, "shu mavzuga rasm tashlanganda (chala e'lon ochiladi)", *rasm[k]) for k in rasm],
+        ('ai', "har 5 soatda (Toshkent: 05, 10, 15, 20, 01)", ai, None),
+        ('rasmlar', "shu mavzuga rasm tashlanganda (e'lon ochilmaydi, Rasmlar omboriga)",
+         "📥 3 rasm Rasmlar omboriga saqlandi · izoh: test", None),
+    ]
+
+
+def _namuna_yubor(chat, thread, matn, tugma=None):
+    """Mavzuga ovozsiz. (ok, izoh). chat_id — oddiy int: mavzu yo'q bo'lsa General'ga ketib qolmasin (_TgReq)."""
+    j = {'chat_id': int(chat), 'message_thread_id': thread, 'text': matn[:4000], 'parse_mode': 'HTML',
+         'disable_notification': True, 'link_preview_options': {'is_disabled': True}}
+    r = _tg_j('sendMessage', dict(j, reply_markup=tugma) if tugma else j)
+    if r.get('ok'):
+        return True, ''
+    xato = str(r.get('description', ''))[:120]
+    if tugma and _tg_j('sendMessage', j).get('ok'):   # tugmani guruh qabul qilmadi — matn baribir ko'rinsin
+        return True, f'tugmasiz yuborildi — tugma rad etildi: {xato}'
+    return False, xato
+
+
+def guruh_namuna(chat, xabar_chat, kut=0.3):
+    if not guruh_yuklash():
+        send_msg(xabar_chat, "⚠️ Saqlangan mavzular jadvaldan o'qilmadi — 1 daqiqadan keyin /guruh namuna ni qayta yuboring.")
+        return
+    if GURUH.get('id') != chat:
+        send_msg(xabar_chat, "⚠️ Bu guruhda bot mavzulari saqlanmagan — avval /guruh yuboring.")
+        return
+    nomi = dict(GURUH_MAVZULAR)
+    qator, yetdi = [], 0
+    for k, qachon, matn, tugma in guruh_namunalar():
+        if not GURUH.get(k):
+            qator.append(f"• {nomi[k]} — mavzu yo'q (/guruh)")
+            continue
+        bosh = f"🧪 NAMUNA — {nomi[k]}\n<i>Qachon: {qachon}</i>"
+        ok, izoh = _namuna_yubor(chat, GURUH[k], f"{bosh}\n\n{matn}" if matn else
+                                 f"🧪 NAMUNA — bu mavzuga bot hozircha hech narsa yubormaydi\n<i>{qachon}</i>", tugma)
+        yetdi += ok
+        qator.append(f"• {nomi[k]} — {'✅' if ok else '❌'}" + (f" <code>{html_escape(izoh)}</code>" if izoh else ''))
+        time.sleep(kut)
+    send_msg(xabar_chat, f"🧪 Namuna: {yetdi}/{len(GURUH_MAVZULAR)} mavzuga yuborildi (ovozsiz)\n" + '\n'.join(qator))
+
+
 # Premium emoji ID'lari (base emoji -> custom_emoji_id)
 PREMIUM = {
     'google': ('📱', '5330169502279690330'),   # G logo (sarlavha)
@@ -6533,17 +6614,22 @@ def _elon_tayyor_xabar(chat_id, res, cnt, yon=None):
         send_msg(chat_id, f"❌ {yuk} yuklanmadi — e'lon ochilmadi, qayta yuboring." if yuk
                  else "❌ Elon yaratishda xatolik. Qayta urining.")
         return
+    send_msg(chat_id, *_elon_tayyor_matn(res, cnt, yon))
+
+
+def _elon_tayyor_matn(res, cnt, yon=None):
+    """«✅ Yangi elon yaratildi» matni va tugmasi (3214.1: /guruh namuna ham shuni ko'rsatadi)."""
+    yuk = ', '.join(f'{n}-rasm' for n in ((res or {}).get('yuklanmadi') or []))
     num = res.get('num', '?')
     bolim = f" · {YON_KANAL[yon][0]}" if yon in YON_KANAL else ''
-    send_msg(chat_id,
-        f"✅ Yangi elon yaratildi: <b>№{num}</b>{bolim}\n"
-        f"📸 {cnt} ta rasm saqlandi.\n"
-        + (f"⚠️ {yuk} yuklanmadi, qayta yuboring.\n" if yuk else '') +
-        f"\nEndi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
-        keyboard={"inline_keyboard": [[{
-            "text": "🛠 Admin panel / Saytga kirish",
-            "web_app": {"url": SAYT_URL + (f'?p=y_{yon}' if yon in YON_KANAL else '')}
-        }]]})
+    return (f"✅ Yangi elon yaratildi: <b>№{num}</b>{bolim}\n"
+            f"📸 {cnt} ta rasm saqlandi.\n"
+            + (f"⚠️ {yuk} yuklanmadi, qayta yuboring.\n" if yuk else '') +
+            f"\nEndi saytdagi admin panelda ma'lumotlarini to'ldiring 👇",
+            {"inline_keyboard": [[{
+                "text": "🛠 Admin panel / Saytga kirish",
+                "web_app": {"url": SAYT_URL + (f'?p=y_{yon}' if yon in YON_KANAL else '')}
+            }]]})
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -7101,7 +7187,9 @@ async def handle_update(data):
         if message.get('chat', {}).get('type') in ('group', 'supergroup'):
             buyruq = text.split(' ')[0].split('@')[0]
             if buyruq == '/guruh':
-                if user.get('id') == ADMIN_ID:
+                if user.get('id') == ADMIN_ID and text.split()[1:2] == ['namuna']:   # 3214.1: fonda (T1 — 10 namuna + xulosa)
+                    asyncio.create_task(blok(guruh_namuna, chat_id, Joy(chat_id, message.get('message_thread_id'))))
+                elif user.get('id') == ADMIN_ID:
                     await blok(guruh_sozla, chat_id, bool(message['chat'].get('is_forum')),
                                Joy(chat_id, message.get('message_thread_id')),
                                text.split()[1:2] == ['yangi'])   # 3213.1: «/guruh yangi» — hammasi noldan
