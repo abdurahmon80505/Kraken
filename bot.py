@@ -5,6 +5,7 @@ import asyncio
 import base64
 import functools
 import hashlib
+import hmac
 import json
 import html as _html
 import urllib.parse
@@ -423,7 +424,7 @@ def guruh_namunalar(hozir=None):
     rasm = {k: _elon_tayyor_matn({'ok': True, 'num': '0'}, 3, k[5:]) for k, _ in GURUH_MAVZULAR if k.startswith('rasm_')}
     return [
         ('post', "e'lon kanalga chiqqanda (saytdan / /post / 💧 tomchi); chiqmasa — ⚠️ xato",
-         f"📣 №{n} kanalga chiqdi (id 0) — {POST_CHANNEL}", _NAMUNA_TUGMA),
+         f"📣 №{n} kanalga chiqdi (id 0) — {kanal_tanla('elon')}", _NAMUNA_TUGMA),
         ('olx', "saytda «Menga yuborish» bosilganda: OLX matni, keyin kanal e'loni va rasmlar albomi",
          html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
@@ -2063,10 +2064,11 @@ def richtest(admin_chat, num):
     if not elon:
         send_msg(admin_chat, f"❌ №{num} e'lon topilmadi.")
         return
-    hisobot = [f"🧪 <b>Rich sinov №{num}</b> — test kanali: {TEST_CHANNEL}"]
+    test_kanal = kanal_tanla('richtest')
+    hisobot = [f"🧪 <b>Rich sinov №{num}</b> — test kanali: {test_kanal}"]
     # v6: premium emoji kanalda chiqmasligi tasdiqlangan (2026-09-14 sinovi) — to'g'ridan-to'g'ri emoji'siz
     html = build_rich_html(elon, models, premium=False)
-    for nom, chat in (('lichka', admin_chat), ('test kanal', TEST_CHANNEL)):
+    for nom, chat in (('lichka', admin_chat), ('test kanal', test_kanal)):
         mid, xato = send_rich(chat, html)
         if mid:
             hisobot.append(f"✅ {nom}: yuborildi (id {mid})")
@@ -2079,6 +2081,7 @@ def richtest(admin_chat, num):
 # ══════════════════════════════════════════════════════════════════════════
 #  G11.2 / B15 (2026-09-18): KANAL MEXANIKASI — hozircha TEST kanalda sinaladi.
 #  Rebrandingdan keyin FAQAT `POST_CHANNEL_ID` env almashadi (Render) — kod o'zgarmaydi.
+#  3227: ikki kanal doim — test (POST_CHANNEL_ID) va asosiy (MAIN_CHANNEL_ID); qaysi post qayerga — KANAL_YOLI.
 #
 #  · kanal_post(num)        rich post → kanal; `channel_message_id` Sheets'ga + xotiraga
 #  · kanal_tahrir(num)      narx / sotildi / qolmadi / soni o'zgarsa POST TAHRIRLANADI
@@ -2107,9 +2110,79 @@ POST_KANALLAR = {k.strip().lower(): v.strip() for k, _, v in
                  if k.strip() and v.strip()}
 
 
-def post_kanal(yon):
-    """Yo'nalish posti qaysi kanalga (POST_KANALLAR → POST_CHANNEL)."""
+# 3227 (Owner 2026-10-28): IKKI KANAL doim ulangan — test (POST_CHANNEL_ID, sukut TEST_CHANNEL) va asosiy (MAIN_CHANNEL_ID).
+# «test kanalga ketadigan narsani testga, asosiyni asosiyga». env MAIN_CHANNEL_ID = "@nuqta_tech_mobile" (hamma yo'nalish)
+# yoki "mobile=@… pc=@…" (yozilmagan yo'nalish — mobile'niki / birinchisi). Bo'sh — hammasi avvalgidek (POST_CHANNEL).
+# Asosiy kanal posti id'si Sheets'ga «a» bilan yoziladi: «a123» / «mobile:a123». «a»siz eski id — test kanaldagi post:
+# asosiy kanal yoqilgach bot uni «kanalga chiqmagan» deb biladi (tahrirlamaydi, o'chirmaydi) — Owner o'zi yuboradi
+# (sayt «Kanalga» / /post / /ommaviy). Shunda ikki kanalning bir xil raqamli postlari aralashmaydi.
+def _main_kanallar(v):
+    v = str(v or '').strip()
+    if '=' not in v:
+        return {'*': v} if v else {}
+    return {k.strip().lower(): x.strip() for k, _, x in (q.partition('=') for q in re.split(r'[\s,;]+', v) if '=' in q)
+            if k.strip() and x.strip()}
+
+
+MAIN_KANALLAR = _main_kanallar(os.environ.get('MAIN_CHANNEL_ID', ''))
+
+
+def eski_post_kanal(yon):
+    """Test (eski) rejimdagi yo'nalish kanali: POST_KANALLAR → POST_CHANNEL (3227 gacha post_kanal shu edi)."""
     return POST_KANALLAR.get(str(yon or '').strip().lower()) or POST_CHANNEL
+
+
+def _asosiy_kanal(yon=None):
+    m = MAIN_KANALLAR
+    return m.get(str(yon or '').strip().lower()) or m.get('*') or m.get('mobile') or next(iter(m.values()))
+
+
+def post_kanal(yon):
+    """Yo'nalish posti qaysi kanalga: asosiy kanal ulangan bo'lsa — o'sha, aks holda eski yo'l (POST_KANALLAR → POST_CHANNEL)."""
+    return _asosiy_kanal(yon) if MAIN_KANALLAR else eski_post_kanal(yon)
+
+
+def umumiy_kanal():
+    """Yo'nalishsiz post (to'plam, katalog) kanali."""
+    return _asosiy_kanal() if MAIN_KANALLAR else POST_CHANNEL
+
+
+# 3227: QAYSI POST QAYSI KANALGA — yagona joy. 'asosiy' — MAIN_CHANNEL_ID (bo'sh bo'lsa — test, avvalgidek);
+# 'test' — TEST_CHANNEL; 'konkurs' — CHANNEL (CHANNEL_ID, sukut @nuqta_tech_mobile); 'guruh' — GURUH_KANAL_ID.
+# Kanalga post yuboradigan har joy kanalni shu yerdan oladi (kanal_tanla). Xush kelibsiz — XUSH_KANALLAR, hub — TECH_KANAL
+# (ular kanalga post emas, a'zoga xabar).
+KANAL_YOLI = {
+    'elon': 'asosiy',          # e'lon posti: avto (faollashganda), sayt «📣 Kanalga» / «Yana keldi», /post, /yana, ommaviy, tomchi
+    'toplam': 'asosiy',        # to'plam posti (/toplam, saytda belgilab)
+    'katalog': 'asosiy',       # /katalog (qadaladi)
+    'guruh': 'guruh',          # rang guruhi posti: GURUH_KANAL_ID bo'sh / test → TEST; «asl» → asosiy; boshqa — o'sha chat
+    'konkurs': 'konkurs',      # konkurs natijasi / g'oliblar (konkursni Owner boshlaydi)
+    'konkurs_sinov': 'test',   # sinov konkursi (sovrin «TEST…» / 🧪)
+    'richtest': 'test',        # /testpost N (/richtest N) — admin qo'lda bitta postni testga (id yozilmaydi)
+    'rasm_yuklash': 'test',    # rasm file_id olish uchun vaqtincha yuklash (darhol o'chadi)
+}
+
+
+def kanal_tanla(tur, yon=None):
+    """KANAL_YOLI bo'yicha chat. yon — e'lon yo'nalishi (asosiy / guruh «asl» uchun)."""
+    yol = KANAL_YOLI[tur]
+    if yol == 'test':
+        return TEST_CHANNEL
+    if yol == 'konkurs':
+        return CHANNEL
+    if yol == 'guruh':
+        g = GURUH_KANAL.lower()
+        if g in ('', 'test'):
+            return TEST_CHANNEL
+        if g != 'asl':
+            return GURUH_KANAL
+    return post_kanal(yon) if yon else umumiy_kanal()
+
+
+def _tok(y, m):
+    """Bitta post id'si Sheets uchun: asosiy kanalda «a123» / «mobile:a123», test rejimida «123» / «mobile:123»."""
+    t = ('a' if MAIN_KANALLAR else '') + str(int(m))
+    return f'{y}:{t}' if y else t
 AVTO_POST_TURLAR = ('phone', 'camera')
 TOPLAM_TURLAR = ('accessory', 'case', 'part')
 TUR_NOMI = {'phone': ('📱', 'Smartfonlar', 'Смартфоны'), 'camera': ('📷', 'Kameralar', 'Камеры'),
@@ -2162,30 +2235,40 @@ def kanal_msg_id(elon):
     return p[0][2] if p else None
 
 
-def kanal_postlar(elon):
+def kanal_postlar(elon, hammasi=False):
     """channel_message_id → [(yo'nalish yoki None, kanal, mid)]. «123» → [(None, POST_CHANNEL, 123)];
-    «mobile:123 pc:45» → [('mobile', kanal, 123), ('pc', kanal, 45)] (MS3.1)."""
+    «mobile:123 pc:45» → [('mobile', kanal, 123), ('pc', kanal, 45)] (MS3.1).
+    3227: faqat HOZIRGI rejim postlari — asosiy kanal ulangan bo'lsa «a»li id'lar, aks holda «a»siz.
+    hammasi=True — ikkalasi (kanali ma'lum bo'lsa)."""
     v = str((elon or {}).get('channel_message_id', '') or '').strip()
     if not v:
         return []
-    if ':' not in v:
-        try:
-            return [(None, POST_CHANNEL, int(float(v)))]
-        except Exception:
-            return []
     out = []
     for qism in re.split(r'[\s,;]+', v):
-        y, _, m = qism.partition(':')
-        if y.strip() and re.fullmatch(r'\d{1,12}', m.strip()):
-            out.append((y.strip().lower(), post_kanal(y), int(m)))
+        y, ikki_nuqta, m = qism.rpartition(':')
+        t = re.fullmatch(r'(a?)(\d{1,12})(?:\.0*)?', m.strip())
+        y = y.strip().lower() or None
+        if not t or (ikki_nuqta and not y):
+            continue
+        asosiy = bool(t.group(1))
+        if (asosiy != bool(MAIN_KANALLAR) and not hammasi) or (asosiy and not MAIN_KANALLAR):
+            continue   # boshqa rejim posti (yoki asosiy kanal o'chirilgan — chat noma'lum)
+        out.append((y, _asosiy_kanal(y) if asosiy else eski_post_kanal(y), int(t.group(2))))
     return out
 
 
 def kanal_id_matn(postlar):
-    """[(yo'nalish, mid)] → Sheets qiymati: bitta post POST_CHANNEL'da — 123 (eski ko'rinish), aks holda «mobile:123 pc:45»."""
-    if len(postlar) == 1 and post_kanal(postlar[0][0]) == POST_CHANNEL:
-        return int(postlar[0][1])
-    return ' '.join(f'{y}:{int(m)}' for y, m in postlar)
+    """[(yo'nalish, mid)] → Sheets qiymati: bitta post umumiy kanalda — 123 / a123 (eski ko'rinish), aks holda «mobile:123 pc:45»."""
+    if len(postlar) == 1 and post_kanal(postlar[0][0]) == umumiy_kanal():
+        return _tok(None, postlar[0][1]) if MAIN_KANALLAR else int(postlar[0][1])
+    return ' '.join(_tok(y, m) for y, m in postlar)
+
+
+def elon_kanali(num):
+    """E'lon posti turgan kanal (adminga xabar uchun); post yo'q — e'lon kanali."""
+    elon, _ = elon_cache_get(num)
+    p = kanal_postlar(elon)
+    return p[0][1] if p else kanal_tanla('elon')
 
 
 def kop_donali(elon):
@@ -2227,7 +2310,12 @@ def _sheets_update(payload):
 def kanal_id_yoz(num, mid):
     """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash.
     mid — son yoki «mobile:123 pc:45» matni (MS3.1)."""
-    qiymat = '' if not mid else (mid if isinstance(mid, str) and ':' in mid else int(mid))
+    if not mid:
+        qiymat = ''
+    elif isinstance(mid, str) and not re.fullmatch(r'\d+', mid.strip()):
+        qiymat = mid.strip()   # «mobile:123», «a123» — tayyor (_tok / kanal_id_matn)
+    else:
+        qiymat = _tok(None, mid) if MAIN_KANALLAR else int(mid)
     ok = _sheets_update({'num': int(num), 'channel_message_id': qiymat})
     with _elon_cache_lock:
         e = _ELON_CACHE['by_num'].get(str(num))
@@ -2434,7 +2522,7 @@ def kanal_post(num, yonalish=None, olx=True):
     yonlar = [yon] + [y for y in elon_yonalishlar(elon, models) if y in YON_KANAL and y != yon]
     postlar, xatolar, kanallar = [], [], set()
     for y in yonlar:
-        chat = post_kanal(y)
+        chat = kanal_tanla('elon', y)
         if chat in kanallar:
             continue
         kanallar.add(chat)
@@ -2451,7 +2539,7 @@ def kanal_post(num, yonalish=None, olx=True):
     # 3184.5: aksessuar / g'ilof / qismning ALOHIDA posti — id doim «mobile:123» ko'rinishida (to'plam id'si — oddiy son):
     #     shunda toplam_postmi uni to'plam deb, tahrirda to'plam ko'rinishiga aylantirib yubormaydi
     alohida_tur = elon_turi(elon, models) in TOPLAM_TURLAR
-    kanal_id_yoz(num, ' '.join(f'{y}:{int(m)}' for y, m in postlar) if alohida_tur else kanal_id_matn(postlar))
+    kanal_id_yoz(num, ' '.join(_tok(y, m) for y, m in postlar) if alohida_tur else kanal_id_matn(postlar))
     if xatolar:
         send_msg(admin_joy('post'), f"⚠️ №{num} ba'zi kanalga chiqmadi: <code>{html_escape('; '.join(xatolar))}</code>")
     # A26: e'lon kanalga chiqdi — OLX bo'limiga matn + belgili albom (fonda: sayt / buyruq javobi kutib qolmasin)
@@ -2551,7 +2639,7 @@ def kanal_ochir(num):
         kanal_id_yoz(num, None)
         return True, ''
     if qoldi[0][0] and len(qoldi) < len(kanal_postlar(elon)):
-        kanal_id_yoz(num, ' '.join(f'{y}:{m}' for y, m in qoldi))
+        kanal_id_yoz(num, ' '.join(_tok(y, m) for y, m in qoldi))
     return False, xato
 
 
@@ -2614,7 +2702,7 @@ def toplam_postmi(elon, models):
     if guruh_idsi(elon):
         # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
         return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
-    if elon_turi(elon, models) in TOPLAM_TURLAR and ':' not in str(elon.get('channel_message_id', '') or ''):
+    if elon_turi(elon, models) in TOPLAM_TURLAR and not any(y for y, _, _ in kanal_postlar(elon)):
         return True   # 3184.5: id «mobile:123» — o'z alohida posti (kanal_post), to'plam emas
     return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
 
@@ -2727,8 +2815,8 @@ def toplam_tahrir(mid):
     items, models = _mid_elonlar(mid)
     if not items:
         _KOLLAJ.discard(int(mid))
-        return delete_msg(POST_CHANNEL, mid)
-    return edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models, kollaj=int(mid) in _KOLLAJ))
+        return delete_msg(kanal_tanla('toplam'), mid)
+    return edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=int(mid) in _KOLLAJ))
 
 
 def kollaj_tugma(mid, kollaj=False):
@@ -2746,13 +2834,13 @@ def post_ochir(mid):
     mid = int(mid)
     items, _ = _mid_elonlar(mid, hammasi=True)
     postlar = kanal_postlar(items[0]) if len(items) == 1 else []
-    if postlar and postlar[0][0]:
+    if postlar:
         for _, chat, m in postlar:   # MS3.1: yo'nalish kanallaridagi hamma posti
             ok, xato = delete_msg(chat, m)
             if not ok:
                 return False, xato
     else:
-        ok, xato = delete_msg(POST_CHANNEL, mid)
+        ok, xato = delete_msg(kanal_tanla('toplam'), mid)
         if not ok:
             return False, xato
     _KOLLAJ.discard(mid)
@@ -2778,7 +2866,7 @@ def post_ochir_tugma(admin_chat, xabar_id, data):
             ok, izoh = post_ochir(mid)
             if ok:
                 tugma({"inline_keyboard": []})
-                send_msg(admin_chat, f"🗑 Post o'chirildi ({POST_CHANNEL}, id {mid}) — {izoh} yana «kanalga chiqmagan» bo'ldi.")
+                send_msg(admin_chat, f"🗑 Post o'chirildi ({kanal_tanla('toplam')}, id {mid}) — {izoh} yana «kanalga chiqmagan» bo'ldi.")
             else:
                 send_msg(admin_chat, f"❌ Post o'chmadi: <code>{html_escape(izoh)}</code>")
     except Exception as e:
@@ -2794,7 +2882,7 @@ def post_korinish(mid, kollaj):
     eski = mid in _KOLLAJ
     (_KOLLAJ.add if kollaj else _KOLLAJ.discard)(mid)
     if len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR:
-        ok, xato = edit_rich(POST_CHANNEL, mid, build_toplam_html(items, models, kollaj=kollaj))
+        ok, xato = edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=kollaj))
     else:
         ok, xato = kanal_tahrir(int(float(items[0].get('num', 0) or 0)))   # MS3.1: hamma kanaldagi posti
     if not ok:
@@ -2843,7 +2931,7 @@ def kanal_toplam(nums):
     if len(tanlangan) == 1 and elon_turi(tanlangan[0], models) not in TOPLAM_TURLAR:
         mid, xato = kanal_post(yuborildi[0])
         return mid, xato, (yuborildi if mid else []), otkazildi
-    mid, xato = send_rich(POST_CHANNEL, build_toplam_html(tanlangan, models))
+    mid, xato = send_rich(kanal_tanla('toplam'), build_toplam_html(tanlangan, models))
     if not mid:
         return None, xato, [], otkazildi
     for n in yuborildi:
@@ -2887,7 +2975,7 @@ def kanal_taklif(admin_chat, tur):
         return
     key = f'{tur}{int(time.time())}'
     _KANAL_KUTMOQDA[key] = {'tur': tur, 'html': html, 'nums': nums}
-    send_msg(admin_chat, izoh + f"\nKanal: {POST_CHANNEL}", {"inline_keyboard": [[
+    send_msg(admin_chat, izoh + f"\nKanal: {kanal_tanla(tur)}", {"inline_keyboard": [[
         {"text": "✅ Kanalga yuborish", "callback_data": f"kanal_ok:{key}"},
         {"text": "❌ Bekor", "callback_data": f"kanal_no:{key}"}]]})
 
@@ -2900,7 +2988,8 @@ def kanal_tasdiq(admin_chat, key, ok):
     if not ok:
         send_msg(admin_chat, "❌ Bekor qilindi.")
         return
-    mid, xato = send_rich(POST_CHANNEL, p['html'])
+    kanal = kanal_tanla(p['tur'])
+    mid, xato = send_rich(kanal, p['html'])
     if not mid:
         send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
         return
@@ -2910,7 +2999,7 @@ def kanal_tasdiq(admin_chat, key, ok):
         send_msg(admin_chat, f"✅ To'plam kanalga chiqdi (id {mid}), {len(p['nums'])} ta e'longa yozildi.", kollaj_tugma(mid))
     else:
         try:
-            req.post(f'{TG_API}/pinChatMessage', json={'chat_id': POST_CHANNEL, 'message_id': mid, 'disable_notification': True}, timeout=15)
+            req.post(f'{TG_API}/pinChatMessage', json={'chat_id': kanal, 'message_id': mid, 'disable_notification': True}, timeout=15)
         except Exception as e:
             logger.error(f'pinChatMessage: {e}')
         send_msg(admin_chat, f"✅ Katalog posti kanalga chiqdi va qadaldi (id {mid}).")
@@ -2958,7 +3047,7 @@ def kanal_sinxron(eski, yangi):
         if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR:
             mid, xato = kanal_post(num)
             if mid:
-                send_msg(admin_joy('post'), f"📣 №{num} kanalga chiqdi (id {mid}) — {POST_CHANNEL}", kollaj_tugma(mid))
+                send_msg(admin_joy('post'), f"📣 №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}", kollaj_tugma(mid))
             else:
                 send_msg(admin_joy('post'), f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
             return 'post'
@@ -3013,12 +3102,8 @@ def guruh_test_rejim():
 
 
 def guruh_kanali(azolar, models):
-    """Guruh posti qaysi kanalga (GURUH_KANAL_ID)."""
-    if guruh_test_rejim():
-        return TEST_CHANNEL
-    if GURUH_KANAL.lower() == 'asl':
-        return post_kanal(post_yonalish(azolar[0], models)) if azolar else POST_CHANNEL
-    return GURUH_KANAL
+    """Guruh posti qaysi kanalga (GURUH_KANAL_ID; 3227 — KANAL_YOLI['guruh'])."""
+    return kanal_tanla('guruh', post_yonalish(azolar[0], models) if azolar else None)
 
 
 def post_havola(chat, mid):
@@ -3471,7 +3556,7 @@ def _navbat_kanallari(x):
         _, azolar, models = guruh_ol(x['gid'])
         return {guruh_kanali(azolar, models)}
     elon, models = elon_cache_get(x['num'])
-    return {post_kanal(y) for y in elon_yonalishlar(elon, models) if y in YON_KANAL} or {POST_CHANNEL}
+    return {kanal_tanla('elon', y) for y in elon_yonalishlar(elon, models) if y in YON_KANAL} or {kanal_tanla('elon')}
 
 
 def navbat_test_xato(navbat):
@@ -3481,8 +3566,7 @@ def navbat_test_xato(navbat):
         return ''
     guruh = any(x.get('gid') for x in test)
     return (f"⛔ {len(test)} tasi TEST kanalga ({TEST_CHANNEL}) tushadi: {', '.join(_navbat_nomi(x) for x in test[:5])}"
-            + (' …' if len(test) > 5 else '') + ".\nAsosiy kanal sozlanmagan — Render → Environment: POST_CHANNEL_ID"
-            + (" (yoki POST_KANALLAR)" if not POST_KANALLAR else '') + (", GURUH_KANAL_ID=asl" if guruh else '') + '.')
+            + (' …' if len(test) > 5 else '') + ".\nAsosiy kanal sozlanmagan — Render → Environment: MAIN_CHANNEL_ID" + (", GURUH_KANAL_ID=asl" if guruh else '') + '.')
 
 
 def _navbat_yubor(x):
@@ -4524,7 +4608,7 @@ def _kk_kanal_post(matn, toplamlar, markup, kanal=None):
     """Kanalga natija posti. toplamlar: [file_id'lar, url'lar] — birinchi ishlagani (token almashsa file_id o'tmaydi).
     1 rasm — sendPhoto (matn sig'sa — bitta post); ko'p rasm — albom + tugma alohida xabarda (albomga tugma qo'yilmaydi).
     kanal: sukut — CHANNEL; sinov konkursi — TEST_CHANNEL (_kk_sinovmi)."""
-    kanal = kanal or CHANNEL
+    kanal = kanal or kanal_tanla('konkurs')
     sigadi = len(matn) <= 1000
     for rasmlar in toplamlar:
         rasmlar = [r for r in (rasmlar or []) if r][:10]
@@ -4696,7 +4780,7 @@ async def _kk_admin(matn, joy=None):
 # ═══ BUGUN147: g'oliblar obunasi, kanaldan chiqish ogohlantirishi, yashirin oyna, /start bloki ═══
 def _kk_kanal(k):
     """Shu konkurs uchun obuna talab qilinadigan kanal: sinov (TEST…/🧪) — TEST_CHANNEL, aks holda — CHANNEL."""
-    return TEST_CHANNEL if _kk_sinovmi((k or {}).get('prize')) else CHANNEL
+    return kanal_tanla('konkurs_sinov' if _kk_sinovmi((k or {}).get('prize')) else 'konkurs')
 
 
 def _kk_kanal_havola(kanal):
@@ -5051,7 +5135,7 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
     ko = await _kk_sorov('konkursKanalOl', id=kid, worker=KONKURS_WORKER)
     if ko and ko.get('ok') and ko.get('ol'):
         matn, mk = _kk_kanal_xabari(prize, win_text)
-        kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk, TEST_CHANNEL if _kk_sinovmi(prize) else None)
+        kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk, kanal_tanla('konkurs_sinov' if _kk_sinovmi(prize) else 'konkurs'))
         for n in range(3):
             if await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]',
                           kanal=kanal) is not None:
@@ -5264,9 +5348,9 @@ async def konkurs_tarqat_test_kanal(k, joy):
     holat = []
     for til in ('uz', 'ru'):
         matn, mk = _kk_tarqatma_xabari(k, til)
-        h = await blok(_kk_kanal_post, matn, [[], urls[:1]], mk, TEST_CHANNEL)
+        h = await blok(_kk_kanal_post, matn, [[], urls[:1]], mk, kanal_tanla('konkurs_sinov'))
         holat.append(f"{til}: {'✅' if h == 'yuborildi' else '❌ ' + html_escape(str(h))}")
-    await _kk_admin(f"🧪 TEST kanal ({html_escape(TEST_CHANNEL)}) — {' · '.join(holat)}", joy)
+    await _kk_admin(f"🧪 TEST kanal ({html_escape(kanal_tanla('konkurs_sinov'))}) — {' · '.join(holat)}", joy)
 
 
 _KK_BUYRUQLAR = ('/konkursholat', '/konkurstugat', '/konkursbekor', '/konkursdavom', '/tarqatma',
@@ -6671,7 +6755,7 @@ INLINE_EKRAN = 6              # 9000: telefonda birinchi ekranga sig'adigan nati
 # `rasm_file_id` ustuniga yoziladi — JSON {kalit: file_id}. Kalit: rasm URL'i (toza); 2+ rasmli e'londa 1-rasm «suring» belgili —
 # kalit `URL#b`. Kalit rasm manzili bilan bog'liq: rasm almashsa eski file_id o'zi tushib qoladi (jadvalga qayta yozilganda).
 # 🔴 Ombor botining file_id si bu botda ISHLAMAYDI — ko'chirilmaydi, Store boti o'zi yuklaydi.
-RASM_YUKLASH_CHAT = TEST_CHANNEL
+RASM_YUKLASH_CHAT = kanal_tanla('rasm_yuklash')
 _RASM_ZAXIRA_CHAT = ADMIN_ID  # TEST kanal rad etsa (bot a'zo/admin emas, kanal yo'q) — lichka, ovozsiz (BUGUN16 yo'li)
 _RASM_CHAT = {'id': RASM_YUKLASH_CHAT}
 _RASM_XATO_KUTISH = 3600      # yuklanmagan rasm 1 soat qayta urinilmaydi
@@ -7156,6 +7240,27 @@ async def inline_javob(iq):
         logger.error(f'inline_javob: {ex}')
 
 
+# 3227: webhook maxfiy kaliti — env WEBHOOK_SECRET (kodda / logda / md'da yo'q). Bor bo'lsa setWebhook(secret_token=…) va
+# har so'rovda X-Telegram-Bot-Api-Secret-Token tekshiriladi: mos emas — 403 (begona so'rov ishlanmaydi). Yo'q — avvalgidek.
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '').strip()
+
+
+def webhook_begona(request):
+    """True — kalit sozlangan va so'rov sarlavhasidagi kalit mos emas (qiymati logga yozilmaydi)."""
+    if not WEBHOOK_SECRET:
+        return False
+    kelgan = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
+    return not hmac.compare_digest(kelgan.encode(), WEBHOOK_SECRET.encode())
+
+
+def webhook_sozlama(url, allowed_updates):
+    """setWebhook so'rovi tanasi (kalit bo'lsa — secret_token bilan)."""
+    d = {'url': url, 'allowed_updates': allowed_updates}
+    if WEBHOOK_SECRET:
+        d['secret_token'] = WEBHOOK_SECRET
+    return d
+
+
 async def webhook(request):
     """🔴 QOIDALAR T1: Telegram'ga DARROV 200 qaytariladi.
 
@@ -7163,6 +7268,9 @@ async def webhook(request):
     javob berilmasdi: Sheets sekin bo'lsa Telegram javobni kutmay xabarni qayta
     yuborardi va ish ikki marta bajarilardi.
     """
+    if webhook_begona(request):
+        logger.warning('webhook: maxfiy kalit mos emas — 403')
+        return web.Response(status=403)
     try:
         data = await request.json()
     except Exception as e:
@@ -7324,10 +7432,10 @@ async def handle_update(data):
             return
 
         # G11.0: Rich Message sinovi — faqat admin, faqat lichka + TEST kanal. Fonda (T1).
-        if text.startswith('/richtest') and adm:
+        if text.split(' ')[0].split('@')[0] in ('/richtest', '/testpost') and adm:   # 3227: /testpost — xuddi shu
             m_num = re.search(r'\d{1,6}', text)
             if not m_num:
-                await blok(send_msg, chat_id, "Foydalanish: /richtest 248")
+                await blok(send_msg, chat_id, "Foydalanish: /testpost 248 (yoki /richtest 248) — faqat test kanalga")
                 return
             asyncio.create_task(blok(richtest, chat_id, m_num.group(0)))
             return
@@ -7455,7 +7563,7 @@ async def handle_update(data):
                     "text": "🎁 Konkursda qatnashish",
                     "url": f"https://t.me/{BOT_USERNAME}?startapp=konkurs"
                 }]]}
-                kanal = TEST_CHANNEL if _kk_sinovmi(k.get('prize')) else CHANNEL   # sinov — asosiy kanalga emas
+                kanal = _kk_kanal(k)   # sinov — asosiy kanalga emas (KANAL_YOLI)
                 mid = await blok(send_konkurs_channel_post, kanal, anons, pics, markup)
                 await blok(send_msg, chat_id, f"✅ Konkurs anonsi kanalga yuborildi: {kanal}")
                 # 3185: saytdagi «Do'stlarga ulashish» shu postni ulashadi — havola konkursga o'zi yoziladi
@@ -7834,9 +7942,9 @@ def send_reroll_notify(data):
         )
         # sinov — TEST kanal; haqiqiy (tasdiqlangan) — asosiy kanal; tasdiqlanmagan — faqat admin lichkasi
         if sinov:
-            c_chat = TEST_CHANNEL or ADMIN_ID     # TEST kanal sozlanmagan bo'lsa — jimgina yo'qolmasin, adminga
+            c_chat = kanal_tanla('konkurs_sinov') or ADMIN_ID     # TEST kanal sozlanmagan bo'lsa — jimgina yo'qolmasin, adminga
         elif nomi_xom:
-            c_chat = CHANNEL
+            c_chat = kanal_tanla('konkurs')
         else:
             c_chat = ADMIN_ID
         req.post(f'{TG_API}/sendMessage', json={
@@ -9844,7 +9952,7 @@ async def kanal_buyruq(chat_id, cmd, num):
     """/post N · /yana N · /postochir N — natija adminga."""
     if cmd == '/post':
         mid, xato = await blok(kanal_post, num)
-        await blok(send_msg, chat_id, f"✅ №{num} kanalga chiqdi (id {mid}) — {POST_CHANNEL}" if mid else f"❌ №{num}: <code>{html_escape(xato)}</code>",
+        await blok(send_msg, chat_id, f"✅ №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}" if mid else f"❌ №{num}: <code>{html_escape(xato)}</code>",
                    kollaj_tugma(mid) if mid else None)
     elif cmd == '/yana':
         mid, xato = await blok(kanal_yana_keldi, num)
@@ -9885,8 +9993,9 @@ async def kanal_post_endpoint(request):
         if not mid:
             return web.json_response({'ok': False, 'error': xato})
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
-        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {POST_CHANNEL}", kollaj_tugma(mid))
-        return web.json_response({'ok': True, 'mid': mid, 'kanal': POST_CHANNEL})
+        kanal = elon_kanali(num)
+        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {kanal}", kollaj_tugma(mid))
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal})
     except Exception as e:
         logger.error(f'kanal_post_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -9909,11 +10018,11 @@ async def kanal_toplam_endpoint(request):
         mid, xato, yuborildi, otkazildi = await blok(kanal_toplam, nums)
         if not mid:
             return web.json_response({'ok': False, 'error': xato, 'otkazildi': otkazildi})
-        izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {POST_CHANNEL}"
+        izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {kanal_tanla('toplam')}"
         if otkazildi:
             izoh += "\n⏭ O'tkazildi: " + ', '.join(f"№{o['num']} ({html_escape(o['sabab'])})" for o in otkazildi)
         await blok(send_msg, admin_joy('post'), izoh, kollaj_tugma(mid))
-        return web.json_response({'ok': True, 'mid': mid, 'kanal': POST_CHANNEL, 'nums': yuborildi, 'otkazildi': otkazildi})
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal_tanla('toplam'), 'nums': yuborildi, 'otkazildi': otkazildi})
     except Exception as e:
         logger.error(f'kanal_toplam_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -10020,6 +10129,9 @@ def _eski_bot_javob(upd):
 
 async def eski_webhook(request):
     """BUGUN145: eski bot webhook'i — darhol 200 (T1), javob fonda."""
+    if webhook_begona(request):
+        logger.warning('eski webhook: maxfiy kalit mos emas — 403')
+        return web.Response(status=403)
     try:
         data = await request.json()
     except Exception:
@@ -10074,13 +10186,13 @@ async def main():
     render_url = os.environ.get('RENDER_URL', '')
     if render_url:
         # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
-        r = req.post(f'{TG_API}/setWebhook', json={'url': f'{render_url}/webhook', 'allowed_updates': ALLOWED_UPDATES})
+        r = req.post(f'{TG_API}/setWebhook', json=webhook_sozlama(f'{render_url}/webhook', ALLOWED_UPDATES))
         logger.info(f'Webhook: {r.json()}')
         if ESKI_BOT_TOKEN and ESKI_BOT_TOKEN != BOT_TOKEN:
             # BUGUN145: eski bot o'z yo'liga — javobni eski token bilan beradi (yangi bot havolasi)
             try:
                 r2 = req.post(f'https://api.telegram.org/bot{ESKI_BOT_TOKEN}/setWebhook', timeout=20,
-                              json={'url': f'{render_url}/webhook-eski', 'allowed_updates': ['message', 'callback_query']})
+                              json=webhook_sozlama(f'{render_url}/webhook-eski', ['message', 'callback_query']))
                 logger.info(f'Eski bot webhook: {r2.json()}')
             except Exception as e:
                 logger.error(f'eski bot webhook: {type(e).__name__}')
@@ -10106,6 +10218,9 @@ async def main():
     asyncio.create_task(ai_hisobot_loop())   # BUGUN244: «🤖 AI yordamchi» mavzusiga har 5 soatda hisobot
     if KANAL_TOMCHI_BOSHI:
         asyncio.create_task(tomchi_loop())   # 3184.5: 15 kunlik tomchi (env yo'q — o'chiq)
+    # 3227: sozlama holati — faqat bor / yo'q (qiymat logga yozilmaydi)
+    logger.info('sozlama: asosiy kanal %s · tomchi %s · webhook kaliti %s', 'ulangan' if MAIN_KANALLAR else "yo'q",
+                'yoqilgan' if KANAL_TOMCHI_BOSHI else "o'chiq", 'bor' if WEBHOOK_SECRET else "yo'q")
     logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
     while True:
         await asyncio.sleep(3600)
