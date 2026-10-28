@@ -3810,15 +3810,16 @@ def build_olx_text(item, models_by_id):
     """OLX uchun elon matni (premium emoji'siz, oddiy matn).
 
     Tuzilishi (prompt 5 bo'yicha):
+      <e'lon nomi (xotira)> — 3218: OLX sarlavhasiga nusxa (kanal posti / Store nomi bilan bir xil)
       ELON RAQAMI: #150
       <birxil shablon: telegramdan arzon, har oy konkurs, 20+ model>
       • Holati (uz/ru)
+      <izoh uz / ru> — 3218: nuqson, to'plam (bo'sh bo'lsa — qator yo'q)
       Narxi: ~~eski~~ yangi
       ---
       Texnik xarakteristika (rang, xotira, ekran... uz+ru)
     """
     num = int(float(item.get('num', 0) or 0))
-    name_uz = item.get('nameUz', '') or item.get('name', '')
     storage = elon_xotira(item)   # BUGUN260-7: «MagSafe» xotira emas — alohida «Xususiyat» qatori
     xus_uz, xus_ru = xususiyat_matn(item, 'uz'), xususiyat_matn(item, 'ru')
     price = str(item.get('price', '')).replace('.0', '')
@@ -3833,8 +3834,15 @@ def build_olx_text(item, models_by_id):
     spec_ru = model.get('specRu', '') or ''
 
     cond_uz, cond_ru, _ = holati_matni(cond, cycle)
+    # 3218: sarlavha — kanal posti bilan bir xil (e'lonning o'z nomi + qavsda xotira / xususiyat)
+    qavs = elon_qavs(item)
+    sarlavha = (elon_nomi(item, model, 'uz') + (f" ({qavs})" if qavs else '')).strip()
+    izoh_uz, izoh_ru = izoh_matni(item, 'uz'), izoh_matni(item, 'ru')
 
     lines = []
+    if sarlavha:
+        lines.append(sarlavha)
+        lines.append("")
     lines.append(f"ELON RAQAMI: #{num}")
     lines.append("")
     # ── Birxil shablon (har elon uchun bir xil) ──
@@ -3848,6 +3856,12 @@ def build_olx_text(item, models_by_id):
     lines.append(f"• Holati: {cond_uz}")
     lines.append(f"• Состояние: {cond_ru}")
     lines.append("")
+    # ── 3218: izoh (nuqson, to'plam) — narxdan oldin; xaridor ko'rmasa — janjal, qaytarish ──
+    if izoh_uz:
+        lines.append(izoh_uz)
+        if izoh_ru != izoh_uz:
+            lines.append(izoh_ru)
+        lines.append("")
     # ── Narx (B5: sotilganini `status` ustuni aytadi) ──
     if is_sold(item):
         narx = price if price and price != '0' else old
@@ -3880,8 +3894,7 @@ def build_olx_text(item, models_by_id):
     if spec_ru:
         lines.append(spec_ru)
 
-    qavs = elon_qavs(item)
-    return (name_uz + (f" ({qavs})" if qavs else '')).strip(), "\n".join(lines).strip()
+    return sarlavha, "\n".join(lines).strip()
 
 
 def send_elon(chat_id, text, entities):
