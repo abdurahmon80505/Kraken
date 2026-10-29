@@ -2035,7 +2035,8 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     soni = soni_qatori(elon)
     narx_k = narx_k or POST_NARX
     if narx_k == 6:
-        narx_blok = f'<ul><li>{narx}</li></ul>' + (f'<p>{soni}</p>' if soni else '')   # 3200: chiziqsiz, quote'siz
+        # 3247 (Owner 2026-10-29 17:00): bullet qatori butunlay qalin — emoji, «Narxi / Цена:» va summa birga; qoldiq — oddiy
+        narx_blok = f'<ul><li><b>{narx}</b></li></ul>' + (f'<p>{soni}</p>' if soni else '')   # 3200: chiziqsiz, quote'siz
     elif narx_k == 5:
         narx_blok = f'<hr/><aside>{narx}' + (f'<br/>{soni}' if soni else '') + '</aside><hr/>'
     elif narx_k in (3, 4):
