@@ -468,14 +468,15 @@ def guruh_namunalar(hozir=None):
     rasm = {k: _elon_tayyor_matn({'ok': True, 'num': '0'}, 3, k[5:]) for k, _ in GURUH_MAVZULAR if k.startswith('rasm_')}
     return [
         ('post', "e'lon kanalga chiqqanda (saytdan / /post / 💧 tomchi); chiqmasa — ⚠️ xato",
-         f"📣 №{n} kanalga chiqdi (id 0) — {kanal_tanla('elon')}", _NAMUNA_TUGMA),
+         f"📣 №{n} kanalga chiqdi (id 0) — {kanal_tanla('elon')}", _NAMUNA_TUGMA if KOLLAJ_YOQIQ else {"inline_keyboard": _NAMUNA_TUGMA["inline_keyboard"][1:]}),
         ('olx', "saytda «Menga yuborish» bosilganda: OLX matni, keyin kanal e'loni va rasmlar albomi",
          html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
         ('mijoz', "kimdir tech kanalga kirganda; 1 daqiqadan keyin Mobile a'zoligi",
          f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'ga kirdi\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>", None),
         ('kollaj', "e'lon kanalga chiqqanda — postning kollaj ko'rinishi (kanalda oddiy qoladi); tugma bosilsa kanaldagi post shunga almashadi",
-         f"🖼 №{n} kollaj ko'rinishi — haqiqiysida rasmlar kollaji + e'lon matni", _NAMUNA_KOLLAJ),
+         f"🖼 №{n} kollaj ko'rinishi — haqiqiysida rasmlar kollaji + e'lon matni", _NAMUNA_KOLLAJ) if KOLLAJ_YOQIQ else
+        ('kollaj', "hozircha o'chiq (3244) — bot yubormaydi", None, None),
         *[(k, "shu mavzuga rasm tashlanganda (chala e'lon ochiladi)", *rasm[k]) for k in rasm],
         ('ai', "har 5 soatda (Toshkent: 05, 10, 15, 20, 01)", ai, None),
         ('rasmlar', "shu mavzuga rasm tashlanganda (e'lon ochilmaydi, Rasmlar omboriga)",
@@ -2714,6 +2715,10 @@ TUR_TARTIB = ('phone', 'camera', 'accessory', 'case', 'part')
 # B28: admin kollajga o'tkazgan postlar. 3238 (Owner 2026-10-29): xotirada emas — e'lonning channel_message_id sida post id
 # oxirida «k» («a123k», «mobile:a123k»): bot qayta yonsa ham keyingi tahrirda kollaj qoladi. Sayt id'ni faqat bor-yo'qligiga
 # qaraydi; to'plam postida belgi bitta e'londa (birinchisida) — kollajmi hammasiga qaraydi.
+# 3244 (Owner 2026-10-29): kollaj HOZIRCHA O'CHIQ — kollajda logo / «keyingisi» tugmasi chetga kirib qoladi, faqat 4 rasm.
+# Kod o'chirilmagan: False — Kollajlar mavzusiga nusxa, «🖼 Kollajga o'tkazish» / «✅ Kanalda shunga o'tkazish» tugmasi yo'q,
+# eski tugma bosilsa «Kollaj hozircha o'chiq»; kanal posti doim slayd (eski «k» belgisi ham slayd). Qaytarish — True qilish.
+KOLLAJ_YOQIQ = False
 
 
 def _id_kollaj(qiymat, mid, kollaj=None):
@@ -2732,10 +2737,15 @@ def _id_kollaj(qiymat, mid, kollaj=None):
     return bor, ' '.join(out)
 
 
-def kollajmi(mid):
-    """Kanal posti kollaj ko'rinishidami (jadvaldagi belgi bo'yicha)."""
+def _kollaj_belgi(mid):
+    """Jadvaldagi «k» belgisi bormi (KOLLAJ_YOQIQ ga qaramaydi)."""
     items, _ = _mid_elonlar(mid, hammasi=True)
     return any(_id_kollaj(e.get('channel_message_id'), mid)[0] for e in items)
+
+
+def kollajmi(mid):
+    """Kanal posti kollaj ko'rinishidami (jadvaldagi belgi bo'yicha). 3244: kollaj o'chiq — doim slayd."""
+    return KOLLAJ_YOQIQ and _kollaj_belgi(mid)
 
 
 def kollaj_belgila(mid, kollaj):
@@ -2904,6 +2914,8 @@ def toplam_tahrir(mid):
 def kollaj_tugma(mid, kollaj=False):
     """B28: admin lichkasidagi tugma (kanal postida emas — obunachilar ko'rmasin)."""
     ochir = [{"text": "🗑 Postni o'chirish", "callback_data": f"pochir:{int(mid)}"}]   # B34: sinov postini tozalash
+    if not KOLLAJ_YOQIQ:
+        return {"inline_keyboard": [ochir]}
     if kollaj:
         return {"inline_keyboard": [[{"text": "🎞 Slaydga qaytarish", "callback_data": f"slayd:{int(mid)}"}], ochir]}
     return {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": f"kollaj:{int(mid)}"}], ochir]}
@@ -2965,7 +2977,7 @@ def post_korinish(mid, kollaj):
     items, models = _mid_elonlar(mid)
     if not items:
         return False, "bu postning e'loni topilmadi (o'chirilgan yoki post boshqa)"
-    eski = kollajmi(mid)
+    eski = _kollaj_belgi(mid)
     saqlandi = eski == kollaj or kollaj_belgila(mid, kollaj)
     if _toplam_korinish(items, models):
         ok, xato = edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=kollaj))
@@ -2988,6 +3000,8 @@ def kollaj_guruh_tugma(mid, kollaj=False):
 def kollaj_nusxa(mid):
     """3238 (Owner 2026-10-29): kanalda post oddiy (slayd) qoladi, guruhning 🖼 Kollajlar mavzusiga — uning kollaj ko'rinishi
     (ovozsiz) + «✅ Kanalda shunga o'tkazish». Kollajlar mavzusi yo'q — hech narsa. (id, '') / (None, xato)."""
+    if not KOLLAJ_YOQIQ:
+        return None, "Kollaj hozircha o'chiq"
     if not (GURUH.get('id') and GURUH.get('kollaj')):
         return None, "Kollajlar mavzusi yo'q"
     mid = int(mid)
@@ -3007,7 +3021,7 @@ def kollaj_nusxa(mid):
 
 
 def kollaj_nusxa_fonda(mid):
-    if mid and GURUH.get('id') and GURUH.get('kollaj'):
+    if KOLLAJ_YOQIQ and mid and GURUH.get('id') and GURUH.get('kollaj'):
         threading.Thread(target=kollaj_nusxa, args=(mid,), daemon=True).start()
 
 
@@ -3018,6 +3032,8 @@ def kollaj_almashtir(admin_chat, xabar_id, data):
     if not re.fullmatch(r'\d{1,10}', mid):
         return
     kollaj = amal in ('kollaj', 'kg')
+    if kollaj and not KOLLAJ_YOQIQ:   # 3244: eski tugma — javob callback'da (toast), post tegilmaydi
+        return
     ok, xato = post_korinish(mid, kollaj)
     if not ok:
         send_msg(admin_chat, f"❌ Post ko'rinishi o'zgarmadi: <code>{html_escape(xato)}</code>")
@@ -7463,7 +7479,10 @@ async def handle_update(data):
             cq_id = cq.get('id')
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
                        json={'callback_query_id': cq_id, **({'text': "✔️ Bu bosqich bajarilgan — holat xabar matnida"}
-                                                            if cq_data == 'bh:-' else {})}, timeout=5)
+                                                            if cq_data == 'bh:-' else
+                                                            {'text': "🖼 Kollaj hozircha o'chiq"}   # 3244
+                                                            if not KOLLAJ_YOQIQ and cq_data.startswith(('kollaj:', 'kg:'))
+                                                            else {})}, timeout=5)
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
