@@ -473,7 +473,7 @@ def guruh_namunalar(hozir=None):
          html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
         ('mijoz', "kimdir tech kanalga kirganda; 1 daqiqadan keyin Mobile a'zoligi",
-         f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'ga kirdi\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>", None),
+         f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'da avvaldan bor\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>", None),
         ('kollaj', "e'lon kanalga chiqqanda — postning kollaj ko'rinishi (kanalda oddiy qoladi); tugma bosilsa kanaldagi post shunga almashadi",
          f"🖼 №{n} kollaj ko'rinishi — haqiqiysida rasmlar kollaji + e'lon matni", _NAMUNA_KOLLAJ) if KOLLAJ_YOQIQ else
         ('kollaj', "hozircha o'chiq (3244) — bot yubormaydi", None, None),
@@ -1051,9 +1051,10 @@ def xush_yubor(chat_id, uid, hub=False, yon=''):
 
 
 # 3110 (Owner, 2026-10-21): tech kanalga kirgan odam — adminga darhol «✅ … tech kanalga kirdi»; 1 daqiqadan keyin Mobile
-# kanal a'zoligi tekshiriladi: a'zo — «📱 … Mobile'ga kirdi», a'zo emas — «🔴 … Mobile'ga kirmadi» (Owner mijozga Mobile
+# kanal a'zoligi tekshiriladi: a'zo — «📱 … Mobile'da avvaldan bor», a'zo emas — «🔴 … Mobile'ga kirmadi» (Owner mijozga Mobile
 # havolasini o'zi yuboradi — ism bosilsa lichka ochiladi). Mijozga avtomatik xabar YO'Q. Taymer xotirada: 1 daqiqa ichida
 # bot qayta ishga tushsa — shu odamning tekshiruvi tushib qoladi. Mobile kanalda bot admin bo'lishi shart (getChatMember).
+# 3271 (Owner, 2026-10-29): «Mobile'ga kirdi» o'rniga «Mobile'da avvaldan bor» — u odamlar Mobile'da oldindan bor edi.
 MOBILE_KUTISH_S = 60
 
 
@@ -1071,7 +1072,7 @@ def _mobile_tekshir(user):
     if azo is None:
         msg = f"⚠️ {nom} — Mobile a'zoligini tekshirib bo'lmadi (bot Mobile kanalda admin bo'lishi kerak)"
     else:
-        msg = f"📱 {nom} Mobile'ga kirdi" if azo else f"🔴 <b>{nom} Mobile'ga kirmadi</b>"
+        msg = f"📱 {nom} Mobile'da avvaldan bor" if azo else f"🔴 <b>{nom} Mobile'ga kirmadi</b>"
     send_msg(admin_joy('mijoz'), msg)
 
 
