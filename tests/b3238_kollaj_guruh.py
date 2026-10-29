@@ -35,6 +35,8 @@ requests.post = requests.get = _tarmoq_yoq
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bot  # noqa: E402
 
+bot.KOLLAJ_YOQIQ = True   # 3244: kollaj hozircha o'chiq; bu sinov yoqilgan holatni tekshiradi (o'chig'i — tests/bot-sof.py)
+
 NATIJA = [0, 0]
 
 
