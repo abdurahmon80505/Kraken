@@ -440,6 +440,7 @@ def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
 # Faqat shu buyruq bilan — kanal, mijoz, boshqa chatga hech narsa ketmaydi; mavzu ochilmaydi / o'chirilmaydi.
 _NAMUNA_TUGMA = {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": "namuna"}],
                                      [{"text": "🗑 Postni o'chirish", "callback_data": "namuna"}]]}
+_NAMUNA_KOLLAJ = {"inline_keyboard": [[{"text": "✅ Kanalda shunga o'tkazish", "callback_data": "namuna"}]]}
 
 
 def _namuna_elon():
@@ -473,7 +474,8 @@ def guruh_namunalar(hozir=None):
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
         ('mijoz', "kimdir tech kanalga kirganda; 1 daqiqadan keyin Mobile a'zoligi",
          f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'ga kirdi\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>", None),
-        ('kollaj', "bot o'zi yubormaydi («🖼 Kollajga o'tkazish» tugmasi — 📢 Postlar xabarida)", None, None),
+        ('kollaj', "e'lon kanalga chiqqanda — postning kollaj ko'rinishi (kanalda oddiy qoladi); tugma bosilsa kanaldagi post shunga almashadi",
+         f"🖼 №{n} kollaj ko'rinishi — haqiqiysida rasmlar kollaji + e'lon matni", _NAMUNA_KOLLAJ),
         *[(k, "shu mavzuga rasm tashlanganda (chala e'lon ochiladi)", *rasm[k]) for k in rasm],
         ('ai', "har 5 soatda (Toshkent: 05, 10, 15, 20, 01)", ai, None),
         ('rasmlar', "shu mavzuga rasm tashlanganda (e'lon ochilmaydi, Rasmlar omboriga)",
@@ -2080,18 +2082,18 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     )
 
 
-def send_rich(chat_id, html, disable_notification=False, media=None, javob=None):
+def send_rich(chat_id, html, disable_notification=False, media=None, javob=None, tugma=None):
     """sendRichMessage. (message_id, '') yoki (None, xato matni).
-    media — rich_message.media (BUGUN148: rasm file_id bilan, `tg://photo?id=rN`); javob (dict) — Telegram natijasi shunga."""
+    media — rich_message.media (BUGUN148: rasm file_id bilan, `tg://photo?id=rN`); javob (dict) — Telegram natijasi shunga.
+    tugma — reply_markup (3238: Kollajlar mavzusidagi nusxa; rich xabar inline tugmani qabul qiladi — test kanalda sinalgan)."""
     rich = {'html': html}
     if media:
         rich['media'] = media
+    j = {'chat_id': chat_id, 'rich_message': rich, 'disable_notification': disable_notification}
+    if tugma:
+        j['reply_markup'] = tugma
     try:
-        r = req.post(f'{TG_API}/sendRichMessage', json={
-            'chat_id': chat_id,
-            'rich_message': rich,
-            'disable_notification': disable_notification,
-        }, timeout=30).json()
+        r = req.post(f'{TG_API}/sendRichMessage', json=j, timeout=30).json()
     except Exception as ex:
         return None, f'tarmoq: {ex}'
     if not r.get('ok'):
@@ -2289,7 +2291,7 @@ def kanal_postlar(elon, hammasi=False):
     out = []
     for qism in re.split(r'[\s,;]+', v):
         y, ikki_nuqta, m = qism.rpartition(':')
-        t = re.fullmatch(r'(a?)(\d{1,12})(?:\.0*)?', m.strip())
+        t = re.fullmatch(r'(a?)(\d{1,12})(?:\.0*)?k?', m.strip())   # 3238: «k» — kollaj belgisi (_id_kollaj)
         y = y.strip().lower() or None
         if not t or (ikki_nuqta and not y):
             continue
@@ -2530,14 +2532,15 @@ def rich_fidlar(natija):
     return fidlar
 
 
-def kanal_rich_yubor(num, elon, models, chat, message_id=None, kollaj=False, yonalish=None):
+def kanal_rich_yubor(num, elon, models, chat, message_id=None, kollaj=False, yonalish=None, tugma=None, ovozsiz=False):
     """Kanal posti — yangi (message_id=None: send_rich → (mid, xato)) yoki tahrir (edit_rich → (ok, xato)).
-    file_id rad etilsa — manzillar bilan qayta. Manzillar bilan ketsa — natijadagi file_id'lar olinadi, jadvalga yoziladi."""
+    file_id rad etilsa — manzillar bilan qayta. Manzillar bilan ketsa — natijadagi file_id'lar olinadi, jadvalga yoziladi.
+    tugma, ovozsiz — yangi xabar uchun (3238: Kollajlar mavzusidagi nusxa)."""
     html, media, manbalar = kanal_rich(elon, models, kollaj=kollaj, yonalish=yonalish)
 
     def yubor(h, md, jv):
         if message_id is None:
-            return send_rich(chat, h, media=md, javob=jv)
+            return send_rich(chat, h, disable_notification=ovozsiz, media=md, javob=jv, tugma=tugma)
         return edit_rich(chat, message_id, h, media=md, javob=jv)
     javob = {}
     natija = yubor(html, media, javob)
@@ -2607,7 +2610,7 @@ def kanal_tahrir(num):
     # MS3.1: har kanaldagi posti (yo'nalishi o'ziniki); kollaj — asosiy post bo'yicha
     natija = (True, '')
     for y, chat, m in kanal_postlar(elon):
-        ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=mid in _KOLLAJ,
+        ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=kollajmi(mid),
                                     yonalish=y or post_yonalish(elon, models, mid=m))
         if not ok and natija[0]:
             natija = (False, xato)
@@ -2708,7 +2711,42 @@ def kanal_yana_keldi(num, yonalish=None):
 
 # ── To'plam (case / part / accessory; BUGUN31: saytda belgilangan har qanday e'lonlar) ──
 TUR_TARTIB = ('phone', 'camera', 'accessory', 'case', 'part')
-_KOLLAJ = set()   # B28: admin kollajga o'tkazgan postlar (mid). Xotirada — bot qayta ishga tushsa keyingi tahrirda slayd bo'ladi
+# B28: admin kollajga o'tkazgan postlar. 3238 (Owner 2026-10-29): xotirada emas — e'lonning channel_message_id sida post id
+# oxirida «k» («a123k», «mobile:a123k»): bot qayta yonsa ham keyingi tahrirda kollaj qoladi. Sayt id'ni faqat bor-yo'qligiga
+# qaraydi; to'plam postida belgi bitta e'londa (birinchisida) — kollajmi hammasiga qaraydi.
+
+
+def _id_kollaj(qiymat, mid, kollaj=None):
+    """channel_message_id dagi shu post (mid, hozirgi rejim) tokenining «k» belgisi. → (belgi bormi, qiymat);
+    kollaj=True / False — qiymatda belgi qo'yilgan / olingan."""
+    bor, out = False, []
+    for qism in re.split(r'[\s,;]+', str(qiymat or '').strip()):
+        y, ikki_nuqta, m = qism.rpartition(':')
+        t = re.fullmatch(r'(a?)(\d{1,12})(?:\.0*)?(k?)', m.strip())
+        if t and int(t.group(2)) == int(mid) and bool(t.group(1)) == bool(MAIN_KANALLAR):
+            bor = bor or bool(t.group(3))
+            if kollaj is not None:
+                qism = f"{y}{ikki_nuqta}{t.group(1)}{t.group(2)}{'k' if kollaj else ''}"
+        if qism:
+            out.append(qism)
+    return bor, ' '.join(out)
+
+
+def kollajmi(mid):
+    """Kanal posti kollaj ko'rinishidami (jadvaldagi belgi bo'yicha)."""
+    items, _ = _mid_elonlar(mid, hammasi=True)
+    return any(_id_kollaj(e.get('channel_message_id'), mid)[0] for e in items)
+
+
+def kollaj_belgila(mid, kollaj):
+    """Belgini qo'yadi (birinchi e'longa) / oladi (hammasidan). True — jadvalga yozildi (xotiraga — har holda)."""
+    items, _ = _mid_elonlar(mid, hammasi=True)
+    ok = True
+    for e in (items[:1] if kollaj else items):
+        bor, yangi = _id_kollaj(e.get('channel_message_id'), mid, kollaj)
+        if bor != kollaj and yangi:
+            ok = kanal_id_yoz(int(float(e.get('num', 0) or 0)), yangi) and ok
+    return ok
 
 
 def _tur_kalit(e, models):
@@ -2859,9 +2897,8 @@ def toplam_tahrir(mid):
     """Shu to'plam postiga kirgan (id bir xil) e'lonlar bo'yicha post qayta yasalib tahrirlanadi; hech kim qolmasa — o'chadi."""
     items, models = _mid_elonlar(mid)
     if not items:
-        _KOLLAJ.discard(int(mid))
         return delete_msg(kanal_tanla('toplam'), mid)
-    return edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=int(mid) in _KOLLAJ))
+    return edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=kollajmi(mid)))
 
 
 def kollaj_tugma(mid, kollaj=False):
@@ -2888,7 +2925,6 @@ def post_ochir(mid):
         ok, xato = delete_msg(kanal_tanla('toplam'), mid)
         if not ok:
             return False, xato
-    _KOLLAJ.discard(mid)
     for e in items:
         kanal_id_yoz(int(float(e.get('num', 0) or 0)), None)
     return True, f"{len(items)} ta e'lon"
@@ -2906,7 +2942,7 @@ def post_ochir_tugma(admin_chat, xabar_id, data):
             tugma({"inline_keyboard": [[{"text": "✅ Ha, o'chirilsin", "callback_data": f"pochir_ha:{mid}"},
                                         {"text": "↩️ Yo'q", "callback_data": f"pochir_yoq:{mid}"}]]})
         elif amal == 'pochir_yoq':
-            tugma(kollaj_tugma(mid, int(mid) in _KOLLAJ))
+            tugma(kollaj_tugma(mid, kollajmi(mid)))
         elif amal == 'pochir_ha':
             ok, izoh = post_ochir(mid)
             if ok:
@@ -2918,36 +2954,80 @@ def post_ochir_tugma(admin_chat, xabar_id, data):
         logger.error(f'post_ochir_tugma: {e}')
 
 
+def _toplam_korinish(items, models):
+    """Post to'plam ko'rinishida yasaladimi (post_korinish va kollaj_nusxa — bir xil)."""
+    return len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR
+
+
 def post_korinish(mid, kollaj):
-    """B28: kanal postini kollaj ↔ slayd qilib tahrirlaydi (matn o'zgarmaydi). (True, '') / (False, sabab)."""
+    """B28: kanal postini kollaj ↔ slayd qilib tahrirlaydi (matn o'zgarmaydi). (True, '' yoki ogohlantirish) / (False, sabab)."""
     mid = int(mid)
     items, models = _mid_elonlar(mid)
     if not items:
         return False, "bu postning e'loni topilmadi (o'chirilgan yoki post boshqa)"
-    eski = mid in _KOLLAJ
-    (_KOLLAJ.add if kollaj else _KOLLAJ.discard)(mid)
-    if len(items) > 1 or elon_turi(items[0], models) in TOPLAM_TURLAR:
+    eski = kollajmi(mid)
+    saqlandi = eski == kollaj or kollaj_belgila(mid, kollaj)
+    if _toplam_korinish(items, models):
         ok, xato = edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=kollaj))
     else:
         ok, xato = kanal_tahrir(int(float(items[0].get('num', 0) or 0)))   # MS3.1: hamma kanaldagi posti
     if not ok:
-        (_KOLLAJ.add if eski else _KOLLAJ.discard)(mid)
-    return ok, xato
+        if eski != kollaj:
+            kollaj_belgila(mid, eski)
+        return ok, xato
+    return True, '' if saqlandi else "holat jadvalga yozilmadi — bot qayta ishga tushsa keyingi tahrirda eski ko'rinish"
+
+
+def kollaj_guruh_tugma(mid, kollaj=False):
+    """3238: 🖼 Kollajlar mavzusidagi nusxa tagidagi tugma. Kanal post id — callback'da (Telegram saqlaydi: bot qayta yonsa ham)."""
+    if kollaj:
+        return {"inline_keyboard": [[{"text": "✅ O'tkazildi · ↩ Qaytarish", "callback_data": f"kgq:{int(mid)}"}]]}
+    return {"inline_keyboard": [[{"text": "✅ Kanalda shunga o'tkazish", "callback_data": f"kg:{int(mid)}"}]]}
+
+
+def kollaj_nusxa(mid):
+    """3238 (Owner 2026-10-29): kanalda post oddiy (slayd) qoladi, guruhning 🖼 Kollajlar mavzusiga — uning kollaj ko'rinishi
+    (ovozsiz) + «✅ Kanalda shunga o'tkazish». Kollajlar mavzusi yo'q — hech narsa. (id, '') / (None, xato)."""
+    if not (GURUH.get('id') and GURUH.get('kollaj')):
+        return None, "Kollajlar mavzusi yo'q"
+    mid = int(mid)
+    items, models = _mid_elonlar(mid)
+    if not items:
+        return None, "e'lon topilmadi"
+    joy, tugma = admin_joy('kollaj'), kollaj_guruh_tugma(mid, kollajmi(mid))
+    if _toplam_korinish(items, models):
+        natija = send_rich(joy, build_toplam_html(items, models, kollaj=True), disable_notification=True, tugma=tugma)
+    else:
+        e = items[0]
+        natija = kanal_rich_yubor(int(float(e.get('num', 0) or 0)), e, models, joy, kollaj=True,
+                                  yonalish=post_yonalish(e, models, mid=mid), tugma=tugma, ovozsiz=True)
+    if not natija[0]:
+        logger.error(f'kollaj nusxa (post {mid}): {natija[1]}')
+    return natija
+
+
+def kollaj_nusxa_fonda(mid):
+    if mid and GURUH.get('id') and GURUH.get('kollaj'):
+        threading.Thread(target=kollaj_nusxa, args=(mid,), daemon=True).start()
 
 
 def kollaj_almashtir(admin_chat, xabar_id, data):
-    """«🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» bosildi: post tahrirlanadi, tugma teskarisiga almashadi."""
+    """«🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (📢 Postlar) yoki «✅ Kanalda shunga o'tkazish» / «↩ Qaytarish»
+    (🖼 Kollajlar, 3238) bosildi: post tahrirlanadi, tugma teskarisiga almashadi."""
     amal, _, mid = str(data).partition(':')
     if not re.fullmatch(r'\d{1,10}', mid):
         return
-    kollaj = amal == 'kollaj'
+    kollaj = amal in ('kollaj', 'kg')
     ok, xato = post_korinish(mid, kollaj)
     if not ok:
         send_msg(admin_chat, f"❌ Post ko'rinishi o'zgarmadi: <code>{html_escape(xato)}</code>")
         return
+    if xato:
+        send_msg(admin_chat, f"⚠️ Kanal posti o'zgardi, lekin {html_escape(xato)}.")
+    tugma = kollaj_guruh_tugma if amal in ('kg', 'kgq') else kollaj_tugma
     try:
         req.post(f'{TG_API}/editMessageReplyMarkup', json={'chat_id': admin_chat, 'message_id': xabar_id,
-                                                            'reply_markup': kollaj_tugma(mid, kollaj)}, timeout=10)
+                                                            'reply_markup': tugma(mid, kollaj)}, timeout=10)
     except Exception as e:
         logger.error(f'kollaj tugmasi: {e}')
 
@@ -3042,6 +3122,7 @@ def kanal_tasdiq(admin_chat, key, ok):
         for n in p['nums']:
             kanal_id_yoz(n, mid)
         send_msg(admin_chat, f"✅ To'plam kanalga chiqdi (id {mid}), {len(p['nums'])} ta e'longa yozildi.", kollaj_tugma(mid))
+        kollaj_nusxa_fonda(mid)
     else:
         try:
             req.post(f'{TG_API}/pinChatMessage', json={'chat_id': kanal, 'message_id': mid, 'disable_notification': True}, timeout=15)
@@ -3093,6 +3174,7 @@ def kanal_sinxron(eski, yangi):
             mid, xato = kanal_post(num)
             if mid:
                 send_msg(admin_joy('post'), f"📣 №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}", kollaj_tugma(mid))
+                kollaj_nusxa_fonda(mid)
             else:
                 send_msg(admin_joy('post'), f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
             return 'post'
@@ -7400,8 +7482,8 @@ async def handle_update(data):
             # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
             if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_adm:
                 asyncio.create_task(blok(kanal_tasdiq, cq_chat, cq_data.split(':', 1)[1], cq_data.startswith('kanal_ok:')))
-            # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin lichkasi)
-            if cq_data.startswith(('kollaj:', 'slayd:')) and cq_adm:
+            # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin); 3238: Kollajlar mavzusidagi «✅ Kanalda shunga o'tkazish» / «↩»
+            if cq_data.startswith(('kollaj:', 'slayd:', 'kg:', 'kgq:')) and cq_adm:
                 asyncio.create_task(blok(kollaj_almashtir, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
             # BUGUN208: «🔓 Bronni bekor qilish» (faqat admin lichkasi)
             if cq_data.startswith('bron_och:') and cq_adm:
@@ -9999,10 +10081,12 @@ async def kanal_buyruq(chat_id, cmd, num):
         mid, xato = await blok(kanal_post, num)
         await blok(send_msg, chat_id, f"✅ №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}" if mid else f"❌ №{num}: <code>{html_escape(xato)}</code>",
                    kollaj_tugma(mid) if mid else None)
+        kollaj_nusxa_fonda(mid)
     elif cmd == '/yana':
         mid, xato = await blok(kanal_yana_keldi, num)
         await blok(send_msg, chat_id, f"🔄 №{num} qayta postlandi (yangi id {mid})" if mid else f"❌ №{num}: <code>{html_escape(xato)}</code>",
                    kollaj_tugma(mid) if mid else None)
+        kollaj_nusxa_fonda(mid)
     else:
         ok, xato = await blok(kanal_ochir, num)
         await blok(send_msg, chat_id, f"🗑 №{num} posti o'chirildi" if ok else f"❌ №{num}: <code>{html_escape(xato)}</code>")
@@ -10040,6 +10124,7 @@ async def kanal_post_endpoint(request):
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
         kanal = elon_kanali(num)
         await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {kanal}", kollaj_tugma(mid))
+        kollaj_nusxa_fonda(mid)
         return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal})
     except Exception as e:
         logger.error(f'kanal_post_endpoint: {e}')
@@ -10067,6 +10152,7 @@ async def kanal_toplam_endpoint(request):
         if otkazildi:
             izoh += "\n⏭ O'tkazildi: " + ', '.join(f"№{o['num']} ({html_escape(o['sabab'])})" for o in otkazildi)
         await blok(send_msg, admin_joy('post'), izoh, kollaj_tugma(mid))
+        kollaj_nusxa_fonda(mid)
         return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal_tanla('toplam'), 'nums': yuborildi, 'otkazildi': otkazildi})
     except Exception as e:
         logger.error(f'kanal_toplam_endpoint: {e}')
