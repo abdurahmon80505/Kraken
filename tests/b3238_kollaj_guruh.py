@@ -152,7 +152,7 @@ sinov("to'plam keyingi tahrirda ham kollaj", '<tg-collage>' in LOG[-1][2])
 # 📢 Postlar tugmasi (eski) — o'zgarmadi, o'sha belgi
 muhit()
 bot.kollaj_almashtir(bot.GURUH['id'], 5, 'kollaj:55')
-sinov("eski «🖼 Kollajga o'tkazish» — o'z tugmasi (slayd:55 / pochir)", cb(SOROV[-1][1]['reply_markup']) == ['slayd:55', 'pochir:55']
+sinov("eski «🖼 Kollajga o'tkazish» — o'z tugmasi (slayd:55, 3273: o'chirishsiz)", cb(SOROV[-1][1]['reply_markup']) == ['slayd:55']
       and bot.kollajmi(55))
 
 # jadval yozilmasa — post o'zgaradi, adminga ⚠️

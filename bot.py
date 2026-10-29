@@ -438,8 +438,7 @@ def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
 # 3214.1 (Owner 2026-10-27): «/guruh namuna» — har saqlangan mavzuga bot o'sha yerga HAQIQATDA yuboradigan xabar turidan bittadan
 # namuna (ovozsiz, «🧪 NAMUNA —» bilan). Ma'lumot — mavjud e'lon yoki soxta «Test Mijoz»; tugmalar ishlamaydi (callback «namuna»).
 # Faqat shu buyruq bilan — kanal, mijoz, boshqa chatga hech narsa ketmaydi; mavzu ochilmaydi / o'chirilmaydi.
-_NAMUNA_TUGMA = {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": "namuna"}],
-                                     [{"text": "🗑 Postni o'chirish", "callback_data": "namuna"}]]}
+_NAMUNA_TUGMA = {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": "namuna"}]]}   # 3273: o'chirishsiz
 _NAMUNA_KOLLAJ = {"inline_keyboard": [[{"text": "✅ Kanalda shunga o'tkazish", "callback_data": "namuna"}]]}
 
 
@@ -468,7 +467,7 @@ def guruh_namunalar(hozir=None):
     rasm = {k: _elon_tayyor_matn({'ok': True, 'num': '0'}, 3, k[5:]) for k, _ in GURUH_MAVZULAR if k.startswith('rasm_')}
     return [
         ('post', "e'lon kanalga chiqqanda (saytdan / /post / 💧 tomchi); chiqmasa — ⚠️ xato",
-         f"📣 №{n} kanalga chiqdi (id 0) — {kanal_tanla('elon')}", _NAMUNA_TUGMA if KOLLAJ_YOQIQ else {"inline_keyboard": _NAMUNA_TUGMA["inline_keyboard"][1:]}),
+         f"📣 №{n} kanalga chiqdi (id 0) — {kanal_tanla('elon')}", _NAMUNA_TUGMA if KOLLAJ_YOQIQ else None),
         ('olx', "saytda «Menga yuborish» bosilganda: OLX matni, keyin kanal e'loni va rasmlar albomi",
          html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
@@ -2914,13 +2913,14 @@ def toplam_tahrir(mid):
 
 
 def kollaj_tugma(mid, kollaj=False):
-    """B28: admin lichkasidagi tugma (kanal postida emas — obunachilar ko'rmasin)."""
-    ochir = [{"text": "🗑 Postni o'chirish", "callback_data": f"pochir:{int(mid)}"}]   # B34: sinov postini tozalash
+    """B28: admin lichkasidagi tugma (kanal postida emas — obunachilar ko'rmasin).
+    3273: «🗑 Postni o'chirish» yo'q (tasodifan bosilmasin) — e'lon saytdan o'chirilsa post o'zi o'chadi; eski xabardagi
+    `pochir:` tugmasi post_ochir_tugma da ishlayveradi. Kollaj o'chiq — None (tugmasiz, bir qator matn)."""
     if not KOLLAJ_YOQIQ:
-        return {"inline_keyboard": [ochir]}
+        return None
     if kollaj:
-        return {"inline_keyboard": [[{"text": "🎞 Slaydga qaytarish", "callback_data": f"slayd:{int(mid)}"}], ochir]}
-    return {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": f"kollaj:{int(mid)}"}], ochir]}
+        return {"inline_keyboard": [[{"text": "🎞 Slaydga qaytarish", "callback_data": f"slayd:{int(mid)}"}]]}
+    return {"inline_keyboard": [[{"text": "🖼 Kollajga o'tkazish", "callback_data": f"kollaj:{int(mid)}"}]]}
 
 
 def post_ochir(mid):
@@ -2956,7 +2956,7 @@ def post_ochir_tugma(admin_chat, xabar_id, data):
             tugma({"inline_keyboard": [[{"text": "✅ Ha, o'chirilsin", "callback_data": f"pochir_ha:{mid}"},
                                         {"text": "↩️ Yo'q", "callback_data": f"pochir_yoq:{mid}"}]]})
         elif amal == 'pochir_yoq':
-            tugma(kollaj_tugma(mid, kollajmi(mid)))
+            tugma(kollaj_tugma(mid, kollajmi(mid)) or {"inline_keyboard": []})
         elif amal == 'pochir_ha':
             ok, izoh = post_ochir(mid)
             if ok:
@@ -3045,7 +3045,7 @@ def kollaj_almashtir(admin_chat, xabar_id, data):
     tugma = kollaj_guruh_tugma if amal in ('kg', 'kgq') else kollaj_tugma
     try:
         req.post(f'{TG_API}/editMessageReplyMarkup', json={'chat_id': admin_chat, 'message_id': xabar_id,
-                                                            'reply_markup': tugma(mid, kollaj)}, timeout=10)
+                                                            'reply_markup': tugma(mid, kollaj) or {"inline_keyboard": []}}, timeout=10)
     except Exception as e:
         logger.error(f'kollaj tugmasi: {e}')
 
