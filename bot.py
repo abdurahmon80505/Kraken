@@ -9067,6 +9067,38 @@ def _chek_topshir(uid, user, order, mids, fid):
     return 'adminga_yetmadi'
 
 
+_CHEK_ILOVA_MAX = 900 * 1024   # 3259: ilovadan chek (sayt siqib yuboradi; aiohttp chegarasi 1 MB)
+_CHEK_ILOVA_QULF = threading.Lock()
+_CHEK_ILOVA_OXIRGI = {}   # uid → oxirgi yuklash vaqti (ketma-ket bosish ikki chek yubormasin)
+
+
+def _chek_ilovadan(uid, user, order, rasm):
+    """3259: chek rasmi saytdan («Buyurtmalarim»). Rasm mijozning bot chatiga yuboriladi (o'zida ham qoladi), so'ng
+    bot chatidagi chek bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + «✅ To'lov keldi», mijozga «qabul qilindi»).
+    Natija: 'qabul' · 'adminga_yetmadi' · 'topilmadi' · 'tolangan' · 'bekor' · 'bot_yoq' (yangi botda /start yo'q —
+    sayt botni ochadi) · 'xato'. Holat faqat 'kutilmoqda' bo'lsa qabul qilinadi."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        b = dict(b) if b else None
+    if not b:
+        return 'topilmadi'
+    if b.get('holat') == 'bekor':
+        return 'bekor'
+    if b.get('holat') != 'kutilmoqda':
+        return 'tolangan'
+    o = html_escape(order)
+    izoh = _chek_matn(_chek_tel_til(user, b), f"🧾 Chek — buyurtma №{o} (ilovadan)", f"🧾 Чек — заказ №{o} (из приложения)")
+    natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': izoh, 'parse_mode': 'HTML'},
+                       files={'photo': ('chek.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
+    if natija == 'bloklagan':
+        return 'bot_yoq'
+    r = (j or {}).get('result') or {}
+    if natija != 'yuborildi' or not r.get('message_id'):
+        return 'xato'
+    fid = ((r.get('photo') or [{}])[-1]).get('file_unique_id') or ''
+    return _chek_topshir(uid, user, order, [r['message_id']], fid)
+
+
 def _chek_qabul(uid, user, message):
     """Mijozdan rasm / fayl keldi (fon oqimida). Qaytaradi — natija kodi: qabul · dup · tanla · yoq · davomi · adminga_yetmadi."""
     mid, mgid, fid = message.get('message_id'), message.get('media_group_id'), _chek_fayl(message)
@@ -9936,12 +9968,54 @@ async def mijoz_holat_endpoint(request):
             m = _mijoz_ol(uid)
             tels = _mijoz_tels_javob(m)
             buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
-                         'tur': b.get('tur', ''), 'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
-                                                            for x in (b.get('tovar') or [])]}
+                         'tur': b.get('tur', ''), 'chek': b.get('chek') or '',   # 3259: chek holati (HH:MM · 'kut' · '')
+                         'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
+                                   for x in (b.get('tovar') or [])]}
                         for b in m['buyurtma']]
         return web.json_response({'ok': True, 'tels': tels, 'buyurtma': buyurtma})
     except Exception as e:
         logger.error(f'mijoz_holat_endpoint: {e}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def chek_yukla_endpoint(request):
+    """3259: «Buyurtmalarim» dan chek rasmi. multipart: initData, order, rasm (JPEG, ≤ 900 KB — sayt siqadi).
+    Imzo shart (401), uid faqat imzodan — boshqa odamning buyurtmasiga chek bo'lmaydi. Ketma-ket 15 soniyada bir marta (429).
+    Javob: {'ok': natija == 'qabul', 'natija': …} (_chek_ilovadan). Holat / to'lovni bu yerda hech kim o'zgartirmaydi."""
+    try:
+        try:
+            form = await request.post()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({'error': 'katta'}, status=413)
+        init = str(form.get('initData') or '')
+        uid = check_init_data(init)
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        order = str(form.get('order') or '').strip().upper()
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
+            return web.json_response({'error': 'order'}, status=400)
+        f = form.get('rasm')
+        rasm = f.file.read(_CHEK_ILOVA_MAX + 1) if hasattr(f, 'file') else b''
+        if not rasm or len(rasm) > _CHEK_ILOVA_MAX:
+            return web.json_response({'error': 'katta' if rasm else 'rasm'}, status=413 if rasm else 400)
+        if rasm[:3] != bytes((0xFF, 0xD8, 0xFF)):   # JPEG (sayt canvas'dan JPEG qiladi)
+            return web.json_response({'error': 'rasm'}, status=400)
+        with _CHEK_ILOVA_QULF:
+            hozir = time.time()
+            if hozir - _CHEK_ILOVA_OXIRGI.get(uid, 0) < 15:
+                return web.json_response({'error': 'band'}, status=429)
+            _CHEK_ILOVA_OXIRGI[uid] = hozir
+        try:
+            user = json.loads(dict(urllib.parse.parse_qsl(init)).get('user') or '{}')
+        except Exception:
+            user = {}
+        natija = await blok(_chek_ilovadan, uid, user if isinstance(user, dict) else {}, order, rasm)
+        if natija != 'qabul':
+            with _CHEK_ILOVA_QULF:   # yetmagan chekni darhol qayta yuborsa bo'ladi
+                _CHEK_ILOVA_OXIRGI.pop(uid, None)
+        return web.json_response({'ok': natija == 'qabul', 'natija': natija})
+    except Exception as e:
+        logger.error(f'chek_yukla_endpoint: {type(e).__name__}')
         return web.json_response({'error': 'xato'}, status=500)
 
 
@@ -10318,6 +10392,7 @@ async def main():
     app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
     app.router.add_post('/buyurtma', buyurtma_endpoint)
     app.router.add_post('/mijoz_holat', mijoz_holat_endpoint)   # BUGUN225: profil — raqamlar (BUGUN271: to'liq, faqat egasiga) + Buyurtmalarim
+    app.router.add_post('/chek_yukla', chek_yukla_endpoint)   # 3259: «Buyurtmalarim» dan chek rasmi → bot chati → adminga (bot yo'li bilan bir xil)
     app.router.add_post('/mijoz_tel', mijoz_tel_endpoint)       # BUGUN271: profil — yetkazish raqamini o'zgartirish
     app.router.add_post('/buyurtma_bekor', buyurtma_bekor_endpoint)   # BUGUN225: mijoz buyurtmani bekor qildi
     app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
