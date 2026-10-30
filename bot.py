@@ -8561,7 +8561,7 @@ def _buyurtma_soni(elon, sonlar, ranglar=None):
 def _savat_kel_narxlar(kodlar, nums):
     """kodlar — havola kodlari (≤3), nums — buyurtmadagi raqamlar. Qaytaradi ({num: kelishilgan $}, ogoh): ogoh — havola
     o'qilmadi / muddati o'tgan (narx Store'dagicha qoladi, admin xabarida ko'rinadi)."""
-    kel, ogoh = {}, False
+    kel, ogoh, lim = {}, False, {}
     for k in kodlar:
         r = _kk_sheet('savatOl', timeout=20, kod=k)
         if not (r and r.get('ok')):
@@ -8572,8 +8572,19 @@ def _savat_kel_narxlar(kodlar, nums):
                 x = float((v or {}).get('narx'))
             except Exception:
                 continue
-            if str(n) in nums and x > 0:
+            if str(n) in nums and x >= 0:   # 3295: 0 — 🎁 sovg'a
                 kel[str(n)] = min(x, kel.get(str(n), x))
+        soni = {}
+        for q in r.get('qatorlar') or []:
+            try:
+                soni[str(q.get('num'))] = soni.get(str(q.get('num')), 0) + int(q.get('soni'))
+            except Exception:
+                pass
+        for n, d in soni.items():
+            if kel.get(n) == 0:
+                lim[n] = max(lim.get(n, 0), d)
+    if lim:
+        kel['_soni'] = lim   # 3295: sovg'a tovar — havolada admin bergan dona (_sovga_holat; raqam emas — narxlar bilan aralashmaydi)
     return kel, ogoh
 
 
@@ -8581,9 +8592,21 @@ def _kel_narx(elon, kel):
     """(narx 1 dona, chegirma 1 dona) — kelishilgan narx bo'lsa va Store narxidan past bo'lsa — o'sha, aks holda Store narxi."""
     asl = _narx_son(elon)
     k = (kel or {}).get(str(elon.get('num', '')))
-    if asl is None or k is None or not (0 < k < asl):
+    if asl is None or k is None or not (0 <= k < asl):
         return asl, 0
     return round(k, 2), round(asl - k, 2)
+
+
+# ══ 3295: kelishilgan narx 0 — 🎁 sovg'a. Hammasi sovg'a bo'lsa to'lov so'ralmaydi, buyurtma darhol «to'landi»; aralash savatda —
+# faqat pullik qism (oddiy oqim). Qarorni FAQAT server hisobi beradi (narx — Apps Script havolasidan, sayt yuborgan jami emas).
+def _sovga_holat(elonlar, sonlar, ranglar, kel, ogoh):
+    """(sovga, tasdiq). sovga — hamma tovar havolada $0. tasdiq — o'zi «to'landi» bo'ladi: e'lon yopiq / topilmagan yoki mijoz
+    havoladagidan ko'p dona so'ragan bo'lsa — yo'q (admin ko'rib o'zi tasdiqlaydi: Store'ga $0 sotuv ko'r-ko'rona yozilmasin)."""
+    kn = [_kel_narx(e, kel) for e in elonlar]
+    sovga = bool(kn) and all(n == 0 and c > 0 for n, c in kn) and not any(o == 'topilmadi' for _, o in ogoh)
+    lim = (kel or {}).get('_soni') or {}
+    kop = any(_buyurtma_soni(e, sonlar, ranglar) > lim.get(str(e.get('num', '')), 99) for e in elonlar)
+    return sovga, sovga and not ogoh and not kop
 
 
 def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonlar=None, ranglar=None, kel=None, kel_ogoh=False,
@@ -8599,6 +8622,7 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     narxlar = [n for n, _ in kn]
     cheg = [c for _, c in kn]
     cheg_jami = round(sum(c * d for c, d in zip(cheg, donalar)), 2)
+    sovga, tasdiq = _sovga_holat([e for e, _ in qatorlar], sonlar, ranglar, kel, ogoh)
     usd = None if any(n is None for n in narxlar) else sum(n * d for n, d in zip(narxlar, donalar))
     narx = f'{usd:g}$' if usd is not None else '—'
     # so'm — 1 000 gacha yaxlit (to'lov sahifasidagi summa bilan bir xil bo'lsin: mijoz ko'rgan = admin ko'rgan)
@@ -8607,6 +8631,8 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     def _dona(n, d, c=0):   # «35$ × 2 = 70$» · bitta bo'lsa «35$» · BUGUN287: kelishilgan bo'lsa « 🎟 (Store 50$)»
         if n is None:
             return '—'
+        if n == 0 and c > 0:   # 3295
+            return "🎁 Sovg'a" + (f' × {d}' if d > 1 else '') + f' (Store {c:g}$)'
         s = f'{n:g}$ × {d} = {round(n * d, 2):g}$' if d > 1 else f'{n:g}$'
         return s + (f' 🎟 (Store {round(n + c, 2):g}$)' if c > 0 else '')
     def _nom(e, m):   # 2011: tovar nomi — Store'dagi kartaga havola (Owner: «qaysi tovar ekanini bilishim uchun»)
@@ -8624,9 +8650,17 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     jami_s = 'Jami ' if (len(qatorlar) > 1 or donalar[0] > 1) else ''
     ogoh_s = ''.join(f"⚠️ №{html_escape(n)}: {_BUYURTMA_OGOH.get(o, o)}\n" for n, o in ogoh)
     tel_s = html_escape(tel) if tel else _BUYURTMA_TEL_YOQ
-    return (f"🛒 <b>Yangi buyurtma</b> №{html_escape(order)}\n\n"
+    if tasdiq:   # 3295: «\n\n✅ To'landi» — _buyurtma_holat_matn keyingi bosqichlarni shu qatorga ulaydi
+        holat_s = f"✅ <b>To'landi</b> · {_kk_vaqt(time.time())[-5:]} — 🎁 sovg'a, to'lov yo'q\n"
+    elif sovga:
+        holat_s = ("⏳ <b>To'lov kutilmoqda</b> — 🎁 sovg'a, lekin tekshiring (e'lon yopiq yoki dona havoladagidan ko'p). "
+                   "To'g'ri bo'lsa «✅ To'lov keldi» ni bosing.\n")
+    else:
+        holat_s = ("⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
+                   "kelmasa — telefon qiling.\n")
+    return (("🎁 <b>Sovg'a — yangi buyurtma</b>" if sovga else "🛒 <b>Yangi buyurtma</b>") + f" №{html_escape(order)}\n\n"
             + tovar +
-            f"💵 {jami_s}{html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n"
+            ("💵 🎁 <b>Sovg'a — 0$</b>\n" if sovga else f"💵 {jami_s}{html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n")
             + (f"🎟 <b>Admin chegirmasi: −{cheg_jami:g}$</b> (kelishilgan narx, havoladan)\n" if cheg_jami > 0 else '')
             + ("⚠️ Mijoz ulashilgan havoladan keldi, lekin havola o'qilmadi / muddati o'tgan — narx Store'dagicha.\n"
                if kel_ogoh else '') + ogoh_s +
@@ -8634,8 +8668,7 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
             f"👤 {html_escape(ism)}\n"
             f"📞 {tel_s}\n"
             f"📍 {_buyurtma_joy_matn(joy)}\n\n"
-            f"⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
-            f"kelmasa — telefon qiling.\n"
+            + holat_s +
             f"🕒 {_kk_vaqt(time.time())}")
 
 
@@ -8919,13 +8952,28 @@ def _chek_admin_tugma():
     return {'text': "✍️ Adminga yozish", 'url': f'https://t.me/{ADMIN_USERNAME}'}
 
 
-def _chek_buyurtma_matn(b):
-    o = html_escape(b.get('order', ''))
+def _chek_tovar_qator(b):
     qat = ''
     for i, x in enumerate(b.get('tovar') or [], 1):
         soni = x.get('soni') or 1
-        narx = '' if x.get('narx') is None else f" · {round(x['narx'] * soni, 2):g}$"
+        narx = '' if x.get('narx') is None else ' · 🎁' if x['narx'] == 0 else f" · {round(x['narx'] * soni, 2):g}$"
         qat += f"{i}. {html_escape(x.get('nom') or '—')}{f' × {soni}' if soni > 1 else ''}{narx}\n"
+    return qat
+
+
+def _chek_sovga_matn(b):
+    """3295: butun buyurtma sovg'a — to'lov tugmalari yo'q."""
+    o = html_escape(b.get('order', ''))
+    qat = _chek_tovar_qator(b)
+    return _chek_matn(
+        b.get('til'),
+        f"🎁 <b>Buyurtma №{o}</b> — sovg'a, to'lov kerak emas.\n\n{qat}\nAdmin tez orada siz bilan bog'lanadi.",
+        f"🎁 <b>Заказ №{o}</b> — подарок, оплата не нужна.\n\n{qat}\nАдмин скоро свяжется с вами.")
+
+
+def _chek_buyurtma_matn(b):
+    o = html_escape(b.get('order', ''))
+    qat = _chek_tovar_qator(b)
     jami = html_escape(_chek_summa_s(b))
     return _chek_matn(
         b.get('til'),
@@ -8963,19 +9011,25 @@ def _chek_buyurtmalar(uid):
 
 def _chek_mijozga_xabar(uid, order):
     """Buyurtma tushganda mijozga bitta xabar (har buyurtmaga bir marta: mijoz_xabar). /start bosmagan bo'lsa Telegram yubormaydi —
-    qayta urinilmaydi (saytdagi «To'landim» tugmasi botni ochadi va o'sha paytda xabar o'zi chiqadi)."""
+    qayta urinilmaydi (saytdagi «To'landim» tugmasi botni ochadi va o'sha paytda xabar o'zi chiqadi).
+    3295: sovg'a — to'lov tugmalarisiz xabar; tasdiqlangan bo'lsa shu yerda Store'ga $0 sotuv (mijoz xabari yetmasa ham)."""
     with _MIJOZ_LOCK:
         b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
-        if not b or b.get('mijoz_xabar') or b.get('holat') != 'kutilmoqda':
+        sovga = bool(b and b.get('sovga'))
+        if not b or b.get('mijoz_xabar') or (b.get('holat') != 'kutilmoqda' and not sovga):
             return None
         b['mijoz_xabar'] = 1
         _mijoz_saqlash()
         b = dict(b)
+    natija = None
     try:
-        return _chek_yubor(uid, _chek_buyurtma_matn(b), _chek_buyurtma_klava(b))
+        natija = _chek_yubor(uid, _chek_sovga_matn(b)) if sovga else _chek_yubor(uid, _chek_buyurtma_matn(b), _chek_buyurtma_klava(b))
     except Exception as e:
         logger.error(f'chek mijozga xabar: {type(e).__name__}')
-        return None
+    if sovga and b.get('holat') in _HOLAT_TASDIQ and not _sotuv_sheet_yoz(uid, b):
+        send_msg(ADMIN_ID, f"⚠️ №{html_escape(order)} (🎁 sovg'a): Store'ga sotuv yozuvi tushmadi — "
+                           f"«🚚 Yo'lda» bosilganda qayta yoziladi (takror yozilmaydi).")
+    return natija
 
 
 def _chek_belgi(uid, order, **maydon):
@@ -9367,7 +9421,28 @@ def _buyurtma_tayyorla(uid, num, order, ism, tel, joy, kurs, qolgan_nums=(), son
         qolgan.append((e, ms.get(str(e.get('specId', '') or ''), {})))
         bron.append(str(n))
     matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan, sonlar, ranglar, kel, kel_ogoh, ogoh, tel_ogoh)
-    return {'matn': matn, 'bron': bron}
+    t = {'matn': matn, 'bron': bron}
+    sovga, tasdiq = _sovga_holat([elon] + [e for e, _ in qolgan], sonlar, ranglar, kel, ogoh)
+    if sovga:   # 3295: yozuvga _buyurtma_sovga_qoy o'tkazadi
+        t.update(sovga=True, holat='tolandi' if tasdiq else 'kutilmoqda',
+                 tovar=_mijoz_tovarlar(num, qolgan_nums, sonlar, ranglar, kel))
+    return t
+
+
+def _buyurtma_sovga_qoy(uid, order, tayyor):
+    """3295: server hisobida butun buyurtma sovg'a → yozuvga belgi, server tovari va jami 0 (sayt zaxirasidan kelgan yozuvda — mijoz
+    yuborgan jami edi); tasdiq bo'lsa holat «to'landi». Takror chaqirish xavfsiz. Xabar yuborilishidan OLDIN — tugmalar shu holatda."""
+    if not (tayyor or {}).get('sovga'):
+        return
+    with _MIJOZ_LOCK:
+        b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+        if not b or b.get('sovga') or b.get('holat') != 'kutilmoqda':
+            return
+        b.update(sovga=True, jami=0, tovar=tayyor.get('tovar') or b.get('tovar'))
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+    if tayyor.get('holat') == 'tolandi':
+        _buyurtma_holat_qoy(uid, order, 'tolandi')
 
 
 def _buyurtma_xabar_belgila(uid, order, qiymat):
@@ -9385,7 +9460,7 @@ def _buyurtma_xabar_belgila(uid, order, qiymat):
 
 def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
     """Adminga buyurtma xabari — 3 urinish. HTML rad etilsa (400) — oddiy matn bilan. Yuborilsa — admin_xabar = vaqt. True/False."""
-    klava = _buyurtma_klava(uid, order, 'kutilmoqda', tayyor.get('bron') or [])
+    klava = _buyurtma_klava(uid, order, tayyor.get('holat') or 'kutilmoqda', tayyor.get('bron') or [])
     matn = tayyor['matn']
     for k in kutish:
         if k:
@@ -9499,6 +9574,7 @@ def _buyurtma_xabar_ish():
             if not t:
                 _buyurtma_xabar_belgila(uid, b.get('order'), '-')
                 continue
+            _buyurtma_sovga_qoy(uid, b.get('order'), t)   # 3295: sayt zaxirasidan kelgan sovg'a ham
             t = dict(t, matn=_BUYURTMA_QAYTA + t['matn'])
             if _buyurtma_xabar_yubor(uid, b.get('order'), t, kutish=(0, 3)):
                 yuborildi += 1
@@ -9676,6 +9752,7 @@ async def buyurtma_endpoint(request):
             nik = ((_init_data_user(data.get('initData', '')) or {}).get('username') or '')   # BUGUN275: sotuv yozuvi uchun
             await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
                                        _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor)
+            await loop.run_in_executor(None, _buyurtma_sovga_qoy, uid, order, tayyor)
             _BUYURTMA_KORILGAN[(uid, order)] = hozir
             yetdi, _ = await loop.run_in_executor(
                 None, functools.partial(_buyurtma_yubor, uid, num, order, ism, tel, joy, kurs, qolgan_nums, sonlar, ranglar, kel,
@@ -9683,6 +9760,7 @@ async def buyurtma_endpoint(request):
         finally:
             _BUYURTMA_JARAYON.discard((uid, order))
         # BUGUN296: mijozga botda buyurtma xabari (tarkib · jami · «💳 To'lash» · «🧾 To'landim») — fonda, javobni kutdirmaydi
+        # 3295: sovg'ada — to'lov tugmalarisiz, Store'ga $0 sotuv ham shu yerda
         loop.run_in_executor(None, _chek_mijozga_xabar, uid, order)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
