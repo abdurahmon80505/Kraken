@@ -8643,24 +8643,34 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
 # Holat faqat ALGA siljiydi: kutilmoqda → tolandi → yolda → yetkazildi (bosqichni o'tkazib yuborish mumkin: to'lov chekini ko'rmay
 # «Yo'lda» desa ham bo'ladi). «bekor» (mijoz bekor qilgan) — oxirgi holat: undan keyin tugmalar ish bermaydi. Holat Sheets'ga yoziladi
 # (Buyurtmalar varag'i), mijozga botda qisqa xabar (uz + ru), saytdagi «Buyurtmalarim» shu holatni ko'rsatadi.
-_HOLAT_TARTIB = ('kutilmoqda', 'tolandi', 'yolda', 'yetkazildi')
-_HOLAT_ADMIN = {'tolandi': ('✅', "To'lov keldi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi')}
+# 3288: «yopildi» — oxirgi bosqich (sharh qoldirildi yoki admin yopdi). «yetkazildi» = mijoz qo'liga tegdi («Qabul qilindi»).
+_HOLAT_TARTIB = ('kutilmoqda', 'tolandi', 'yolda', 'yetkazildi', 'yopildi')
+_HOLAT_ADMIN = {'tolandi': ('✅', "To'lov keldi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi'),
+                'yopildi': ('🔒', 'Yopish')}
+_HOLAT_TASDIQ = ('tolandi', 'yolda', 'yetkazildi', 'yopildi')   # BUGUN275: to'lov tasdiqlangan — Store'da «sotildi»
 _HOLAT_ADMIN_NOM = {'kutilmoqda': "⏳ To'lov kutilmoqda", 'tolandi': "✅ To'lov keldi", 'yolda': "🚚 Yo'lda",
-                    'yetkazildi': '📦 Yetkazildi', 'bekor': '❌ Mijoz bekor qilgan'}
+                    'yetkazildi': '📦 Yetkazildi', 'yopildi': '🔒 Yopildi', 'bekor': '❌ Mijoz bekor qilgan'}
 _HOLAT_MIJOZ = {   # mijozga xabar: (uz, ru) — {o} buyurtma raqami
     'tolandi': ("✅ <b>Buyurtma №{o}</b> — to'lovingiz qabul qilindi. Rahmat!",
                 "✅ <b>Заказ №{o}</b> — оплата получена. Спасибо!"),
-    'yolda': ("🚚 <b>Buyurtma №{o}</b> yo'lga chiqdi!",
-              "🚚 <b>Заказ №{o}</b> уже в пути!"),
-    'yetkazildi': ("📦 <b>Buyurtma №{o}</b> yetkazildi. Xaridingiz uchun rahmat!",
-                   "📦 <b>Заказ №{o}</b> доставлен. Спасибо за покупку!"),
+    'yolda': ("🚚 <b>Buyurtma №{o}</b> yo'lga chiqdi!\nQo'lingizga tekkach «✅ Qabul qilib oldim» ni bosing.",
+              "🚚 <b>Заказ №{o}</b> уже в пути!\nКогда получите — нажмите «✅ Получил»."),
+    'yetkazildi': ("📦 <b>Buyurtma №{o}</b> qabul qilindi. Xaridingiz uchun rahmat!\n⭐ Baho qoldiring — 1 daqiqa.",
+                   "📦 <b>Заказ №{o}</b> получен. Спасибо за покупку!\n⭐ Оставьте отзыв — 1 минута."),
+    'yopildi': ("🔒 <b>Buyurtma №{o}</b> yopildi. Rahmat!",
+                "🔒 <b>Заказ №{o}</b> закрыт. Спасибо!"),
+}
+_HOLAT_MIJOZ_TUGMA = {   # 3288: xabar tagidagi tugma — sayt «Buyurtmalarim» (qabul / sharh shu yerda)
+    'yolda': ("📦 Buyurtmalarim", "📦 Мои заказы"),
+    'yetkazildi': ("⭐ Baho qoldirish", "⭐ Оставить отзыв"),
 }
 
 
 # BUGUN295: buyurtma xabaridagi holat qatori — admin tugma bosganda xabar MATNI ham o'zgaradi (ilgari faqat tugmalar o'zgarib,
 # «⏳ To'lov kutilmoqda — chek hali kelmagan…» qolib ketardi). Bosqichlar ketma-ket: «✅ To'landi · 20:31 → 🚚 Yo'lda · 21:05».
-_HOLAT_QATOR = {'tolandi': ('✅', "To'landi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi')}
-_HOLAT_QATOR_RE = re.compile("\n\n(?:⏳ To'lov kutilmoqda|✅ To'landi|🚚 Yo'lda|📦 Yetkazildi)")
+_HOLAT_QATOR = {'tolandi': ('✅', "To'landi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi'),
+                'yopildi': ('🔒', 'Yopildi')}
+_HOLAT_QATOR_RE = re.compile("\n\n(?:⏳ To'lov kutilmoqda|✅ To'landi|🚚 Yo'lda|📦 Yetkazildi|🔒 Yopildi)")
 _BUYURTMA_VAQT_RE = re.compile(r'🕒 (?:Buyurtma: )?(\d\d\.\d\d\.\d{4} \d\d:\d\d)')
 
 
@@ -8731,18 +8741,39 @@ def _buyurtma_holat_qoy(uid, order, yangi):
             return 'eski', dict(b)
         b['holat'] = yangi
         b['holat_ts'] = time.time()
+        if yangi in ('yetkazildi', 'yopildi'):   # 3288: bot tugmasi — admin bosdi
+            y = dict(b.get('yetkaz') or {})
+            y.setdefault('qabul_kim' if yangi == 'yetkazildi' else 'yop_kim', 'admin')
+            y.setdefault('qabul_ts' if yangi == 'yetkazildi' else 'yop_ts', b['holat_ts'])
+            b['yetkaz'] = y
         _mijoz_saqlash()
         _mijoz_sync_belgila('b', uid, order)
         return 'ok', dict(b)
 
 
-def _buyurtma_mijozga(uid, b, yangi):
-    """Mijozga botda qisqa xabar. Til — buyurtma berilganda Telegram'dan olingan; bilinmasa ikkalasi. (natija) 'yuborildi' | boshqa."""
+def _mijoz_matn_klava(b, yangi, havola=''):
+    """(matn, reply_markup | None) — mijozga holat xabari. Til — buyurtma berilganda Telegram'dan olingan; bilinmasa ikkalasi.
+    3288: «yolda» / «yetkazildi» tagida sayt «Buyurtmalarim» tugmasi; havola — yetkazish isboti (Yandex …)."""
     uz, ru = _HOLAT_MIJOZ[yangi]
     o = html_escape(b.get('order', ''))
     til = b.get('til')
     matn = uz.format(o=o) if til == 'uz' else ru.format(o=o) if til == 'ru' else uz.format(o=o) + '\n\n' + ru.format(o=o)
-    natija, _ = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML'}, urinish=2)
+    qator = []
+    if havola:
+        qator.append([{'text': "🔗 Yetkazishni kuzatish" if til == 'uz' else "🔗 Отследить доставку" if til == 'ru'
+                       else "🔗 Kuzatish / Отследить", 'url': havola}])
+    if yangi in _HOLAT_MIJOZ_TUGMA:
+        tu, tr = _HOLAT_MIJOZ_TUGMA[yangi]
+        qator.append([{'text': tu if til == 'uz' else tr if til == 'ru' else f'{tu} / {tr[2:]}',
+                       'url': f'https://t.me/{BOT_USERNAME}?startapp=buyurtma'}])
+    return matn, ({'inline_keyboard': qator} if qator else None)
+
+
+def _buyurtma_mijozga(uid, b, yangi, havola=''):
+    """Mijozga botda qisqa xabar. (natija) 'yuborildi' | boshqa."""
+    matn, klava = _mijoz_matn_klava(b, yangi, havola)
+    natija, _ = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML',
+                                       **({'reply_markup': klava} if klava else {})}, urinish=2)
     return natija
 
 
@@ -8814,7 +8845,7 @@ async def buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar=None):
                                               f"(botni to'xtatgan bo'lishi mumkin). «Mijozga yozish» orqali o'zingiz yozing.")
         # BUGUN275: tasdiqlangan (to'langan / yo'lda / yetkazilgan) buyurtma → Store'ga sotuv yozuvi, e'lonlar «sotildi».
         # 'eski' ham — bir xil tugma qayta bosilsa Store'ga yozish qayta uriniladi (Store takror yozmaydi).
-        if kod in ('ok', 'eski') and b and b.get('holat') in ('tolandi', 'yolda', 'yetkazildi'):
+        if kod in ('ok', 'eski') and b and b.get('holat') in _HOLAT_TASDIQ:
             if not await blok(_sotuv_sheet_yoz, uid, b):
                 await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: Store'ga sotuv yozuvi tushmadi — "
                                               f"tugmani qayta bosing (takror yozilmaydi).")
@@ -9733,6 +9764,7 @@ def _buyurtma_sheet_dict(uid, b):
             'holat_ts': b.get('holat_ts'), 'bekor_ts': b.get('bekor_ts'), 'jami': b.get('jami'), 'tur': b.get('tur', ''),
             'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''), 'admin_xabar': b.get('admin_xabar') or None, 'chek': b.get('chek') or '',
             'chek_ts': b.get('chek_ts'), 'chek_esl': b.get('chek_esl') or '',   # BUGUN305
+            'yetkaz': json.dumps(b['yetkaz'], ensure_ascii=False) if b.get('yetkaz') else '',   # 3288
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in (b.get('tovar') or [])]}
 
 
@@ -9804,6 +9836,14 @@ def _mijoz_sheet_birlash(j):
             if 'chek_ts' in b:   # BUGUN305: «To'landim» vaqti va eslatma belgisi — bot qayta yonsa ham qoladi
                 yozuv['chek_ts'] = b.get('chek_ts')
                 yozuv['chek_esl'] = b.get('chek_esl') or ''
+            if 'yetkaz' in b:   # 3288: isbot / qabul / sharh (JSON matn yoki dict); buzuq — botdagi qiymat saqlanadi
+                y = b.get('yetkaz') or {}
+                try:
+                    y = json.loads(y) if isinstance(y, str) and y else y
+                except ValueError:
+                    y = None
+                if isinstance(y, dict):
+                    yozuv['yetkaz'] = y
             i = next((n for n, x in enumerate(m['buyurtma']) if x.get('order') == order), -1)
             if i >= 0:
                 m['buyurtma'][i] = dict(m['buyurtma'][i], **yozuv)   # BUGUN295: faqat botdagi (nik, joy, _xabar) saqlanadi
@@ -9970,6 +10010,7 @@ async def mijoz_holat_endpoint(request):
             tels = _mijoz_tels_javob(m)
             buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
                          'tur': b.get('tur', ''), 'chek': b.get('chek') or '',   # 3259: chek holati (HH:MM · 'kut' · '')
+                         'yetkaz': _yetkaz_javob(b),   # 3288: isbot · qabul · sharh
                          'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
                                    for x in (b.get('tovar') or [])]}
                         for b in m['buyurtma']]
@@ -10102,6 +10143,296 @@ async def buyurtma_bekor_endpoint(request):
         return web.json_response({'ok': True, 'holat': 'bekor'})
     except Exception as e:
         logger.error(f'buyurtma_bekor_endpoint: {e}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+# ══ 3288: yetkazish — 🚚 Yo'lga chiqdi (isbot) → 📦 Qabul qilindi → ⭐ Sharh → 🔒 Yopildi ══
+# Owner 2026-10-30: admin yetkazishga borgach chek rasmini yoki Yandex havolasini saytga yuklaydi → «Yo'lga chiqdi», mijozga
+# boradi; mijoz «✅ Qabul qilib oldim» ni bosadi (unutsa — admin o'zi); so'ng sharh qoldiradi → buyurtma yopiladi (yoki admin
+# yopadi). Yozuvda 'yetkaz' (dict): isbot {tur 'rasm' (fid — Telegram file_id) | 'havola' (url), ts} · qabul_kim 'mijoz' |
+# 'admin' · qabul_ts · sharh {baho 1–5, matn, ts} · yop_kim · yop_ts. Sheets «yetkaz» ustuni — JSON. To'lov / chek mantiqi bu
+# yerda o'zgarmaydi. 3262 (sharh / baho) shu /buyurtma_sharh ni ishlatadi.
+_YETKAZ_AMAL = {'isbot': 'yolda', 'qabul': 'yetkazildi', 'yop': 'yopildi', 'sharh': 'yopildi'}
+_SHARH_MATN_MAX = 500
+_ISBOT_HAVOLA_RE = re.compile(r'https://[^\s<>"\']{3,500}')
+_ISBOT_RASM_MAX = 5 * 1024 * 1024
+_ADMIN_BUYURTMA_MAX = 300   # admin ro'yxatida oxirgi buyurtmalar
+
+
+def _yetkaz_javob(b):
+    """Saytga: isbot (tur, url / rasm bor) · qabul_kim · qabul_ts · sharh · yop_kim. file_id tashqariga chiqmaydi."""
+    y = b.get('yetkaz') or {}
+    r = {}
+    i = y.get('isbot') or {}
+    if i.get('tur') == 'havola' and i.get('url'):
+        r['isbot'] = {'tur': 'havola', 'url': i['url'], 'ts': i.get('ts')}
+    elif i.get('tur') == 'rasm' and i.get('fid'):
+        r['isbot'] = {'tur': 'rasm', 'ts': i.get('ts')}
+    if y.get('qabul_kim'):
+        r['qabul_kim'], r['qabul_ts'] = y['qabul_kim'], y.get('qabul_ts')
+    if isinstance(y.get('sharh'), dict):
+        s = y['sharh']
+        r['sharh'] = {'baho': s.get('baho'), 'matn': s.get('matn') or '', 'ts': s.get('ts')}
+    if y.get('yop_kim'):
+        r['yop_kim'] = y['yop_kim']
+    return r
+
+
+def _buyurtma_yetkaz(uid, order, amal, kim, isbot=None, sharh=None):
+    """Bitta qulf ostida bosqichni yozadi. amal: 'isbot' (→ yolda; qayta yuklansa — almashadi) · 'qabul' (→ yetkazildi) ·
+    'yop' (→ yopildi) · 'sharh' (→ yopildi; admin yopgan bo'lsa ham sharh yoziladi). kim: 'mijoz' | 'admin'.
+    Mijoz faqat «yolda» dan qabul qila oladi, sharh — qabul qilingandan keyin. Admin oldinga suradi (bot tugmalari kabi).
+    Qaytaradi (kod, nusxa): 'ok' · 'eski' (allaqachon) · 'erta' (bosqich hali emas) · 'bekor' · 'topilmadi'."""
+    yangi = _YETKAZ_AMAL[amal]
+    with _MIJOZ_LOCK:
+        b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+        if not b:
+            return 'topilmadi', None
+        if b.get('holat') == 'bekor':
+            return 'bekor', dict(b)
+        eski = b.get('holat') if b.get('holat') in _HOLAT_TARTIB else 'kutilmoqda'
+        i, j = _HOLAT_TARTIB.index(eski), _HOLAT_TARTIB.index(yangi)
+        y = dict(b.get('yetkaz') or {})
+        hozir = time.time()
+        if amal == 'isbot':
+            if i > j:
+                return 'eski', dict(b)
+            y['isbot'] = dict(isbot, ts=hozir)
+        elif amal == 'qabul':
+            if i >= j:
+                return 'eski', dict(b)
+            if kim == 'mijoz' and eski != 'yolda':
+                return 'erta', dict(b)
+            y['qabul_kim'], y['qabul_ts'] = kim, hozir
+        elif amal == 'sharh':
+            if y.get('sharh'):
+                return 'eski', dict(b)
+            if i < _HOLAT_TARTIB.index('yetkazildi'):
+                return 'erta', dict(b)
+            y['sharh'] = dict(sharh, ts=hozir)
+        else:
+            if i >= j:
+                return 'eski', dict(b)
+            y['yop_kim'], y['yop_ts'] = kim, hozir
+        b['yetkaz'] = y
+        if j > i:
+            b['holat'], b['holat_ts'] = yangi, hozir
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+        return 'ok', dict(b)
+
+
+def _yetkaz_adminga(uid, b, amal):
+    """Fon oqimida: mijoz qabul qildi / sharh qoldirdi — adminga qisqa xabar."""
+    try:
+        o = html_escape(b.get('order', ''))
+        kim = f"👤 {html_escape(b.get('ism', '') or '—')}"
+        if amal == 'qabul':
+            matn = f"📦 <b>Mijoz qabul qildi</b> №{o}\n{kim}"
+        else:
+            s = (b.get('yetkaz') or {}).get('sharh') or {}
+            baho = int(s.get('baho') or 0)
+            izoh = f"«{html_escape(s.get('matn'))}»\n" if s.get('matn') else ''
+            matn = f"⭐ <b>Sharh</b> №{o} — {'★' * baho}{'☆' * (5 - baho)}\n{izoh}{kim}\n🔒 Buyurtma yopildi"
+        _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': {
+            'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]}}, urinish=2)
+    except Exception as e:
+        logger.error(f'yetkaz adminga: {type(e).__name__}')
+
+
+def _isbot_rasm_yubor(uid, b, rasm):
+    """Isbot rasmi → mijozning bot chatiga (caption — «yo'lga chiqdi» + tugma). Mijozga bormasa (botni to'xtatgan) — adminning
+    o'ziga: file_id baribir kerak (sayt rasmni shu orqali ko'rsatadi). Qaytaradi (mijozga natija, file_id | '')."""
+    matn, klava = _mijoz_matn_klava(b, 'yolda')
+    natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': matn, 'parse_mode': 'HTML',
+                                     **({'reply_markup': klava} if klava else {})},
+                       files={'photo': ('isbot.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
+    if natija != 'yuborildi':
+        _, j = _kk_tg('sendPhoto', {'chat_id': ADMIN_ID, 'caption': f"🚚 №{html_escape(b.get('order', ''))} — yetkazish "
+                                    f"isboti (mijozga bormadi)"},
+                      files={'photo': ('isbot.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
+    r = (j or {}).get('result') or {}
+    return natija, ((r.get('photo') or [{}])[-1]).get('file_id') or ''
+
+
+def _isbot_rasm_ol(fid):
+    """Telegram'dan isbot rasmi baytlari ('' — olinmadi). URL'da token bor — u faqat shu yerda ishlatiladi."""
+    url = tg_file_url(fid)
+    if not url:
+        return b''
+    try:
+        r = req.get(url, timeout=20)
+    except Exception as e:
+        logger.error(f'isbot rasm: {type(e).__name__}')
+        return b''
+    return r.content if r.status_code == 200 and 0 < len(r.content or b'') <= _ISBOT_RASM_MAX else b''
+
+
+def _order_ol(x):
+    o = str(x or '').strip().upper()
+    return o if re.fullmatch(r'[A-Z0-9]{4,12}', o) else ''
+
+
+async def buyurtma_qabul_endpoint(request):
+    """3288: mijoz «✅ Qabul qilib oldim». {initData, order}. Faqat o'z buyurtmasi, faqat «yolda» holatida (409).
+    Takror bosish — zarari yo'q. Adminga fonda «📦 Mijoz qabul qildi»."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        order = _order_ol(data.get('order'))
+        if not order:
+            return web.json_response({'error': 'order'}, status=400)
+        kod, b = _buyurtma_yetkaz(uid, order, 'qabul', 'mijoz')
+        if kod == 'topilmadi':
+            return web.json_response({'error': 'Topilmadi'}, status=404)
+        if kod in ('bekor', 'erta'):
+            return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
+        if kod == 'ok':
+            asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'qabul')
+        return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
+    except Exception as e:
+        logger.error(f'buyurtma_qabul_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def buyurtma_sharh_endpoint(request):
+    """3288: mijoz sharhi — {initData, order, baho 1–5, matn ≤ 500}. Qabul qilingandan keyin (409); buyurtma «yopildi» bo'ladi.
+    Bitta buyurtmaga bitta sharh (takror — eskisi qoladi). Adminga fonda «⭐ Sharh». 3262 (sharh / baho) shu yo'lni ishlatadi."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        order = _order_ol(data.get('order'))
+        try:
+            baho = int(data.get('baho'))
+        except (TypeError, ValueError):
+            baho = 0
+        if not order or not 1 <= baho <= 5:
+            return web.json_response({'error': 'order' if not order else 'baho'}, status=400)
+        matn = re.sub(r'\s+', ' ', str(data.get('matn') or '')).strip()[:_SHARH_MATN_MAX]
+        kod, b = _buyurtma_yetkaz(uid, order, 'sharh', 'mijoz', sharh={'baho': baho, 'matn': matn})
+        if kod == 'topilmadi':
+            return web.json_response({'error': 'Topilmadi'}, status=404)
+        if kod in ('bekor', 'erta'):
+            return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
+        if kod == 'ok':
+            asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'sharh')
+        return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
+    except Exception as e:
+        logger.error(f'buyurtma_sharh_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def isbot_rasm_endpoint(request):
+    """3288: isbot rasmi (JPEG baytlari) — faqat buyurtma egasiga yoki adminga. {initData, order[, uid — admin uchun]}.
+    Rasm Telegram'dan shu yerda olinadi — token saytga chiqmaydi; sayt blob URL qilib ko'rsatadi."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid:
+            return web.json_response({'error': 'Imzo notogri'}, status=401)
+        order = _order_ol(data.get('order'))
+        if not order:
+            return web.json_response({'error': 'order'}, status=400)
+        if uid == ADMIN_ID and str(data.get('uid') or '').isdigit():
+            uid = int(data['uid'])
+        with _MIJOZ_LOCK:
+            b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+            i = ((b or {}).get('yetkaz') or {}).get('isbot') or {}
+            fid = i.get('fid') if i.get('tur') == 'rasm' else ''
+        if not fid:
+            return web.json_response({'error': 'Topilmadi'}, status=404)
+        rasm = await blok(_isbot_rasm_ol, fid)
+        if not rasm:
+            return web.json_response({'error': 'telegram'}, status=502)
+        return web.Response(body=rasm, content_type='image/jpeg', headers={'Cache-Control': 'private, max-age=3600'})
+    except Exception as e:
+        logger.error(f'isbot_rasm_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def admin_buyurtmalar_endpoint(request):
+    """3288: admin — hamma mijozlarning buyurtmalari (yangisi tepada, ≤ 300): bosqich, ism / nik / tel, jami, tovar, yetkaz.
+    {initData}; FAQAT ADMIN_ID (401)."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        with _MIJOZ_LOCK:
+            r = [{'uid': u, 'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'holat_ts': b.get('holat_ts'),
+                  'jami': b.get('jami'), 'tur': b.get('tur', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''),
+                  'nik': b.get('nik', ''), 'chek': b.get('chek') or '', 'yetkaz': _yetkaz_javob(b),
+                  'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
+                            for x in (b.get('tovar') or [])]}
+                 for u, m in _MIJOZ.items() for b in m['buyurtma']]
+        r.sort(key=lambda x: x.get('ts') or 0, reverse=True)
+        return web.json_response({'ok': True, 'buyurtma': r[:_ADMIN_BUYURTMA_MAX]})
+    except Exception as e:
+        logger.error(f'admin_buyurtmalar_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def admin_buyurtma_endpoint(request):
+    """3288: admin saytdan bosqichni suradi. multipart: initData (FAQAT ADMIN_ID), uid, order, amal —
+    'isbot' (rasm — JPEG ≤ 900 KB, yoki havola — https) → «yolda», mijozga rasm / havola bilan xabar ·
+    'qabul' → «yetkazildi» (qabul_kim 'admin') · 'yop' → «yopildi». Mijozga xabar ketadi; tasdiqlangan buyurtma — Store'ga
+    sotuv yozuvi (fonda, takror yozilmaydi — bot tugmasi bilan bir xil). Javob: {ok, holat, mijozga, takror, yetkaz}."""
+    try:
+        try:
+            form = await request.post()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({'error': 'katta'}, status=413)
+        if check_init_data(str(form.get('initData') or '')) != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        mid, order, amal = str(form.get('uid') or '').strip(), _order_ol(form.get('order')), str(form.get('amal') or '')
+        if not mid.isdigit() or not order or amal not in ('isbot', 'qabul', 'yop'):
+            return web.json_response({'error': 'parametr'}, status=400)
+        mid = int(mid)
+        natija = ''
+        if amal == 'isbot':
+            havola = str(form.get('havola') or '').strip()
+            f = form.get('rasm')
+            rasm = f.file.read(_CHEK_ILOVA_MAX + 1) if hasattr(f, 'file') else b''
+            if rasm and (len(rasm) > _CHEK_ILOVA_MAX or rasm[:3] != bytes((0xFF, 0xD8, 0xFF))):
+                return web.json_response({'error': 'katta' if len(rasm) > _CHEK_ILOVA_MAX else 'rasm'}, status=400)
+            if not rasm and not _ISBOT_HAVOLA_RE.fullmatch(havola):
+                return web.json_response({'error': 'havola'}, status=400)
+            with _MIJOZ_LOCK:   # rasm Telegram'ga ketishidan oldin — bosqich to'g'rimi
+                b = next((x for x in _mijoz_ol(mid)['buyurtma'] if x.get('order') == order), None)
+                b = dict(b) if b else None
+            if not b:
+                return web.json_response({'error': 'Topilmadi'}, status=404)
+            if b.get('holat') == 'bekor' or b.get('holat') in ('yetkazildi', 'yopildi'):
+                return web.json_response({'error': 'bekor' if b.get('holat') == 'bekor' else 'eski', 'holat': b.get('holat')},
+                                         status=409)
+            if rasm:
+                natija, fid = await blok(_isbot_rasm_yubor, mid, b, rasm)
+                if not fid:
+                    return web.json_response({'error': 'telegram'}, status=502)
+                isbot = {'tur': 'rasm', 'fid': fid}
+            else:
+                isbot = {'tur': 'havola', 'url': havola}
+            kod, b = _buyurtma_yetkaz(mid, order, 'isbot', 'admin', isbot=isbot)
+            if kod == 'ok' and not rasm:
+                natija = await blok(_buyurtma_mijozga, mid, b, 'yolda', havola)
+        else:
+            kod, b = _buyurtma_yetkaz(mid, order, amal, 'admin')
+            if kod == 'ok':
+                natija = await blok(_buyurtma_mijozga, mid, b, b.get('holat'))
+        if kod == 'topilmadi':
+            return web.json_response({'error': 'Topilmadi'}, status=404)
+        if kod in ('bekor', 'erta') or (kod == 'eski' and amal == 'isbot'):
+            return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
+        if b.get('holat') in _HOLAT_TASDIQ:
+            asyncio.get_event_loop().run_in_executor(None, _sotuv_sheet_yoz, mid, b)
+        return web.json_response({'ok': True, 'holat': b.get('holat'), 'mijozga': natija == 'yuborildi',
+                                  'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
+    except Exception as e:
+        logger.error(f'admin_buyurtma_endpoint: {type(e).__name__}')
         return web.json_response({'error': 'xato'}, status=500)
 
 
@@ -10396,6 +10727,11 @@ async def main():
     app.router.add_post('/chek_yukla', chek_yukla_endpoint)   # 3259: «Buyurtmalarim» dan chek rasmi → bot chati → adminga (bot yo'li bilan bir xil)
     app.router.add_post('/mijoz_tel', mijoz_tel_endpoint)       # BUGUN271: profil — yetkazish raqamini o'zgartirish
     app.router.add_post('/buyurtma_bekor', buyurtma_bekor_endpoint)   # BUGUN225: mijoz buyurtmani bekor qildi
+    app.router.add_post('/buyurtma_qabul', buyurtma_qabul_endpoint)   # 3288: mijoz «✅ Qabul qilib oldim»
+    app.router.add_post('/buyurtma_sharh', buyurtma_sharh_endpoint)   # 3288: sharh / baho → «yopildi» (3262 ham shu)
+    app.router.add_post('/isbot_rasm', isbot_rasm_endpoint)           # 3288: yetkazish isboti rasmi (egasi / admin)
+    app.router.add_post('/admin_buyurtmalar', admin_buyurtmalar_endpoint)   # 3288: admin — buyurtmalar ro'yxati
+    app.router.add_post('/admin_buyurtma', admin_buyurtma_endpoint)   # 3288: admin — isbot · qabul · yopish
     app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
