@@ -1663,9 +1663,57 @@ def elon_nomi(elon, model, lang='uz'):
     return own or model_display_name(model, lang)
 
 
-def mos_line(model, models_by_id, lang='uz'):
-    """«Mos: …» qatori — faqat modelda `mos` bo'lsa (aksessuar/g'ilof/zapchast)."""
-    if not model or not parse_mos(model.get('mos')):
+def _model_shakllar(nom):
+    """«Google Pixel 7» → ['google pixel 7', 'pixel 7']: nom e'londa brend bilan ham, brendsiz ham yozilishi mumkin."""
+    w = str(nom or '').lower().split()
+    return [' '.join(x) for x in ([w, w[1:]] if len(w) > 2 else [w]) if x]
+
+
+def _nom_qismlari(nom):
+    """«Pixel 10 / 10 Pro uchun» → ['pixel 10', 'pixel 10 pro uchun']: «/» yoki verguldan keyingi qisqa yozuvga nom boshi qo'shiladi."""
+    qismlar = []
+    for q in re.split(r'[/,]', ' '.join(str(nom or '').lower().split())):
+        q = q.strip()
+        bosh = re.findall(r'([^\W\d]+) \d', qismlar[-1]) if qismlar and q[:1].isdigit() else []
+        qismlar.append(f'{bosh[-1]} {q}' if bosh else q)
+    return qismlar
+
+
+def _soz_re(s):
+    return r'(?<!\w)' + re.escape(s) + r'(?!\w)'
+
+
+def mos_nomda(nom, keys, models_by_id, lang='uz'):
+    """3297 (Owner): hamma mos model e'lon nomida bormi — bor bo'lsa «Mos:» qatori ortiqcha.
+    Faqat aniq model: seriya / tur nomda deb hisoblanmaydi. «Pixel 7» nomi «Pixel 7 Pro» ni o'z ichiga olmaydi —
+    shu turdagi uzunroq model nomi avval olib tashlanadi. Sayt mosNomda bilan bir xil."""
+    series = _ELON_CACHE['series']
+    kodlar = parse_mos(keys)
+    if not kodlar or any(_mos_kind(k, models_by_id, series) != 'model' for k in kodlar):
+        return False
+
+    def tur(m):
+        return ser_type(next((x for x in series if str(x.get('key')) == str(m.get('series'))), None))
+
+    for k in kodlar:
+        shakl = _model_shakllar(model_display_name(models_by_id[k], lang))
+        uzun = {u for m in models_by_id.values() if tur(m) == tur(models_by_id[k])
+                for u in _model_shakllar(model_display_name(m, lang)) if any(u.startswith(s + ' ') for s in shakl)}
+        uzun = sorted(uzun, key=len, reverse=True)
+        for qism in _nom_qismlari(nom):
+            for u in uzun:
+                qism = re.sub(_soz_re(u), ' ', qism)
+            if any(re.search(_soz_re(s), qism) for s in shakl):
+                break
+        else:
+            return False
+    return True
+
+
+def mos_line(model, models_by_id, lang='uz', nom=''):
+    """«Mos: …» qatori — faqat modelda `mos` bo'lsa (aksessuar/g'ilof/zapchast). nom — e'londa ko'rinadigan nom:
+    hamma mos model unda bor bo'lsa — bo'sh (3297)."""
+    if not model or not parse_mos(model.get('mos')) or mos_nomda(nom, model.get('mos'), models_by_id, lang):
         return ''
     return ('Mos: ' if lang == 'uz' else 'Подходит: ') + mos_label(model.get('mos'), models_by_id, None, lang)
 
@@ -1693,7 +1741,7 @@ def build_elon(item, models_by_id):
     spec_ru = model.get('specRu', '') or ''
     # BUGUN17 §1: nom yozilganidek — brend oldiga QO'SHILMAYDI (e'lonning o'z nomi, bo'sh bo'lsa model nomi)
     name_uz = elon_nomi(item, model, 'uz')
-    mos_txt = mos_line(model, models_by_id, 'uz')
+    mos_txt = mos_line(model, models_by_id, 'uz', name_uz)
     izoh_txt = izoh_matni(item, 'uz')   # G12 K2
 
     cond_uz, cond_ru, cond_emoji = holati_matni(cond, cycle)
@@ -2002,7 +2050,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     num = int(float(elon.get('num', 0) or 0))
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), yozilganidek (BUGUN17)
-    mos_txt = html_escape(mos_line(model, models_by_id, 'uz'))
+    mos_txt = html_escape(mos_line(model, models_by_id, 'uz', elon_nomi(elon, model, 'uz')))
     izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
     storage = html_escape(elon_qavs(elon))   # BUGUN260-7: xotira + xususiyat («MagSafe, Stand»)
     color = html_escape(clean_color(elon.get('color') or ''))
@@ -2332,12 +2380,24 @@ def soni_val(elon):
         return 0
 
 
+def oxirgi_mi(elon):
+    """Soni 1 va avval sotilgan bor — ko'p donadan oxirgisi qolgan."""
+    try:
+        return soni_val(elon) == 1 and int(float(str(elon.get('sotilgan') or 0).strip())) > 0
+    except Exception:
+        return False
+
+
 def soni_qatori(elon):
-    """Postdagi qoldiq qatori: «📦 5 dona bor» / «📦 Oxirgi 1 ta»; bitta tovar yoki 0 — bo'sh."""
+    """Postdagi qoldiq qatori: «📦 5 dona bor» / «📦 Oxirgi 1 ta»; bitta tovar yoki 0 — bo'sh.
+    3297 (Owner): «Oxirgi» — faqat ko'p dona bo'lib 1 ta qolganda; belgi — `sotilgan` > 0 (qoldiq 1 + sotilgan ≥ 1 ⇒ boshida ≥ 2).
+    1 talik tovarda soni=1 turadi (admin formasi sukuti) — u qoldiq emas. Sayt oxirgiMi bilan bir xil."""
     n = soni_val(elon)
     if n is None or n == 0:
         return ''
-    return '📦 Oxirgi 1 ta / Последний' if n == 1 else f'📦 {n} dona bor / {n} шт.'
+    if n == 1:
+        return '📦 Oxirgi 1 ta / Последний' if oxirgi_mi(elon) else ''
+    return f'📦 {n} dona bor / {n} шт.'
 
 
 def _sheets_update(payload):
