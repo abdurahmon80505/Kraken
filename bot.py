@@ -542,13 +542,6 @@ _ELON_CACHE = {'by_num': {}, 'models': {}, 'series': [], 'turkumlar': [], 'time'
 ELON_CACHE_MAX_AGE = 24 * 3600
 _elon_cache_lock = threading.Lock()
 
-CONDITION_TXT = {
-    'new':     ("Yangi (Karobka)", "Новый (Коробка)"),
-    'openbox': ("Openbox (Ochilgan)", "Openbox (Вскрыт)"),
-    'used':    ("Ishlatilgan", "Б.у"),
-}
-
-
 async def blok(fn, *args, **kwargs):
     """Bloklaydigan (sinxron `requests`) funksiyani ALOHIDA IPDA bajaradi (E1).
 
@@ -597,7 +590,6 @@ def clean_color(color):
     """'Obsidian Black (Qora)' -> 'Obsidian Black' (qavsni olib tashlaydi)."""
     if not color:
         return ''
-    import re
     return re.sub(r'\s*\([^)]*\)', '', str(color)).strip()
 
 
@@ -720,7 +712,7 @@ def holati_matni(cond, cycle):
     if cond == 'new':
         return ("Yangi ochilmagan!", "Новое запечатанное!", "📦")
     if cond == 'openbox':
-        return (f"Yengi Openbox!{sikl_uz}", f"Новое Опенбокс!{sikl_ru}", "📦")
+        return (f"Yangi Openbox!{sikl_uz}", f"Новое Опенбокс!{sikl_ru}", "📦")   # epaqa: «Yengi» → «Yangi» (imlo)
     # used
     return (f"Ishlatilgan{sikl_uz}", f"Б.у{sikl_ru}", "🔸")
 
@@ -4338,6 +4330,10 @@ async def send_new_elons(chat_id, text):
 
     if not nums:
         _last_sent['num'] = max_num
+    # Epaqa: natija adminga — ilgari `sent` sanalardi, lekin aytilmasdi (bir qismi ketmasa ham jim tugardi)
+    await blok(send_msg, chat_id, f"✅ {sent} ta e'lon yuborildi"
+                                  + (f", ⚠️ {len(targets) - sent} tasi ketmadi" if sent < len(targets) else '')
+                                  + (f" · oxirgi: #{_last_sent['num']}" if not nums else ''))
 
 
 def is_member(user_id):
@@ -4891,7 +4887,7 @@ def _kk_maglub_xabari(prize, win_text):
         f"🎁 <b>{html_escape(prize)}</b> konkursi yakunlandi!\n\n"
         f"🏆 <b>G'oliblar / Победители:</b>\n{win_text}\n\n"
         f"🎁 Ammo sizga <b>10$lik vaucher</b> sovg'a qilamiz!\n"
-        f"istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
+        f"Istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"   # epaqa: gap bosh harf bilan
         f"❗️Vaucher faqat 1 kun davomida amal qiladi.\n\n"
         f"🎁 Но мы дарим вам <b>ваучер на 10$</b>!\n"
         f"Выберите любой смартфон и получите скидку 10$ на покупку. 🛒\n"
@@ -5824,25 +5820,8 @@ async def rebrend_buyruq(chat_id, text):
         await _kk_admin(f"⚠️ {html_escape(b)}: kutilmagan xato ({type(e).__name__})", chat_id)
 
 
-def save_participant(konkurs_id, user_id, username, phone, ism=''):
-    if not SHEET_URL:
-        return None
-    try:
-        data = json.dumps({
-            'konkurs_id': str(konkurs_id),
-            'user_id': str(user_id),
-            'username': username or '',
-            'ism': ism or '',
-            'phone': str(phone),
-        }, ensure_ascii=False)
-        r = req.get(
-            f"{SHEET_URL}?action=joinKonkurs&callback=d&data={urllib.parse.quote(data)}",
-            timeout=12)
-        text = r.text.strip()
-        return json.loads(text[2:-1]) if text.startswith('d(') else r.json()
-    except Exception as e:
-        logger.error(f'save_participant: {e}')
-        return None
+# (save_participant olib tashlandi — epaqa: hech qayerda chaqirilmasdi; qatnashish — _kk_qatnash_yoz, kalit bilan, BUGUN125)
+
 
 def get_participants(konkurs_id):
     """Konkurs ishtirokchilari (telefon raqami bilan) — FAQAT API_KEY bilan.
@@ -7487,6 +7466,18 @@ async def webhook(request):
     return web.json_response({'ok': True})
 
 
+def _cq_toast(cq_data):
+    """answerCallbackQuery matni ('' — toast yo'q). Ishlovchisi ATAYLAB yo'q tugmalar bosilganda — nega hech narsa bo'lmagani.
+    Epaqa: «🧪 NAMUNA» xabaridagi tugmalar (callback «namuna», 3214.1) bosilsa jim edi — endi tushuntiriladi."""
+    if cq_data == 'bh:-':
+        return "✔️ Bu bosqich bajarilgan — holat xabar matnida"
+    if not KOLLAJ_YOQIQ and cq_data.startswith(('kollaj:', 'kg:')):
+        return "🖼 Kollaj hozircha o'chiq"   # 3244
+    if cq_data == 'namuna':
+        return "🧪 Bu namuna — tugma ishlamaydi (haqiqiy xabardagisi ishlaydi)"
+    return ''
+
+
 async def handle_update(data):
     try:
         # BUGUN16 §1: «@bot …» — inline rejim
@@ -7539,12 +7530,9 @@ async def handle_update(data):
                 cq_chat = Joy(cq_chat, cq_msg.get('message_thread_id'))
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
+            toast = _cq_toast(cq_data)
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
-                       json={'callback_query_id': cq_id, **({'text': "✔️ Bu bosqich bajarilgan — holat xabar matnida"}
-                                                            if cq_data == 'bh:-' else
-                                                            {'text': "🖼 Kollaj hozircha o'chiq"}   # 3244
-                                                            if not KOLLAJ_YOQIQ and cq_data.startswith(('kollaj:', 'kg:'))
-                                                            else {})}, timeout=5)
+                       json={'callback_query_id': cq_id, **({'text': toast} if toast else {})}, timeout=5)
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
@@ -8178,12 +8166,18 @@ def send_reroll_notify(data):
 
 async def publish_endpoint(request):
     """Sayt «Menga yuborish» bosganda — bot adminga OLX matni + kanal elonini yuboradi.
-    E1: ish fonda ketadi, sayt javobni kutib turmaydi."""
+    E1: ish fonda ketadi, sayt javobni kutib turmaydi.
+    Epaqa: num — faqat e'lon raqami (248; jadvaldan kelgan «248.0» ham). Ilgari istalgan matn qabul qilinib, Apps Script
+    so'roviga (getElon&num=…) xom qo'yilardi — «1&action=…» kabi qo'shimcha parametr ham ketardi."""
     try:
         data = await request.json()
-        num = str(data.get('num', ''))
+        num = str(data.get('num', '') or '').strip()
         if not num:
             return web.json_response({'error': 'No num'}, status=400)
+        m = re.fullmatch(r'(\d{1,6})(?:\.0+)?', num)
+        if not m:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        num = m.group(1)
         asyncio.get_event_loop().run_in_executor(
             None, preview_elon_to_admin, num, admin_joy('olx'))
         return web.json_response({'ok': True})
@@ -8365,17 +8359,8 @@ async def share_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         loop = asyncio.get_event_loop()
         mid, sabab = await loop.run_in_executor(None, save_prepared_share, uid, num)
         if not mid:
@@ -8439,6 +8424,23 @@ def _bron_qoy(num, uid, order):
     _bron_saqlash()
 
 
+def _nums_oqi(data, num):
+    """BUGUN224: savatdan — `nums` (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat 1–6 xonali raqam, takrorsiz.
+    Qaytaradi — num'dan boshqa raqamlar ro'yxati yoki None (buzuq → endpoint 400 qaytaradi).
+    Epaqa: ilgari shu 12 qator 5 ta endpointda (/bron_tekshir, /share, /buyurtma, /elon_changed, /kanal_post) aynan takrorlangan edi."""
+    xom = data.get('nums') or []
+    if not isinstance(xom, list) or len(xom) > 10:
+        return None
+    qolgan = []
+    for n in xom:
+        n = str(n or '').strip()
+        if not re.fullmatch(r'\d{1,6}', n):
+            return None
+        if n != num and n not in qolgan:
+            qolgan.append(n)
+    return qolgan
+
+
 def _init_data_user(init_data):
     """Imzosi to'g'ri initData dan Telegram foydalanuvchi ma'lumoti (ism, username, id); aks holda None."""
     uid = check_init_data(init_data)
@@ -8498,17 +8500,8 @@ async def bron_tekshir_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         b = _bron_olish(num)
         if not b or b['uid'] == u['id']:
             return web.json_response({'bron': False})
@@ -9048,6 +9041,29 @@ async def _buyurtma_xabar_yangila(chat_id, message_id, xabar, uid, order, b, jor
         ym = _buyurtma_holat_matn(x.get('t'), x.get('e'), joriy, ts)
         if ym:
             await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
+
+
+async def _admin_xb_holat(uid, order, b):
+    """Epaqa: holat bot tugmasidan TASHQARIDA o'zgarganda (mijoz bekor qildi · saytdan isbot / qabul / yopish · mijoz qabul / sharh)
+    shu buyurtmaning admin xabarlari (admin_xb: buyurtma + chek nusxasi) joriy holatga keltiriladi: holat qatori (zanjir) va
+    tugmalar. Ilgari ular eski bosqichda qolardi — «✅ To'lov keldi», «🔓 Bronni bekor qilish» turardi, faqat bosilganda o'zini
+    to'g'rilardi. «bekor» — matnda qator yo'q, faqat tugmalar («📍 ❌ Mijoz bekor qilgan»). admin_xb yo'q (bot qayta yongan) — hech
+    narsa. Sayt javobini kutdirmaslik uchun fonda (asyncio.create_task) chaqiriladi; xato — faqat logda."""
+    try:
+        if not b or not b.get('admin_xb'):
+            return
+        joriy = b.get('holat') or 'kutilmoqda'
+        klava = _buyurtma_klava(uid, order, joriy, [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')])
+        ts = b.get('holat_ts') or time.time()
+        for x in list(b['admin_xb']):
+            ym = _buyurtma_holat_matn(x.get('t'), x.get('e'), joriy, ts)
+            if ym:
+                await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
+            else:
+                await blok(_kk_tg, 'editMessageReplyMarkup', {'chat_id': ADMIN_ID, 'message_id': x['m'], 'reply_markup': klava},
+                           urinish=1)
+    except Exception as e:
+        logger.error(f'admin_xb_holat: №{order} — {type(e).__name__}')
 
 
 async def _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija):
@@ -10021,17 +10037,9 @@ async def buyurtma_endpoint(request):
             kurs = 0
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        qolgan_nums = _nums_oqi(data, num)   # BUGUN224: savatdan — qolgan raqamlar
+        if qolgan_nums is None:
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         # BUGUN236: dona soni — {num: dona} (faqat shu buyurtmadagi raqamlar, 1..99; omborda borigacha — _buyurtma_soni)
         sonlar = {}
         sonlar_xom = data.get('sonlar') or {}
@@ -10570,6 +10578,8 @@ async def buyurtma_bekor_endpoint(request):
             b['bekor_ts'] = b['holat_ts'] = time.time()
             _mijoz_saqlash()
             _mijoz_sync_belgila('b', uid, order)
+            nusxa = dict(b)
+        asyncio.create_task(_admin_xb_holat(uid, order, nusxa))   # epaqa: admin xabarlarida «✅ To'lov keldi» / bron qolmasin
         bosh = []
         for x in (b.get('tovar') or []):
             n = str(x.get('num') or '')
@@ -10735,6 +10745,7 @@ async def buyurtma_qabul_endpoint(request):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if kod == 'ok':
             asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'qabul')
+            asyncio.create_task(_admin_xb_holat(uid, order, b))   # epaqa: buyurtma xabarida «📦 Yetkazildi» tugmasi qolmasin
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
         logger.error(f'buyurtma_qabul_endpoint: {type(e).__name__}')
@@ -10764,6 +10775,7 @@ async def buyurtma_sharh_endpoint(request):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if kod == 'ok':
             asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'sharh')
+            asyncio.create_task(_admin_xb_holat(uid, order, b))   # epaqa: «🔒 Yopildi» admin xabarlarida ham
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
         logger.error(f'buyurtma_sharh_endpoint: {type(e).__name__}')
@@ -10832,6 +10844,8 @@ async def admin_buyurtma_endpoint(request):
             return web.json_response({'error': 'parametr'}, status=400)
         mid = int(mid)
         natija = ''
+        with _MIJOZ_LOCK:
+            oldin = next((x.get('holat') for x in _mijoz_ol(mid)['buyurtma'] if x.get('order') == order), None)
         if amal == 'isbot':
             havola = str(form.get('havola') or '').strip()
             f = form.get('rasm')
@@ -10868,6 +10882,8 @@ async def admin_buyurtma_endpoint(request):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if b.get('holat') in _HOLAT_TASDIQ:
             asyncio.get_event_loop().run_in_executor(None, _sotuv_sheet_yoz, mid, b)
+        if kod == 'ok' and b.get('holat') != oldin:   # epaqa: saytdan surilgan bosqich — Telegram'dagi admin xabarlarida ham
+            asyncio.create_task(_admin_xb_holat(mid, order, b))
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'mijozga': natija == 'yuborildi',
                                   'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
@@ -11179,17 +11195,8 @@ async def elon_changed_endpoint(request):
         num = str(elon.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         elon['num'] = int(num)
         with _elon_cache_lock:
             eski = _ELON_CACHE['by_num'].get(num)
@@ -11232,17 +11239,8 @@ async def kanal_post_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         amal = str(data.get('amal', 'post'))
         yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
         if amal == 'yana':
@@ -11413,6 +11411,27 @@ async def eski_webhook(request):
     return web.json_response({'ok': True})
 
 
+def _webhook_ornat(render_url):
+    """Ishga tushganda ikkala botning webhook'i: yangi bot → /webhook, eski bot → /webhook-eski (aralashtirilmaydi).
+    Epaqa: yangi bot so'rovida timeout ham, try ham yo'q edi — Telegram javob bermasa main() osilib qolardi (fon sikllari:
+    buyurtma xabari, chek eslatmasi, konkurs taymeri ishga tushmasdi), tarmoq xatosida esa bot butunlay yiqilardi.
+    Endi xato — faqat logda (xato turi; URL'da token bor), bot ishlayveradi: Telegram oldingi webhook'ni saqlab turadi."""
+    try:
+        # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
+        r = req.post(f'{TG_API}/setWebhook', json=webhook_sozlama(f'{render_url}/webhook', ALLOWED_UPDATES), timeout=20)
+        logger.info(f'Webhook: {r.json()}')
+    except Exception as e:
+        logger.error(f'setWebhook: {type(e).__name__} — bot ishlayveradi (Telegram oldingi webhook bilan)')
+    if ESKI_BOT_TOKEN and ESKI_BOT_TOKEN != BOT_TOKEN:
+        # BUGUN145: eski bot o'z yo'liga — javobni eski token bilan beradi (yangi bot havolasi)
+        try:
+            r2 = req.post(f'https://api.telegram.org/bot{ESKI_BOT_TOKEN}/setWebhook', timeout=20,
+                          json=webhook_sozlama(f'{render_url}/webhook-eski', ['message', 'callback_query']))
+            logger.info(f'Eski bot webhook: {r2.json()}')
+        except Exception as e:
+            logger.error(f'eski bot webhook: {type(e).__name__}')
+
+
 async def main():
     _bron_yuklash()   # BUGUN208
     _mijoz_yuklash()  # BUGUN225
@@ -11453,17 +11472,7 @@ async def main():
     await site.start()
     render_url = os.environ.get('RENDER_URL', '')
     if render_url:
-        # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
-        r = req.post(f'{TG_API}/setWebhook', json=webhook_sozlama(f'{render_url}/webhook', ALLOWED_UPDATES))
-        logger.info(f'Webhook: {r.json()}')
-        if ESKI_BOT_TOKEN and ESKI_BOT_TOKEN != BOT_TOKEN:
-            # BUGUN145: eski bot o'z yo'liga — javobni eski token bilan beradi (yangi bot havolasi)
-            try:
-                r2 = req.post(f'https://api.telegram.org/bot{ESKI_BOT_TOKEN}/setWebhook', timeout=20,
-                              json=webhook_sozlama(f'{render_url}/webhook-eski', ['message', 'callback_query']))
-                logger.info(f'Eski bot webhook: {r2.json()}')
-            except Exception as e:
-                logger.error(f'eski bot webhook: {type(e).__name__}')
+        await blok(_webhook_ornat, render_url)
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati

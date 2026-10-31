@@ -1,0 +1,413 @@
+# -*- coding: utf-8 -*-
+"""tests/epaqa_tuzatishlar.py — «bot-epaqa»: botni to'liq tekshirishda topilgan chala joylar tuzatishi (har bo'lim — bitta commit).
+
+Ishga tushirish:  python tests/epaqa_tuzatishlar.py   (repo ildizidan)
+
+Tarmoqqa HECH NARSA ketmaydi: bot.req.post / get va bot._kk_sheet almashtirilgan, saqlash — vaqtinchalik papkada.
+Mijozlar — soxta (uid 777005, №TE…); real mijozga tegilmaydi.
+"""
+import asyncio
+import atexit
+import html
+import json
+import logging
+import os
+import re
+import shutil
+import sys
+import tempfile
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+for k in ('BOT_TOKEN', 'MAIN_CHANNEL_ID', 'WEBHOOK_SECRET', 'POST_CHANNEL_ID', 'POST_KANALLAR', 'TEST_CHANNEL_ID',
+          'CHANNEL_ID', 'GURUH_KANAL_ID', 'ESKI_BOT_TOKEN', 'RENDER_URL', 'ADMIN_GURUH', 'SHEET_URL'):
+    os.environ.pop(k, None)
+_VAQT = tempfile.mkdtemp(prefix='epaqa-')
+atexit.register(shutil.rmtree, _VAQT, True)
+os.environ['BRON_FAYL'] = os.path.join(_VAQT, 'bron.json')
+os.environ['MIJOZ_FAYL'] = os.path.join(_VAQT, 'mijoz.json')
+
+import requests
+
+
+def _tarmoq_yoq(*a, **kw):
+    raise AssertionError(f'tarmoq so\'rovi: {a[:1]}')
+
+
+requests.post = requests.get = _tarmoq_yoq
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import bot  # noqa: E402
+
+logging.disable(logging.CRITICAL)
+NATIJA = [0, 0]
+SOROV = []
+MIJOZ, ADMIN = 777005, bot.ADMIN_ID
+MID = [100]
+
+
+def sinov(nom, shart, sabab=''):
+    if shart:
+        NATIJA[0] += 1
+        print(f'  ✓ {nom}')
+    else:
+        NATIJA[1] += 1
+        print(f'  ✗ {nom} — {sabab}')
+
+
+class Javob:
+    def __init__(self, kod=200, j=None):
+        self.status_code, self._j = kod, j or {}
+        self.text = json.dumps(self._j)
+
+    def json(self):
+        return self._j
+
+
+def _post(url, **kw):
+    """Telegram o'rnida: yangi xabarga id beradi, tahrirda yuborilgan matnni qaytaradi (Telegram kabi)."""
+    usul = url.rsplit('/', 1)[-1]
+    d = kw.get('json') or kw.get('data') or {}
+    SOROV.append((usul, d))
+    if usul in ('sendMessage', 'copyMessage', 'sendPhoto'):
+        MID[0] += 1
+        r = {'message_id': MID[0]}
+        if usul == 'sendMessage':
+            r.update(text=html.unescape(re.sub(r'<[^>]+>', '', d.get('text', ''))), entities=[])
+        return Javob(200, {'ok': True, 'result': r})
+    if usul == 'editMessageText':
+        return Javob(200, {'ok': True, 'result': {'message_id': d['message_id'], 'text': d['text'], 'entities': d.get('entities')}})
+    if usul == 'editMessageCaption':
+        return Javob(200, {'ok': True, 'result': {'message_id': d['message_id'], 'caption': d['caption'],
+                                                  'caption_entities': d.get('caption_entities')}})
+    return Javob(200, {'ok': True, 'result': True})
+
+
+bot.req.post = _post
+bot.req.get = _post
+bot.BOT_TOKEN = 'SINOV:TOKEN'
+bot.TG_API = 'https://api.telegram.org/botSINOV:TOKEN'
+bot._mijoz_saqlash = lambda: None
+bot._mijoz_sync_belgila = lambda *a: None
+bot._mijoz_sync_yoqilgan = lambda: False
+bot._sotuv_sheet_yoz = lambda uid, b: True
+bot._kk_sheet = lambda action, timeout=30, **p: {'ok': True}
+bot.time.sleep = lambda s: None
+
+
+def _fonsiz(self, ex, f, *a):
+    fut = self.create_future()
+    try:
+        fut.set_result(f(*a))
+    except Exception as e:
+        fut.set_exception(e)
+    return fut
+
+
+asyncio.SelectorEventLoop.run_in_executor = _fonsiz
+if hasattr(asyncio, 'ProactorEventLoop'):
+    asyncio.ProactorEventLoop.run_in_executor = _fonsiz
+
+
+class Sorov:
+    def __init__(self, d):
+        self._d = d
+
+    async def json(self):
+        return self._d
+
+
+def sorov(usul):
+    return [d for u, d in SOROV if u == usul]
+
+
+# ── A. Ishga tushish: setWebhook yiqilmaydi / osilib qolmaydi ──────────────────────────────────────────────────────────
+print('— A. _webhook_ornat: Telegram javob bermasa ham bot ishlayveradi')
+WH = []
+
+
+def _wh_post(url, **kw):
+    WH.append((url.rsplit('/', 2)[-2][3:], url.rsplit('/', 1)[-1], kw))
+    raise requests.ConnectionError('tarmoq uzildi')
+
+
+bot.req.post = _wh_post
+bot.ESKI_BOT_TOKEN = 'ESKI:TOKEN'
+try:
+    bot._webhook_ornat('https://sinov.onrender.com')
+    yiqilmadi = True
+except Exception as e:
+    yiqilmadi = repr(e)
+bot.req.post = _post
+sinov('tarmoq xatosi — istisno tashqariga chiqmadi', yiqilmadi is True, yiqilmadi)
+sinov('yangi bot: /webhook, timeout bor', WH and WH[0][0] == 'SINOV:TOKEN' and WH[0][2]['json']['url'].endswith('/webhook')
+      and WH[0][2].get('timeout'), repr(WH)[:300])
+sinov("yangi bot xatosi eski botni to'xtatmadi: eski bot ham urinildi (/webhook-eski)",
+      len(WH) == 2 and WH[1][0] == 'ESKI:TOKEN' and WH[1][2]['json']['url'].endswith('/webhook-eski'), repr(WH)[:300])
+sinov("ikki bot aralashmadi: eski botga faqat message + callback_query",
+      len(WH) == 2 and WH[1][2]['json']['allowed_updates'] == ['message', 'callback_query']
+      and 'chat_member' in WH[0][2]['json']['allowed_updates'], repr(WH)[:300])
+bot.ESKI_BOT_TOKEN = ''
+SOROV.clear()
+bot._webhook_ornat('https://sinov.onrender.com')
+sinov('oddiy holat: bitta setWebhook (eski token yo\'q)', [u for u, _ in SOROV] == ['setWebhook'], repr(SOROV)[:200])
+
+
+# ── B. /publish — faqat e'lon raqami ───────────────────────────────────────────────────────────────────────────────
+print("— B. /publish: num faqat raqam (Apps Script so'roviga xom matn ketmaydi)")
+PREVIEW = []
+_asl_preview = bot.preview_elon_to_admin
+bot.preview_elon_to_admin = lambda num, joy: PREVIEW.append(num)
+
+
+def publish(num):
+    PREVIEW.clear()
+    r = asyncio.run(bot.publish_endpoint(Sorov({'num': num})))
+    return r.status, PREVIEW[:]
+
+
+for kirish, kutilgan in (('248', '248'), (248, '248'), ('248.0', '248'), (' 31 ', '31')):
+    st, pv = publish(kirish)
+    sinov(f'{kirish!r} → 200, preview №{kutilgan}', st == 200 and pv == [kutilgan], f'{st} {pv}')
+for kirish in ('1&action=delete', 'abc', '12a', '1234567', '-5', '248.5'):
+    st, pv = publish(kirish)
+    sinov(f'{kirish!r} → 400, adminga hech narsa', st == 400 and not pv, f'{st} {pv}')
+st, pv = publish('')
+sinov("bo'sh → 400 (avvalgidek «No num»)", st == 400 and not pv, f'{st} {pv}')
+bot.preview_elon_to_admin = _asl_preview
+
+
+# ── C. /elon, /yubor — oxirida natija ─────────────────────────────────────────────────────────────────────────────
+print("— C. /elon · /yubor: oxirida adminga «✅ N ta e'lon yuborildi»")
+ELONLAR = [{'num': n, 'nameUz': f'Tovar {n}', 'price': 100 + n, 'condition': 'used', 'status': 'active', 'specId': 'm1'}
+           for n in (501, 502, 503)]
+bot.get_products = lambda urinish=2: ([dict(e) for e in ELONLAR], [{'id': 'm1', 'nameUz': 'Model'}])
+_asl_sleep = bot.asyncio.sleep
+
+
+async def _uxlamas(s):
+    return None
+
+
+bot.asyncio.sleep = _uxlamas
+_asl_send_elon = bot.send_elon
+KETMASIN = set()
+
+
+def _send_elon(chat_id, text, entities):
+    SOROV.append(('send_elon', {'text': text}))
+    return None if any(f'#{n}' in text for n in KETMASIN) else {'ok': True}
+
+
+bot.send_elon = _send_elon
+bot._last_sent['num'] = 500
+SOROV.clear()
+asyncio.run(bot.send_new_elons(ADMIN, '/yubor'))
+m = sorov('sendMessage')
+sinov("/yubor: 3 e'lon yuborildi", len(sorov('send_elon')) == 3, repr(SOROV)[:200])
+sinov("oxirida: «✅ 3 ta e'lon yuborildi · oxirgi: #503»", m and m[-1]['text'] == "✅ 3 ta e'lon yuborildi · oxirgi: #503",
+      repr(m)[:300])
+KETMASIN.add(502)
+SOROV.clear()
+asyncio.run(bot.send_new_elons(ADMIN, '/elon 501 502'))
+m = sorov('sendMessage')
+sinov("/elon 501 502 (biri ketmadi): «✅ 1 ta e'lon yuborildi, ⚠️ 1 tasi ketmadi», oxirgi raqam aytilmaydi",
+      m and m[-1]['text'] == "✅ 1 ta e'lon yuborildi, ⚠️ 1 tasi ketmadi", repr(m)[:300])
+SOROV.clear()
+asyncio.run(bot.send_new_elons(ADMIN, '/yubor'))
+m = sorov('sendMessage')
+sinov("yangi e'lon yo'q — avvalgidek bitta «ℹ️ Yangi elon yo'q» (natija qatori yo'q)",
+      len(m) == 1 and m[0]['text'].startswith("ℹ️ Yangi elon yo'q"), repr(m)[:300])
+bot.send_elon = _asl_send_elon
+bot.asyncio.sleep = _asl_sleep
+
+
+# ── D. O'lik kod olib tashlandi ──────────────────────────────────────────────────────────────────────────────────────
+print("— D. ishlatilmaydigan kod yo'q (save_participant, CONDITION_TXT)")
+manba = open(bot.__file__, encoding='utf-8').read()
+sinov("save_participant — yo'q (qatnashish faqat _kk_qatnash_yoz, kalit bilan)",
+      not hasattr(bot, 'save_participant') and 'save_participant(' not in manba and hasattr(bot, '_kk_qatnash_yoz'))
+sinov("CONDITION_TXT — yo'q (holat matni — holati_matni)", not hasattr(bot, 'CONDITION_TXT') and 'CONDITION_TXT' not in manba)
+sinov("get_participants (/tozala) joyida", callable(getattr(bot, 'get_participants', None)))
+sinov("clean_color ichidagi ortiqcha import olib tashlandi — ishlashi o'zgarmadi",
+      bot.clean_color('Obsidian Black (Qora)') == 'Obsidian Black' and bot.clean_color('') == '' and bot.clean_color(None) == '')
+
+
+# ── E. Mijozga ko'rinadigan matn: imlo ──────────────────────────────────────────────────────────────────────────────
+print("— E. matn: «Yangi Openbox!», konkurs xabarida gap bosh harf bilan")
+sinov("holati_matni('openbox') → «Yangi Openbox!» (ilgari «Yengi»)", bot.holati_matni('openbox', '')[0] == 'Yangi Openbox!'
+      and bot.holati_matni('openbox', '98')[0] == 'Yangi Openbox! (98 tsikl)', repr(bot.holati_matni('openbox', '98')))
+sinov("ruschasi va boshqa holatlar o'zgarmadi", bot.holati_matni('openbox', '')[1:] == ('Новое Опенбокс!', '📦')
+      and bot.holati_matni('new', '')[0] == 'Yangi ochilmagan!' and bot.holati_matni('used', '5')[0] == 'Ishlatilgan (5 tsikl)')
+_, olx = bot.build_olx_text({'num': 7, 'nameUz': 'Pixel 9', 'price': 400, 'condition': 'openbox', 'cycle': '3'}, {})
+sinov("OLX matnida ham «• Holati: Yangi Openbox! (3 tsikl)»", '• Holati: Yangi Openbox! (3 tsikl)' in olx and 'Yengi' not in olx, olx)
+cap, _ = bot._kk_maglub_xabari('Pixel 9', '🥇 @a')
+sinov("konkurs mag'lub xabari: «…sovg'a qilamiz!\\nIstalgan smartfonni tanlang…»",
+      "sovg'a qilamiz!\nIstalgan smartfonni tanlang" in cap and '\nistalgan' not in cap, cap)
+sinov("butun bot matnida «Yengi» qolmadi (izohdan tashqari)", 'Yengi' not in manba.replace('«Yengi» → «Yangi»', ''))
+
+
+# ── F+G. Admin xabarlari (buyurtma + chek) — holat tugmadan tashqarida o'zgarsa ham joriy ──────────────────────────────
+print("— F+G. mijoz bekor qilsa / saytdan bosqich surilsa — admin xabarlari (buyurtma + chek) ham yangilanadi")
+BUYURTMA_HTML = ("🛒 <b>Yangi buyurtma</b> №{o}\n\n📱 <b>Tovar 21</b> · e'lon №21\n💵 500$ ≈ 6 000 000 so'm (kurs 12000)\n\n"
+                 "👤 S\n📞 +998900000001\n📍 Emu\n\n⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
+                 "kelmasa — telefon qiling.\n🕒 31.10.2026 07:50")
+_asl_init = bot.check_init_data
+bot.check_init_data = lambda s, max_age=86400: {'admin': ADMIN, 'mijoz': MIJOZ}.get(s)
+
+
+class Forma(Sorov):
+    async def post(self):
+        return self._d
+
+
+def buyurtma(order, holat='kutilmoqda', xabar=True, num='21'):
+    with bot._MIJOZ_LOCK:
+        bot._mijoz_ochiq(MIJOZ)['buyurtma'].insert(0, {
+            'order': order, 'ts': 1, 'holat': holat, 'tovar': [{'num': num, 'nom': 'T', 'narx': 500, 'soni': 1}],
+            'jami': 500, 'tur': 'emu', 'ism': 'S', 'tel': '+998900000001', 'til': 'uz', 'joy': {'kurs': 12000}})
+    bot._bron_qoy(num, MIJOZ, order)
+    if xabar:
+        bot._buyurtma_xabar_yubor(MIJOZ, order, {'matn': BUYURTMA_HTML.format(o=order), 'holat': holat, 'bron': [num]},
+                                  kutish=(0,))
+        bot._chek_adminga(MIJOZ, dict(yozuv(order)), 55)
+    return [x['m'] for x in yozuv(order).get('admin_xb') or []]
+
+
+def yozuv(order):
+    return next((b for b in bot._mijoz_ol(MIJOZ)['buyurtma'] if b.get('order') == order), None)
+
+
+def chaqir(korutin):
+    """Endpoint + u fonda qo'ygan vazifalar (asyncio.run ularni bekor qilib yubormasin)."""
+    async def ish():
+        r = await korutin
+        await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
+        return r
+    SOROV.clear()
+    r = asyncio.run(ish())
+    return r.status, json.loads(r.body)
+
+
+def tahrirlar():
+    """{message_id: (matn | None, tugmalar)} — shu chaqiruvdagi admin xabari tahrirlari."""
+    out = {}
+    for u, d in SOROV:
+        if u in ('editMessageText', 'editMessageCaption', 'editMessageReplyMarkup') and d.get('chat_id') == ADMIN:
+            out[d['message_id']] = (d.get('text') or d.get('caption'), json.dumps(d.get('reply_markup'), ensure_ascii=False))
+    return out
+
+
+print('  · mijoz bekor qildi')
+xb = buyurtma('TE01')
+sinov('boshida 2 ta admin xabari (buyurtma + chek)', len(xb) == 2, repr(xb))
+st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE01'})))
+t = tahrirlar()
+sinov('200, holat bekor', st == 200 and yozuv('TE01')['holat'] == 'bekor', f'{st} {j}')
+sinov("ikkala admin xabari tugmasi: «📍 ❌ Mijoz bekor qilgan»", sorted(t) == sorted(xb)
+      and all('Mijoz bekor qilgan' in k for _, k in t.values()), repr(t)[:400])
+sinov("«✅ To'lov keldi», «⏭ To'lovni kutmay», «🔓 Bron» — yo'q", all('bh:tolandi' not in k and 'bh:yolda' not in k
+                                                                    and 'bron_och' not in k for _, k in t.values()), repr(t)[:400])
+sinov("matnga tegilmadi (faqat tugmalar — editMessageReplyMarkup)", all(m is None for m, _ in t.values())
+      and len(sorov('editMessageReplyMarkup')) == 2, repr(SOROV)[:300])
+sinov("adminga «❌ Mijoz buyurtmani bekor qildi» avvalgidek", any('bekor qildi' in d.get('text', '') for d in sorov('sendMessage')))
+st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE01'})))
+sinov('takror bosish — tahrir yo\'q', j.get('takror') and not tahrirlar(), repr(SOROV)[:200])
+
+print('  · saytdan isbot (havola) — to\'lovni kutmay jo\'natildi')
+xb = buyurtma('TE02', num='22')
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'isbot',
+                                                  'havola': 'https://taxi.yandex.uz/route/abc'})))
+t = tahrirlar()
+sinov('200, holat yolda', st == 200 and j.get('holat') == 'yolda', f'{st} {j}')
+sinov("ikkala xabar matni: «🚚 Yo'lda · HH:MM» (⏳ o'rniga)", sorted(t) == sorted(xb) and all(
+    m and re.search(r"\n\n🚚 Yo'lda · \d\d:\d\d", m) and 'kutilmoqda' not in m for m, _ in t.values()), repr(t)[:400])
+sinov("tugmalar: keyingi bosqich «📦 Yetkazildi», bron tugmasi yo'q", all(
+    f'bh:yetkazildi:{MIJOZ}:TE02' in k and 'bron_och' not in k and 'bh:tolandi' not in k for _, k in t.values()), repr(t)[:400])
+sinov("yozuvdagi matnlar ham yangi (keyingi tugma zanjirni davom ettiradi)",
+      all("🚚 Yo'lda" in x['t'] for x in yozuv('TE02')['admin_xb']))
+
+print('  · saytdan «qabul» (admin)')
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'qabul'})))
+t = tahrirlar()
+sinov("zanjir: «🚚 Yo'lda · … → 📦 Yetkazildi · …», tugma «🔒 Yopish»", st == 200 and len(t) == 2 and all(
+    m and re.search(r"🚚 Yo'lda · \d\d:\d\d → 📦 Yetkazildi · \d\d:\d\d", m) and f'bh:yopildi:{MIJOZ}:TE02' in k
+    for m, k in t.values()), repr(t)[:400])
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'qabul'})))
+sinov("takror «qabul» (eski) — tahrir yo'q", j.get('takror') and not tahrirlar(), repr(SOROV)[:200])
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'yop'})))
+t = tahrirlar()
+sinov("«yop»: «→ 🔒 Yopildi», faqat «Mijozga yozish» qoldi", st == 200 and len(t) == 2 and all(
+    m and re.search(r'→ 🔒 Yopildi · \d\d:\d\d\n🕒', m) and 'callback_data' not in k for m, k in t.values()), repr(t)[:400])
+
+print('  · mijoz «✅ Qabul qilib oldim», keyin sharh')
+xb = buyurtma('TE03', num='23')
+chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE03', 'amal': 'isbot',
+                                          'havola': 'https://taxi.yandex.uz/route/x'})))
+st, j = chaqir(bot.buyurtma_qabul_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE03'})))
+t = tahrirlar()
+sinov("mijoz qabul: ikkala xabarda «→ 📦 Yetkazildi», tugma «🔒 Yopish»", st == 200 and sorted(t) == sorted(xb) and all(
+    m and '→ 📦 Yetkazildi · ' in m and f'bh:yopildi:{MIJOZ}:TE03' in k for m, k in t.values()), repr(t)[:400])
+st, j = chaqir(bot.buyurtma_sharh_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE03', 'baho': 5, 'matn': 'zo\'r'})))
+t = tahrirlar()
+sinov("sharh: «→ 🔒 Yopildi», bosqich tugmalari yo'q", st == 200 and len(t) == 2 and all(
+    m and '→ 🔒 Yopildi · ' in m and 'callback_data' not in k for m, k in t.values()), repr(t)[:400])
+
+print("  · admin xabari yozuvda yo'q (bot qayta yongan) — jim, xatosiz")
+buyurtma('TE04', xabar=False, num='24')
+st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE04'})))
+sinov("200, tahrir yo'q", st == 200 and not tahrirlar(), repr(SOROV)[:300])
+
+
+# ── J. «nums» tekshiruvi — bitta yordamchi (5 ta endpointda takror edi) ──────────────────────────────────────────────────
+print("— J. _nums_oqi: savat raqamlari — xulq avvalgidek, kod bitta joyda")
+sinov("nums yo'q → []", bot._nums_oqi({}, '21') == [] and bot._nums_oqi({'nums': None}, '21') == [])
+sinov("num chiqariladi, takror olinadi, tartib saqlanadi", bot._nums_oqi({'nums': ['21', 22, ' 23 ', '22']}, '21') == ['22', '23'])
+sinov("10 tagacha — ok, 11 ta — None", bot._nums_oqi({'nums': [str(i) for i in range(1, 11)]}, '1') == [str(i) for i in range(2, 11)]
+      and bot._nums_oqi({'nums': [str(i) for i in range(1, 12)]}, '1') is None)
+sinov("ro'yxat emas / raqam emas / 7 xonali — None", all(bot._nums_oqi({'nums': x}, '1') is None
+                                                       for x in ('21,22', {'a': 1}, ['21', 'x'], ['1234567'], ['2.5'])))
+manba = open(bot.__file__, encoding='utf-8').read()
+sinov("takroriy blok qolmadi: 5 ta endpoint yordamchini chaqiradi", 'nums_xom' not in manba
+      and manba.count('_nums_oqi(data, num)') - manba.count('def _nums_oqi(data, num)') == 5)
+bot.check_init_data = lambda s, max_age=86400: {'admin': ADMIN, 'mijoz': MIJOZ}.get(s)
+for nom, init in (('share_endpoint', 'mijoz'), ('bron_tekshir_endpoint', 'mijoz'), ('buyurtma_endpoint', 'mijoz'),
+                  ('elon_changed_endpoint', 'admin'), ('kanal_post_endpoint', 'admin')):
+    d = {'initData': init, 'num': '21', 'nums': ['21', 'yomon'], 'elon': {'num': '21'}, 'order': 'TE09', 'name': 'S',
+         'phone': '+998900000001', 'tur': 'emu', 'manzil': 'Toshkent', 'kurs': 12000}
+    if nom == 'bron_tekshir_endpoint':
+        bot._init_data_user = (lambda asl: (lambda s: {'id': MIJOZ, 'ism': 'S', 'username': ''} if s == 'mijoz' else asl(s)))(
+            bot._init_data_user)
+    r = asyncio.run(getattr(bot, nom)(Sorov(d)))
+    sinov(f"/{nom.replace('_endpoint', '')}: buzuq nums → 400 «Nomer notogri» (avvalgidek)",
+          r.status == 400 and json.loads(r.body).get('error') == 'Nomer notogri', f'{r.status} {r.body[:100]}')
+r = asyncio.run(bot.bron_tekshir_endpoint(Sorov({'initData': 'mijoz', 'num': '21', 'nums': ['21', '22']})))
+sinov("/bron_tekshir: to'g'ri nums → 200 (bron tekshiruvi ishladi)", r.status == 200 and 'bron' in json.loads(r.body), r.body[:100])
+bot.check_init_data = _asl_init
+
+
+# ── M. Ishlovchisi ataylab yo'q tugma — bosilsa tushuntiriladi ─────────────────────────────────────────────────────────
+print("— M. «🧪 NAMUNA» tugmasi bosilsa — «Bu namuna — tugma ishlamaydi»")
+
+
+def tugma_bos(data, kim=ADMIN):
+    SOROV.clear()
+    asyncio.run(bot.handle_update({'update_id': 9000 + MID[0], 'callback_query': {
+        'id': 'q1', 'data': data, 'from': {'id': kim}, 'message': {'message_id': 5, 'chat': {'id': kim}}}}))
+    MID[0] += 1
+    a = sorov('answerCallbackQuery')
+    return a[0].get('text') if a else 'JAVOBSIZ'
+
+
+sinov("namuna → «🧪 Bu namuna — tugma ishlamaydi…»", (tugma_bos('namuna') or '').startswith('🧪 Bu namuna — tugma ishlamaydi'))
+sinov("namuna — boshqa hech narsa qilinmadi (faqat javob)", [u for u, _ in SOROV] == ['answerCallbackQuery'], repr(SOROV)[:200])
+sinov("bh:- → avvalgidek «✔️ Bu bosqich bajarilgan…»", tugma_bos('bh:-') == "✔️ Bu bosqich bajarilgan — holat xabar matnida")
+sinov("kollaj o'chiq → avvalgidek «🖼 Kollaj hozircha o'chiq»", bot.KOLLAJ_YOQIQ or tugma_bos('kollaj:5') == "🖼 Kollaj hozircha o'chiq")
+sinov("oddiy tugma (mijoz, yon:mobile) → toast yo'q, javob baribir ketadi", tugma_bos('yon:mobile', kim=MIJOZ) is None)
+
+
+print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
+sys.exit(1 if NATIJA[1] else 0)
