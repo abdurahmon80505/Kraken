@@ -4960,22 +4960,22 @@ def _kk_tarqatma_xabari(k, til):
 def _kk_yangibot_xabari(k, til):
     """BUGUN184 (v169/v170): yangi botga /start bosgan, lekin konkursda qatnashmaganlarga — YANGI bot orqali, bir marta.
     Tugma — callback (ular allaqachon botda): bosilsa start_konkurs_flow (telefon so'rovi) boshlanadi.
-    BUGUN190 (foydalanuvchi, 2026-10-14, B): 👋 → 🌚; tugma ikkala tilda «🎯 Qatnashish / Участвовать» — emoji bitta."""
-    prize = html_escape(str(k.get('prize') or ''))
+    BUGUN190 (foydalanuvchi, 2026-10-14, B): 👋 → 🌚; tugma ikkala tilda «🎯 Qatnashish / Участвовать» — emoji bitta.
+    3321 (Owner, 2026-10-31): matn almashdi — qatorlar orasida bitta bo'sh qator, «Toshkent vaqti» yo'q; end bo'sh — ⏰ yo'q."""
     end = _parse_end_time(k.get('end_time'))
     if til == 'ru':
-        q = ["🌚 В связи с ребрендингом Nuqta Tech объявляет конкурс!", f"🎁 Приз: <b>{prize}</b>"]
+        q = ["🌚 В связи с ребрендингом Nuqta Tech объявляет конкурс!", "🎁 12 победителей, а всем участникам — ваучер на 10$!"]
         if end:
-            q.append(f"⏰ Завершится: {_kk_vaqt(end)} (по Ташкенту)")
-        q += ["", "Чтобы участвовать — нажмите кнопку ниже 👇"]
-        tugma = "🎯 Qatnashish / Участвовать"
+            q.append(f"⏰ Завершится: {_kk_vaqt(end)}")
+        q.append("Чтобы участвовать — нажмите кнопку ниже 👇")
     else:
-        q = ["🌚 Nuqta tech rebranding munosabati bilan konkurs e'lon qildi!", f"🎁 Sovrin: <b>{prize}</b>"]
+        q = ["🌚 Nuqta tech rebranding munosabati bilan konkurs e'lon qildi!",
+             "🎁 G'oliblar 12 ta va barcha qatnashchilarga 10$ vaucher beriladi!"]
         if end:
-            q.append(f"⏰ Tugaydi: {_kk_vaqt(end)} (Toshkent vaqti)")
-        q += ["", "Qatnashish uchun pastdagi tugmani bosing 👇"]
-        tugma = "🎯 Qatnashish / Участвовать"
-    return "\n".join(q), {"inline_keyboard": [[{"text": tugma, "callback_data": "kk_qatnash"}]]}
+            q.append(f"⏰ Tugaydi: {_kk_vaqt(end)}")
+        q.append("Qatnashish uchun pastdagi tugmani bosing 👇")
+    tugma = "🎯 Qatnashish / Участвовать"
+    return "\n\n".join(q), {"inline_keyboard": [[{"text": tugma, "callback_data": "kk_qatnash"}]]}
 
 
 async def _kk_admin(matn, joy=None):
