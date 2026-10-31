@@ -9035,6 +9035,29 @@ async def _buyurtma_xabar_yangila(chat_id, message_id, xabar, uid, order, b, jor
             await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
 
 
+async def _admin_xb_holat(uid, order, b):
+    """Epaqa: holat bot tugmasidan TASHQARIDA o'zgarganda (mijoz bekor qildi · saytdan isbot / qabul / yopish · mijoz qabul / sharh)
+    shu buyurtmaning admin xabarlari (admin_xb: buyurtma + chek nusxasi) joriy holatga keltiriladi: holat qatori (zanjir) va
+    tugmalar. Ilgari ular eski bosqichda qolardi — «✅ To'lov keldi», «🔓 Bronni bekor qilish» turardi, faqat bosilganda o'zini
+    to'g'rilardi. «bekor» — matnda qator yo'q, faqat tugmalar («📍 ❌ Mijoz bekor qilgan»). admin_xb yo'q (bot qayta yongan) — hech
+    narsa. Sayt javobini kutdirmaslik uchun fonda (asyncio.create_task) chaqiriladi; xato — faqat logda."""
+    try:
+        if not b or not b.get('admin_xb'):
+            return
+        joriy = b.get('holat') or 'kutilmoqda'
+        klava = _buyurtma_klava(uid, order, joriy, [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')])
+        ts = b.get('holat_ts') or time.time()
+        for x in list(b['admin_xb']):
+            ym = _buyurtma_holat_matn(x.get('t'), x.get('e'), joriy, ts)
+            if ym:
+                await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
+            else:
+                await blok(_kk_tg, 'editMessageReplyMarkup', {'chat_id': ADMIN_ID, 'message_id': x['m'], 'reply_markup': klava},
+                           urinish=1)
+    except Exception as e:
+        logger.error(f'admin_xb_holat: №{order} — {type(e).__name__}')
+
+
 async def _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija):
     """Holat surilgach: mijozga yetmagan bo'lsa ⚠️ adminga; BUGUN275: tasdiqlangan (to'langan / yo'lda / yetkazilgan) buyurtma → Store'ga
     sotuv yozuvi, e'lonlar «sotildi». 'eski' ham — bir xil tugma qayta bosilsa Store'ga yozish qayta uriniladi (Store takror yozmaydi)."""
@@ -10555,6 +10578,8 @@ async def buyurtma_bekor_endpoint(request):
             b['bekor_ts'] = b['holat_ts'] = time.time()
             _mijoz_saqlash()
             _mijoz_sync_belgila('b', uid, order)
+            nusxa = dict(b)
+        asyncio.create_task(_admin_xb_holat(uid, order, nusxa))   # epaqa: admin xabarlarida «✅ To'lov keldi» / bron qolmasin
         bosh = []
         for x in (b.get('tovar') or []):
             n = str(x.get('num') or '')
@@ -10720,6 +10745,7 @@ async def buyurtma_qabul_endpoint(request):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if kod == 'ok':
             asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'qabul')
+            asyncio.create_task(_admin_xb_holat(uid, order, b))   # epaqa: buyurtma xabarida «📦 Yetkazildi» tugmasi qolmasin
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
         logger.error(f'buyurtma_qabul_endpoint: {type(e).__name__}')
@@ -10749,6 +10775,7 @@ async def buyurtma_sharh_endpoint(request):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if kod == 'ok':
             asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'sharh')
+            asyncio.create_task(_admin_xb_holat(uid, order, b))   # epaqa: «🔒 Yopildi» admin xabarlarida ham
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
         logger.error(f'buyurtma_sharh_endpoint: {type(e).__name__}')
@@ -10817,6 +10844,8 @@ async def admin_buyurtma_endpoint(request):
             return web.json_response({'error': 'parametr'}, status=400)
         mid = int(mid)
         natija = ''
+        with _MIJOZ_LOCK:
+            oldin = next((x.get('holat') for x in _mijoz_ol(mid)['buyurtma'] if x.get('order') == order), None)
         if amal == 'isbot':
             havola = str(form.get('havola') or '').strip()
             f = form.get('rasm')
@@ -10853,6 +10882,8 @@ async def admin_buyurtma_endpoint(request):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if b.get('holat') in _HOLAT_TASDIQ:
             asyncio.get_event_loop().run_in_executor(None, _sotuv_sheet_yoz, mid, b)
+        if kod == 'ok' and b.get('holat') != oldin:   # epaqa: saytdan surilgan bosqich — Telegram'dagi admin xabarlarida ham
+            asyncio.create_task(_admin_xb_holat(mid, order, b))
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'mijozga': natija == 'yuborildi',
                                   'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:

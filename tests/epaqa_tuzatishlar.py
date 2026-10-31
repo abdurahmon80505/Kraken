@@ -250,5 +250,118 @@ sinov("konkurs mag'lub xabari: «…sovg'a qilamiz!\\nIstalgan smartfonni tanlan
 sinov("butun bot matnida «Yengi» qolmadi (izohdan tashqari)", 'Yengi' not in manba.replace('«Yengi» → «Yangi»', ''))
 
 
+# ── F+G. Admin xabarlari (buyurtma + chek) — holat tugmadan tashqarida o'zgarsa ham joriy ──────────────────────────────
+print("— F+G. mijoz bekor qilsa / saytdan bosqich surilsa — admin xabarlari (buyurtma + chek) ham yangilanadi")
+BUYURTMA_HTML = ("🛒 <b>Yangi buyurtma</b> №{o}\n\n📱 <b>Tovar 21</b> · e'lon №21\n💵 500$ ≈ 6 000 000 so'm (kurs 12000)\n\n"
+                 "👤 S\n📞 +998900000001\n📍 Emu\n\n⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
+                 "kelmasa — telefon qiling.\n🕒 31.10.2026 07:50")
+_asl_init = bot.check_init_data
+bot.check_init_data = lambda s, max_age=86400: {'admin': ADMIN, 'mijoz': MIJOZ}.get(s)
+
+
+class Forma(Sorov):
+    async def post(self):
+        return self._d
+
+
+def buyurtma(order, holat='kutilmoqda', xabar=True, num='21'):
+    with bot._MIJOZ_LOCK:
+        bot._mijoz_ochiq(MIJOZ)['buyurtma'].insert(0, {
+            'order': order, 'ts': 1, 'holat': holat, 'tovar': [{'num': num, 'nom': 'T', 'narx': 500, 'soni': 1}],
+            'jami': 500, 'tur': 'emu', 'ism': 'S', 'tel': '+998900000001', 'til': 'uz', 'joy': {'kurs': 12000}})
+    bot._bron_qoy(num, MIJOZ, order)
+    if xabar:
+        bot._buyurtma_xabar_yubor(MIJOZ, order, {'matn': BUYURTMA_HTML.format(o=order), 'holat': holat, 'bron': [num]},
+                                  kutish=(0,))
+        bot._chek_adminga(MIJOZ, dict(yozuv(order)), 55)
+    return [x['m'] for x in yozuv(order).get('admin_xb') or []]
+
+
+def yozuv(order):
+    return next((b for b in bot._mijoz_ol(MIJOZ)['buyurtma'] if b.get('order') == order), None)
+
+
+def chaqir(korutin):
+    """Endpoint + u fonda qo'ygan vazifalar (asyncio.run ularni bekor qilib yubormasin)."""
+    async def ish():
+        r = await korutin
+        await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
+        return r
+    SOROV.clear()
+    r = asyncio.run(ish())
+    return r.status, json.loads(r.body)
+
+
+def tahrirlar():
+    """{message_id: (matn | None, tugmalar)} — shu chaqiruvdagi admin xabari tahrirlari."""
+    out = {}
+    for u, d in SOROV:
+        if u in ('editMessageText', 'editMessageCaption', 'editMessageReplyMarkup') and d.get('chat_id') == ADMIN:
+            out[d['message_id']] = (d.get('text') or d.get('caption'), json.dumps(d.get('reply_markup'), ensure_ascii=False))
+    return out
+
+
+print('  · mijoz bekor qildi')
+xb = buyurtma('TE01')
+sinov('boshida 2 ta admin xabari (buyurtma + chek)', len(xb) == 2, repr(xb))
+st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE01'})))
+t = tahrirlar()
+sinov('200, holat bekor', st == 200 and yozuv('TE01')['holat'] == 'bekor', f'{st} {j}')
+sinov("ikkala admin xabari tugmasi: «📍 ❌ Mijoz bekor qilgan»", sorted(t) == sorted(xb)
+      and all('Mijoz bekor qilgan' in k for _, k in t.values()), repr(t)[:400])
+sinov("«✅ To'lov keldi», «⏭ To'lovni kutmay», «🔓 Bron» — yo'q", all('bh:tolandi' not in k and 'bh:yolda' not in k
+                                                                    and 'bron_och' not in k for _, k in t.values()), repr(t)[:400])
+sinov("matnga tegilmadi (faqat tugmalar — editMessageReplyMarkup)", all(m is None for m, _ in t.values())
+      and len(sorov('editMessageReplyMarkup')) == 2, repr(SOROV)[:300])
+sinov("adminga «❌ Mijoz buyurtmani bekor qildi» avvalgidek", any('bekor qildi' in d.get('text', '') for d in sorov('sendMessage')))
+st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE01'})))
+sinov('takror bosish — tahrir yo\'q', j.get('takror') and not tahrirlar(), repr(SOROV)[:200])
+
+print('  · saytdan isbot (havola) — to\'lovni kutmay jo\'natildi')
+xb = buyurtma('TE02', num='22')
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'isbot',
+                                                  'havola': 'https://taxi.yandex.uz/route/abc'})))
+t = tahrirlar()
+sinov('200, holat yolda', st == 200 and j.get('holat') == 'yolda', f'{st} {j}')
+sinov("ikkala xabar matni: «🚚 Yo'lda · HH:MM» (⏳ o'rniga)", sorted(t) == sorted(xb) and all(
+    m and re.search(r"\n\n🚚 Yo'lda · \d\d:\d\d", m) and 'kutilmoqda' not in m for m, _ in t.values()), repr(t)[:400])
+sinov("tugmalar: keyingi bosqich «📦 Yetkazildi», bron tugmasi yo'q", all(
+    f'bh:yetkazildi:{MIJOZ}:TE02' in k and 'bron_och' not in k and 'bh:tolandi' not in k for _, k in t.values()), repr(t)[:400])
+sinov("yozuvdagi matnlar ham yangi (keyingi tugma zanjirni davom ettiradi)",
+      all("🚚 Yo'lda" in x['t'] for x in yozuv('TE02')['admin_xb']))
+
+print('  · saytdan «qabul» (admin)')
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'qabul'})))
+t = tahrirlar()
+sinov("zanjir: «🚚 Yo'lda · … → 📦 Yetkazildi · …», tugma «🔒 Yopish»", st == 200 and len(t) == 2 and all(
+    m and re.search(r"🚚 Yo'lda · \d\d:\d\d → 📦 Yetkazildi · \d\d:\d\d", m) and f'bh:yopildi:{MIJOZ}:TE02' in k
+    for m, k in t.values()), repr(t)[:400])
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'qabul'})))
+sinov("takror «qabul» (eski) — tahrir yo'q", j.get('takror') and not tahrirlar(), repr(SOROV)[:200])
+st, j = chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE02', 'amal': 'yop'})))
+t = tahrirlar()
+sinov("«yop»: «→ 🔒 Yopildi», faqat «Mijozga yozish» qoldi", st == 200 and len(t) == 2 and all(
+    m and re.search(r'→ 🔒 Yopildi · \d\d:\d\d\n🕒', m) and 'callback_data' not in k for m, k in t.values()), repr(t)[:400])
+
+print('  · mijoz «✅ Qabul qilib oldim», keyin sharh')
+xb = buyurtma('TE03', num='23')
+chaqir(bot.admin_buyurtma_endpoint(Forma({'initData': 'admin', 'uid': str(MIJOZ), 'order': 'TE03', 'amal': 'isbot',
+                                          'havola': 'https://taxi.yandex.uz/route/x'})))
+st, j = chaqir(bot.buyurtma_qabul_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE03'})))
+t = tahrirlar()
+sinov("mijoz qabul: ikkala xabarda «→ 📦 Yetkazildi», tugma «🔒 Yopish»", st == 200 and sorted(t) == sorted(xb) and all(
+    m and '→ 📦 Yetkazildi · ' in m and f'bh:yopildi:{MIJOZ}:TE03' in k for m, k in t.values()), repr(t)[:400])
+st, j = chaqir(bot.buyurtma_sharh_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE03', 'baho': 5, 'matn': 'zo\'r'})))
+t = tahrirlar()
+sinov("sharh: «→ 🔒 Yopildi», bosqich tugmalari yo'q", st == 200 and len(t) == 2 and all(
+    m and '→ 🔒 Yopildi · ' in m and 'callback_data' not in k for m, k in t.values()), repr(t)[:400])
+
+print("  · admin xabari yozuvda yo'q (bot qayta yongan) — jim, xatosiz")
+buyurtma('TE04', xabar=False, num='24')
+st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE04'})))
+sinov("200, tahrir yo'q", st == 200 and not tahrirlar(), repr(SOROV)[:300])
+bot.check_init_data = _asl_init
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)
