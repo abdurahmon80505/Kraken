@@ -156,5 +156,29 @@ bot._webhook_ornat('https://sinov.onrender.com')
 sinov('oddiy holat: bitta setWebhook (eski token yo\'q)', [u for u, _ in SOROV] == ['setWebhook'], repr(SOROV)[:200])
 
 
+# ── B. /publish — faqat e'lon raqami ───────────────────────────────────────────────────────────────────────────────
+print("— B. /publish: num faqat raqam (Apps Script so'roviga xom matn ketmaydi)")
+PREVIEW = []
+_asl_preview = bot.preview_elon_to_admin
+bot.preview_elon_to_admin = lambda num, joy: PREVIEW.append(num)
+
+
+def publish(num):
+    PREVIEW.clear()
+    r = asyncio.run(bot.publish_endpoint(Sorov({'num': num})))
+    return r.status, PREVIEW[:]
+
+
+for kirish, kutilgan in (('248', '248'), (248, '248'), ('248.0', '248'), (' 31 ', '31')):
+    st, pv = publish(kirish)
+    sinov(f'{kirish!r} → 200, preview №{kutilgan}', st == 200 and pv == [kutilgan], f'{st} {pv}')
+for kirish in ('1&action=delete', 'abc', '12a', '1234567', '-5', '248.5'):
+    st, pv = publish(kirish)
+    sinov(f'{kirish!r} → 400, adminga hech narsa', st == 400 and not pv, f'{st} {pv}')
+st, pv = publish('')
+sinov("bo'sh → 400 (avvalgidek «No num»)", st == 400 and not pv, f'{st} {pv}')
+bot.preview_elon_to_admin = _asl_preview
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)

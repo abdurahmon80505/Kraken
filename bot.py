@@ -8178,12 +8178,18 @@ def send_reroll_notify(data):
 
 async def publish_endpoint(request):
     """Sayt «Menga yuborish» bosganda — bot adminga OLX matni + kanal elonini yuboradi.
-    E1: ish fonda ketadi, sayt javobni kutib turmaydi."""
+    E1: ish fonda ketadi, sayt javobni kutib turmaydi.
+    Epaqa: num — faqat e'lon raqami (248; jadvaldan kelgan «248.0» ham). Ilgari istalgan matn qabul qilinib, Apps Script
+    so'roviga (getElon&num=…) xom qo'yilardi — «1&action=…» kabi qo'shimcha parametr ham ketardi."""
     try:
         data = await request.json()
-        num = str(data.get('num', ''))
+        num = str(data.get('num', '') or '').strip()
         if not num:
             return web.json_response({'error': 'No num'}, status=400)
+        m = re.fullmatch(r'(\d{1,6})(?:\.0+)?', num)
+        if not m:
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        num = m.group(1)
         asyncio.get_event_loop().run_in_executor(
             None, preview_elon_to_admin, num, admin_joy('olx'))
         return web.json_response({'ok': True})
