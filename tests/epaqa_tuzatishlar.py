@@ -225,5 +225,16 @@ bot.send_elon = _asl_send_elon
 bot.asyncio.sleep = _asl_sleep
 
 
+# ── D. O'lik kod olib tashlandi ──────────────────────────────────────────────────────────────────────────────────────
+print("— D. ishlatilmaydigan kod yo'q (save_participant, CONDITION_TXT)")
+manba = open(bot.__file__, encoding='utf-8').read()
+sinov("save_participant — yo'q (qatnashish faqat _kk_qatnash_yoz, kalit bilan)",
+      not hasattr(bot, 'save_participant') and 'save_participant(' not in manba and hasattr(bot, '_kk_qatnash_yoz'))
+sinov("CONDITION_TXT — yo'q (holat matni — holati_matni)", not hasattr(bot, 'CONDITION_TXT') and 'CONDITION_TXT' not in manba)
+sinov("get_participants (/tozala) joyida", callable(getattr(bot, 'get_participants', None)))
+sinov("clean_color ichidagi ortiqcha import olib tashlandi — ishlashi o'zgarmadi",
+      bot.clean_color('Obsidian Black (Qora)') == 'Obsidian Black' and bot.clean_color('') == '' and bot.clean_color(None) == '')
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)

@@ -542,13 +542,6 @@ _ELON_CACHE = {'by_num': {}, 'models': {}, 'series': [], 'turkumlar': [], 'time'
 ELON_CACHE_MAX_AGE = 24 * 3600
 _elon_cache_lock = threading.Lock()
 
-CONDITION_TXT = {
-    'new':     ("Yangi (Karobka)", "Новый (Коробка)"),
-    'openbox': ("Openbox (Ochilgan)", "Openbox (Вскрыт)"),
-    'used':    ("Ishlatilgan", "Б.у"),
-}
-
-
 async def blok(fn, *args, **kwargs):
     """Bloklaydigan (sinxron `requests`) funksiyani ALOHIDA IPDA bajaradi (E1).
 
@@ -597,7 +590,6 @@ def clean_color(color):
     """'Obsidian Black (Qora)' -> 'Obsidian Black' (qavsni olib tashlaydi)."""
     if not color:
         return ''
-    import re
     return re.sub(r'\s*\([^)]*\)', '', str(color)).strip()
 
 
@@ -5828,25 +5820,8 @@ async def rebrend_buyruq(chat_id, text):
         await _kk_admin(f"⚠️ {html_escape(b)}: kutilmagan xato ({type(e).__name__})", chat_id)
 
 
-def save_participant(konkurs_id, user_id, username, phone, ism=''):
-    if not SHEET_URL:
-        return None
-    try:
-        data = json.dumps({
-            'konkurs_id': str(konkurs_id),
-            'user_id': str(user_id),
-            'username': username or '',
-            'ism': ism or '',
-            'phone': str(phone),
-        }, ensure_ascii=False)
-        r = req.get(
-            f"{SHEET_URL}?action=joinKonkurs&callback=d&data={urllib.parse.quote(data)}",
-            timeout=12)
-        text = r.text.strip()
-        return json.loads(text[2:-1]) if text.startswith('d(') else r.json()
-    except Exception as e:
-        logger.error(f'save_participant: {e}')
-        return None
+# (save_participant olib tashlandi — epaqa: hech qayerda chaqirilmasdi; qatnashish — _kk_qatnash_yoz, kalit bilan, BUGUN125)
+
 
 def get_participants(konkurs_id):
     """Konkurs ishtirokchilari (telefon raqami bilan) — FAQAT API_KEY bilan.
