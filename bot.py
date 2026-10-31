@@ -4338,6 +4338,10 @@ async def send_new_elons(chat_id, text):
 
     if not nums:
         _last_sent['num'] = max_num
+    # Epaqa: natija adminga — ilgari `sent` sanalardi, lekin aytilmasdi (bir qismi ketmasa ham jim tugardi)
+    await blok(send_msg, chat_id, f"✅ {sent} ta e'lon yuborildi"
+                                  + (f", ⚠️ {len(targets) - sent} tasi ketmadi" if sent < len(targets) else '')
+                                  + (f" · oxirgi: #{_last_sent['num']}" if not nums else ''))
 
 
 def is_member(user_id):

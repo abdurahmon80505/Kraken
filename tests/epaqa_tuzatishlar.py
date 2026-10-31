@@ -180,5 +180,50 @@ sinov("bo'sh → 400 (avvalgidek «No num»)", st == 400 and not pv, f'{st} {pv}
 bot.preview_elon_to_admin = _asl_preview
 
 
+# ── C. /elon, /yubor — oxirida natija ─────────────────────────────────────────────────────────────────────────────
+print("— C. /elon · /yubor: oxirida adminga «✅ N ta e'lon yuborildi»")
+ELONLAR = [{'num': n, 'nameUz': f'Tovar {n}', 'price': 100 + n, 'condition': 'used', 'status': 'active', 'specId': 'm1'}
+           for n in (501, 502, 503)]
+bot.get_products = lambda urinish=2: ([dict(e) for e in ELONLAR], [{'id': 'm1', 'nameUz': 'Model'}])
+_asl_sleep = bot.asyncio.sleep
+
+
+async def _uxlamas(s):
+    return None
+
+
+bot.asyncio.sleep = _uxlamas
+_asl_send_elon = bot.send_elon
+KETMASIN = set()
+
+
+def _send_elon(chat_id, text, entities):
+    SOROV.append(('send_elon', {'text': text}))
+    return None if any(f'#{n}' in text for n in KETMASIN) else {'ok': True}
+
+
+bot.send_elon = _send_elon
+bot._last_sent['num'] = 500
+SOROV.clear()
+asyncio.run(bot.send_new_elons(ADMIN, '/yubor'))
+m = sorov('sendMessage')
+sinov("/yubor: 3 e'lon yuborildi", len(sorov('send_elon')) == 3, repr(SOROV)[:200])
+sinov("oxirida: «✅ 3 ta e'lon yuborildi · oxirgi: #503»", m and m[-1]['text'] == "✅ 3 ta e'lon yuborildi · oxirgi: #503",
+      repr(m)[:300])
+KETMASIN.add(502)
+SOROV.clear()
+asyncio.run(bot.send_new_elons(ADMIN, '/elon 501 502'))
+m = sorov('sendMessage')
+sinov("/elon 501 502 (biri ketmadi): «✅ 1 ta e'lon yuborildi, ⚠️ 1 tasi ketmadi», oxirgi raqam aytilmaydi",
+      m and m[-1]['text'] == "✅ 1 ta e'lon yuborildi, ⚠️ 1 tasi ketmadi", repr(m)[:300])
+SOROV.clear()
+asyncio.run(bot.send_new_elons(ADMIN, '/yubor'))
+m = sorov('sendMessage')
+sinov("yangi e'lon yo'q — avvalgidek bitta «ℹ️ Yangi elon yo'q» (natija qatori yo'q)",
+      len(m) == 1 and m[0]['text'].startswith("ℹ️ Yangi elon yo'q"), repr(m)[:300])
+bot.send_elon = _asl_send_elon
+bot.asyncio.sleep = _asl_sleep
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)
