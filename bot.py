@@ -8858,18 +8858,21 @@ async def bron_bekor_tugma(chat_id, cq_data):
         logger.error(f'bron_bekor_tugma: {e}')
 
 
-_BUYURTMA_TUR = {'yandex': ('🚕', 'Yandex Go'), 'emu': ('📮', 'EMU'), 'bts': ('📦', 'BTS')}
+# 3316: 🏪 «O'zim olib ketaman» — mijoz do'kondan o'zi oladi (manzil / filial yo'q, yetkazish puli yo'q)
+_BUYURTMA_TUR = {'yandex': ('🚕', 'Yandex Go'), 'ozim': ('🏪', "O'zim olib ketaman"), 'emu': ('📮', 'EMU'), 'bts': ('📦', 'BTS')}
 
 
 def _buyurtma_joy_matn(joy):
     """📍 qatori. Yandex Go — Yandex xarita havolasi (koordinatadan bot o'zi yasaydi); EMU / BTS — mijoz yozgan filial matni
-    («📍 EMU: Samarqand, Qo'shko'pir filiali»; BUGUN207 — oldin Yandex havolasi edi).
+    («📍 EMU: Samarqand, Qo'shko'pir filiali»; BUGUN207 — oldin Yandex havolasi edi); 3316: o'zi olib ketadi — «🏪 O'zim olib ketaman».
     joy = {'tur', 'lat', 'lon', 'manzil'}; turi yo'q (eski sayt) — erkin matn manzil.
     Havola yo'q (Yandex Go'da sayt kalitsiz ishlagan) — «joy belgilanmagan»: mijozdan telefon orqali so'raladi."""
     tur = joy.get('tur')
     if tur not in _BUYURTMA_TUR:
         return html_escape(joy.get('manzil') or '—')
     e, nom = _BUYURTMA_TUR[tur]
+    if tur == 'ozim':
+        return f'{e} {nom}'
     if tur == 'yandex':
         if joy.get('lat') is None:
             return f'{e} {nom} — joy belgilanmagan'
@@ -10336,6 +10339,8 @@ async def buyurtma_endpoint(request):
             if not (1 <= len(manzil) <= 150):
                 return web.json_response({'error': 'Filial notogri'}, status=400)
             joy['manzil'] = manzil
+        elif tur == 'ozim':
+            pass   # 3316: do'kondan o'zi oladi — manzil kerak emas
         else:
             # eski sayt (tur yo'q) — erkin matn manzil
             manzil = re.sub(r'[ \t]+', ' ', str(data.get('address', '') or '')).strip()
