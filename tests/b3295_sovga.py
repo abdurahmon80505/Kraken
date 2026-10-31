@@ -170,11 +170,11 @@ print('— narx')
 sinov('0 — kelishilgan narx (0, 100)', bot._kel_narx({'num': '11', 'price': '100'}, {'11': 0}) == (0, 100.0))
 sinov("Store narxidan katta / teng — Store", bot._kel_narx({'num': '11', 'price': '100'}, {'11': 120}) == (100.0, 0)
       and bot._kel_narx({'num': '11', 'price': '100'}, {'11': 100}) == (100.0, 0))
-k, o = bot._savat_kel_narxlar(['sovgakod1'], ['11'])
+k, o = bot._savat_kel_narxlar(['sovgakod1'])
 sinov('savatOl: 0 olinadi', k == {'11': 0} and o is False, repr(k))
-k, o = bot._savat_kel_narxlar(['manfiykod'], ['11'])
+k, o = bot._savat_kel_narxlar(['manfiykod'])
 sinov('savatOl: manfiy — olinmaydi', k == {}, repr(k))
-k, o = bot._savat_kel_narxlar(['ikkirang1'], ['14'])
+k, o = bot._savat_kel_narxlar(['ikkirang1'])
 sinov("havola donasi — ranglar yig'indisi", k.get('_soni') == {'14': 3}, repr(k))
 
 print("— hammasi sovg'a")
@@ -185,7 +185,7 @@ sinov("buyurtma → «to'landi», jami 0, belgi", st == 200 and b['holat'] == 't
 adm = xabarlar(ADMIN)[0]
 sinov("admin xabarida 🎁 Sovg'a, ✅ To'landi; ⏳ yo'q", "🎁 <b>Sovg'a — yangi buyurtma</b>" in adm['text'] and "✅ <b>To'landi</b>" in adm['text']
       and "To'lov kutilmoqda" not in adm['text'] and "Sovg'a — 0$" in adm['text'], adm['text'])
-sinov("admin tugmasi: ✔️ To'landi, keyingisi 🚚", "✔️ To'landi" in tugmalar(adm) and 'bh:yolda' in tugmalar(adm) and 'bh:tolandi' not in tugmalar(adm),
+sinov("admin tugmasi: keyingisi 🚚 (3301: bajarilgani — matnda)", 'bh:yolda' in tugmalar(adm) and 'bh:tolandi' not in tugmalar(adm),
       tugmalar(adm))
 mj = xabarlar(MIJOZ)
 sinov("mijozga bitta xabar: sovg'a, to'lov tugmasi yo'q", len(mj) == 1 and "to'lov kerak emas" in mj[0]['text'] and not mj[0].get('reply_markup'), repr(mj))
@@ -233,7 +233,7 @@ bot._buyurtma_zaxira_birlash({'buyurtma': [{'user_id': MIJOZ, 'order': 'TS08', '
 SOROV.clear(); SHEET.clear()
 bot._buyurtma_xabar_ish()
 b = yozuv('TS08')
-sinov("fon sikli: to'landi, tugma ✔️, mijozga xabar, $0 sotuv", b['holat'] == 'tolandi' and "✔️ To'landi" in tugmalar(xabarlar(ADMIN)[0])
+sinov("fon sikli: to'landi, tugma 🚚, mijozga xabar, $0 sotuv", b['holat'] == 'tolandi' and 'bh:yolda' in tugmalar(xabarlar(ADMIN)[0])
       and "to'lov kerak emas" in xabarlar(MIJOZ)[0]['text'] and len(sotuvlar()) == 1 and sotuvlar()[0]['tovar'][0]['chegirma'] == 100.0, repr(b)[:300])
 
 print("— admin tasdig'i shart")
@@ -248,7 +248,8 @@ asyncio.run(bot.buyurtma_holat_tugma(str(ADMIN), 5, f'bh:tolandi:{MIJOZ}:TS09'))
 sinov("admin «To'lov keldi» — $0 sotuv yoziladi", yozuv('TS09')['holat'] == 'tolandi' and len(sotuvlar()) == 1, repr(SHEET))
 st = buyurtma('TS10', ['14'], ['donakod01'], sonlar={'14': 3})
 b = yozuv('TS10')
-sinov("mijoz havoladagidan ko'p dona so'radi — o'zi to'lanmaydi", b['holat'] == 'kutilmoqda' and b.get('sovga') and b['tovar'][0]['soni'] == 3 and not sotuvlar(), repr(b)[:300])
+sinov("3301: mijoz havoladagidan ko'p dona so'radi — havoladagicha yoziladi, adminga ⚠️", b['tovar'][0]['soni'] == 1 and b['holat'] == 'tolandi' and len(sotuvlar()) == 1
+      and 'havoladagicha yozildi' in xabarlar(ADMIN)[0]['text'], repr(b)[:300])
 st = buyurtma('TS11', ['14'], ['donakod01'], sonlar={'14': 1})
 sinov("havoladagi dona — o'zi to'lanadi", yozuv('TS11')['holat'] == 'tolandi' and len(sotuvlar()) == 1, repr(yozuv('TS11'))[:300])
 
