@@ -10186,7 +10186,8 @@ def _buyurtma_sheet_dict(uid, b):
             'til': b.get('til', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''), 'admin_xabar': b.get('admin_xabar') or None, 'chek': b.get('chek') or '',
             'chek_ts': b.get('chek_ts'), 'chek_esl': b.get('chek_esl') or '',   # BUGUN305
             'yetkaz': json.dumps(b['yetkaz'], ensure_ascii=False) if b.get('yetkaz') else '',   # 3288
-            'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in (b.get('tovar') or [])]}
+            'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
+                       **({'chegirma': x['chegirma']} if x.get('chegirma') else {})} for x in (b.get('tovar') or [])]}   # 3306
 
 
 def _mijoz_sync_yubor():
@@ -10792,12 +10793,7 @@ async def admin_buyurtmalar_endpoint(request):
         if not uid or uid != ADMIN_ID:
             return web.json_response({'error': 'Faqat admin'}, status=401)
         with _MIJOZ_LOCK:
-            r = [{'uid': u, 'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'holat_ts': b.get('holat_ts'),
-                  'jami': b.get('jami'), 'tur': b.get('tur', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''),
-                  'nik': b.get('nik', ''), 'chek': b.get('chek') or '', 'yetkaz': _yetkaz_javob(b),
-                  'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
-                            for x in (b.get('tovar') or [])]}
-                 for u, m in _MIJOZ.items() for b in m['buyurtma']]
+            r = [_admin_buyurtma_dict(u, b) for u, m in _MIJOZ.items() for b in m['buyurtma']]
         r.sort(key=lambda x: x.get('ts') or 0, reverse=True)
         return web.json_response({'ok': True, 'buyurtma': r[:_ADMIN_BUYURTMA_MAX]})
     except Exception as e:
@@ -10862,6 +10858,271 @@ async def admin_buyurtma_endpoint(request):
                                   'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
         logger.error(f'admin_buyurtma_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+# ══ 3306: admin buyurtmani tahrirlaydi (fors-major) — tovar o'chirish / qo'shish (e'lon raqami), dona va narx. NEGA: Owner 2026-10-31
+# 09:36 — №SFHCCZ'da tovarni almashtirish uchun bir martalik Apps Script kerak bo'ldi (3300). Yozuv (xotira) — asosiy; Store'da
+# Buyurtmalar qatori, to'langan bo'lsa Sotuvlar va e'lon qoldig'i Apps Script `buyurtmaTahrir` da (yangi tarkibga tenglanadi —
+# qayta chaqirish xavfsiz) + AdminJurnal. Admin xabarlari (`admin_xb`) — tovar qismi almashadi; yo'q bo'lsa yangi xabar. Mijozga
+# HECH NARSA ketmaydi (Owner o'zi yozadi).
+_TAHRIR_MAX = 10
+
+
+def _admin_buyurtma_dict(u, b):
+    """Admin ro'yxatidagi bitta buyurtma (sayt «Buyurtmalar» bo'limi). 3306: tovarda chegirma (1 donaga) ham."""
+    return {'uid': u, 'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'holat_ts': b.get('holat_ts'),
+            'jami': b.get('jami'), 'tur': b.get('tur', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''),
+            'nik': b.get('nik', ''), 'chek': b.get('chek') or '', 'yetkaz': _yetkaz_javob(b), 'tahrir_ts': b.get('tahrir_ts'),
+            'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
+                       'chegirma': x.get('chegirma') or 0} for x in (b.get('tovar') or [])]}
+
+
+def _tahrir_kirish(xom):
+    """Saytdan kelgan tovar ro'yxati → [{num, soni, narx}] yoki None (buzuq). 1..10 ta, raqam takrorsiz, dona 1..99, narx 0..100000 $
+    (0 — 🎁 sovg'a)."""
+    if not isinstance(xom, list) or not 1 <= len(xom) <= _TAHRIR_MAX:
+        return None
+    res, kor = [], set()
+    for x in xom:
+        if not isinstance(x, dict):
+            return None
+        n = str(x.get('num') or '').strip()
+        try:
+            soni, narx = int(x.get('soni')), round(float(x.get('narx')), 2)
+        except Exception:
+            return None
+        if not re.fullmatch(r'\d{1,6}', n) or n in kor or not 1 <= soni <= 99 or not 0 <= narx <= 100000:
+            return None
+        kor.add(n)
+        res.append({'num': n, 'soni': soni, 'narx': narx})
+    return res
+
+
+def _tahrir_tovar(eski, kirish):
+    """Fon oqimida. eski — yozuvdagi tovar, kirish — _tahrir_kirish natijasi. Qaytaradi (tovar, topilmagan raqamlar).
+    Bor tovar — nomi saqlanadi, chegirma = (eski narx + eski chegirma) − yangi narx (Store narxiga nisbatan); yangisi — Store'dan
+    (_buyurtma_elon), chegirma = Store narxi − admin narxi."""
+    bor = {str(x.get('num')): x for x in eski or [] if x.get('num')}
+    res, yoq = [], []
+    for k in kirish:
+        e = bor.get(k['num'])
+        if e:
+            try:
+                asl = float(e.get('narx') or 0) + float(e.get('chegirma') or 0)
+            except Exception:
+                asl = k['narx']
+            x = {**e, 'num': k['num'], 'nom': e.get('nom') or f"E'lon №{k['num']}"}   # boshqa maydonlar (bo'lsa) saqlanadi
+            x.pop('chegirma', None)
+        else:
+            elon, models, o = _buyurtma_elon(k['num'])
+            if o == 'topilmadi':
+                yoq.append(k['num'])
+                continue
+            asl = _narx_son(elon)
+            asl = k['narx'] if asl is None else asl
+            x = {'num': k['num'], 'nom': _buyurtma_sarlavha(elon, (models or {}).get(str(elon.get('specId', '') or ''), {}))}
+        x.update(narx=k['narx'], soni=k['soni'])
+        if round(asl - k['narx'], 2) > 0:
+            x['chegirma'] = round(asl - k['narx'], 2)
+        res.append(x)
+    return res, yoq
+
+
+def _tahrir_qoy(uid, order, nusxa, tovar):
+    """Bitta qulf ostida yangi tarkib yoziladi. nusxa — o'qilgan paytdagi tovar (orada boshqa o'zgarish bo'lsa — 'band').
+    Qaytaradi (kod, buyurtma nusxasi): 'ok' · 'bekor' · 'band' · 'topilmadi'."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+        if not b:
+            return 'topilmadi', None
+        if b.get('holat') == 'bekor':
+            return 'bekor', dict(b)
+        if (b.get('tovar') or []) != nusxa:
+            return 'band', dict(b)
+        b['tovar'] = tovar
+        b['jami'] = round(sum(x['narx'] * x['soni'] for x in tovar), 2)
+        b['tahrir_ts'] = time.time()
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+        return 'ok', dict(b)
+
+
+def _tahrir_bron(uid, order, eski, b):
+    """Olib tashlangan tovar broni (shu buyurtmaniki bo'lsa) ochiladi; qo'shilgani bo'sh bo'lsa — bron (yetkazilmagan buyurtmada)."""
+    yangi = {str(x.get('num')) for x in b.get('tovar') or []}
+    ozgardi = False
+    for x in eski or []:
+        n = str(x.get('num'))
+        br = _BRON.get(n)
+        if n not in yangi and br and br.get('order') == order:
+            _BRON.pop(n, None)
+            ozgardi = True
+    if ozgardi:
+        _bron_saqlash()
+    if b.get('holat') not in ('yetkazildi', 'yopildi'):
+        for n in sorted(yangi):
+            if not _bron_olish(n):
+                _bron_qoy(n, uid, order)
+
+
+def _tahrir_bolak(b):
+    """Admin xabaridagi tovar qismi (yozuvdan): [(matn, bold, havola)] bo'laklari."""
+    tovar = b.get('tovar') or []
+    q = [("✏️ ", False, ''), ("O'zgartirildi", True, ''), (f" · {_kk_vaqt(b.get('tahrir_ts') or time.time())[-5:]} (admin)\n", False, ''),
+         (f"🧺 {len(tovar)} ta tovar:", True, ''), ('\n', False, '')]
+    cheg_jami = 0
+    for i, x in enumerate(tovar, 1):
+        n, d, c = x.get('narx') or 0, x.get('soni') or 1, x.get('chegirma') or 0
+        cheg_jami += c * d
+        if n == 0 and c > 0:
+            s = "🎁 Sovg'a" + (f' × {d}' if d > 1 else '') + f' (Store {c:g}$)'
+        else:
+            s = (f'{n:g}$ × {d} = {round(n * d, 2):g}$' if d > 1 else f'{n:g}$') + (f' 🎟 (Store {round(n + c, 2):g}$)' if c > 0 else '')
+        num = str(x.get('num') or '')
+        q += [(f'{i}. ', False, ''), (str(x.get('nom') or '—'), True,
+                                       f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}' if num.isdigit() else ''),
+              (f' · №{num} · {s}\n', False, '')]
+    _, som, kurs = _chek_summa(b)
+    q.append((f"💵 Jami {b.get('jami') or 0:g}$" + (f" ≈ {som:,} so'm (kurs {kurs:,})".replace(',', ' ') if som else ''), False, ''))
+    if cheg_jami > 0:
+        q += [('\n', False, ''), (f"🎟 Admin chegirmasi: −{round(cheg_jami, 2):g}$", True, '')]
+    return q
+
+
+def _bolak_ents(bolak, bosh=0):
+    """Bo'laklar → (matn, entities); bosh — matn xabarning qayeridan boshlanadi (UTF-16)."""
+    matn, ents = '', []
+    for t, qalin, url in bolak:
+        o, ln = bosh + _u16(matn), _u16(t)
+        if qalin and ln:
+            ents.append({'type': 'bold', 'offset': o, 'length': ln})
+        if url and ln:
+            ents.append({'type': 'text_link', 'offset': o, 'length': ln, 'url': url})
+        matn += t
+    return matn, ents
+
+
+def _bolak_html(bolak):
+    q = []
+    for t, qalin, url in bolak:
+        s = html_escape(t)
+        s = f'<b>{s}</b>' if qalin else s
+        q.append(f'<a href="{html_escape(url)}">{s}</a>' if url else s)
+    return ''.join(q)
+
+
+def _tahrir_almash(text, entities, b):
+    """Admin xabari matni (Telegram'dagidek) → (yangi matn, entities) yoki None. Buyurtma xabari — sarlavhadan keyingi bo'limdan
+    «👤» gacha tovar qismi almashadi; chek nusxasi — «💵» qatori (yangi summa). Qolgani (holat zanjiri, vaqt) — tegilmaydi."""
+    text = text or ''
+    i, j = text.find('\n\n'), text.find('\n\n👤')
+    if 0 <= i < j:
+        s, e = i + 2, j
+        yangi_t, yangi_e = _bolak_ents(_tahrir_bolak(b), _u16(text[:s]))
+    else:
+        m = re.search(r'(?m)^💵 .*$', text)
+        if not m:
+            return None
+        s, e = m.start(), m.end()
+        yangi_t, yangi_e = f'💵 {_chek_summa_s(b)} ✏️', []
+    s16, e16 = _u16(text[:s]), _u16(text[:e])
+    farq = _u16(yangi_t) - (e16 - s16)
+    ents = []
+    for x in entities or []:
+        o, ln = int(x.get('offset', 0)), int(x.get('length', 0))
+        if o + ln <= s16:
+            ents.append(dict(x))
+        elif o >= e16:
+            ents.append(dict(x, offset=o + farq))
+        elif o < s16:
+            ents.append(dict(x, length=s16 - o))
+    return text[:s] + yangi_t + text[e:], ents + yangi_e
+
+
+def _tahrir_holat_html(b):
+    """Yangi admin xabari uchun holat qatori — _HOLAT_QATOR_RE taniydigan ko'rinishda (keyingi tugma zanjirni davom ettiradi)."""
+    h = b.get('holat')
+    if h in _HOLAT_QATOR:
+        e, nom = _HOLAT_QATOR[h]
+        return f"{e} <b>{nom}</b> · {_kk_vaqt(b.get('holat_ts') or time.time())[-5:]}"
+    return "⏳ <b>To'lov kutilmoqda</b>"
+
+
+async def _tahrir_xabarlar(uid, order, b):
+    """Admin xabarlari yangilanadi. Birortasi ham yangilanmasa (yozuvda xabar yo'q — bot qayta yongan) — yangi xabar.
+    Qaytaradi: 'tahrir' · 'yangi' · 'xato'."""
+    bron_nums = [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')]
+    klava = _buyurtma_klava(uid, order, b.get('holat') or 'kutilmoqda', bron_nums)
+    bor = False
+    for x in list(b.get('admin_xb') or []):
+        ym = _tahrir_almash(x.get('t'), x.get('e'), b)
+        if ym and await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order) == 'yuborildi':
+            bor = True
+    if bor:
+        return 'tahrir'
+    joy = dict(b.get('joy') or {})
+    joy['tur'] = b.get('tur') or joy.get('tur') or ''
+    matn = (f"✏️ <b>Buyurtma o'zgartirildi</b> №{html_escape(order)}\n\n" + _bolak_html(_tahrir_bolak(b)) + "\n\n"
+            f"👤 {html_escape(b.get('ism') or '—')}\n📞 {html_escape(b.get('tel') or '—')}\n📍 {_buyurtma_joy_matn(joy)}\n\n"
+            + _tahrir_holat_html(b) + f"\n🕒 Buyurtma: {_kk_vaqt(b.get('ts') or time.time())}")
+    natija, j = await blok(_kk_tg, 'sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
+                                                   'link_preview_options': {'is_disabled': True}}, urinish=2)
+    if natija != 'yuborildi':
+        return 'xato'
+    r = (j or {}).get('result') or {}
+    await blok(_admin_xb_yoz, uid, order, r.get('message_id'), False, r.get('text'), r.get('entities'))
+    return 'yangi'
+
+
+def _tahrir_store(uid, eski, b):
+    """Apps Script buyurtmaTahrir: Buyurtmalar qatori, to'langan bo'lsa Sotuvlar + qoldiq, AdminJurnal. True — Store qabul qildi."""
+    d = {'order': b.get('order'), 'user_id': str(uid), 'holat': b.get('holat'), 'jami': b.get('jami'), 'kim': 'admin',
+         'eski': [{'num': x.get('num'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in eski or []],
+         'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
+                    'chegirma': x.get('chegirma') or 0} for x in b.get('tovar') or []]}
+    r = _kk_sheet('buyurtmaTahrir', timeout=60, data=json.dumps(d, ensure_ascii=False))
+    return bool(r and r.get('ok'))
+
+
+async def admin_buyurtma_tahrir_endpoint(request):
+    """3306: admin saytdan buyurtma tarkibini o'zgartiradi. {initData (FAQAT ADMIN_ID), uid, order, tovar: [{num, soni, narx}]} —
+    yangi to'liq tarkib (yo'q tovar — o'chiriladi, yangi raqam — Store'dan qo'shiladi). Bekor qilingan — 409. Mijozga xabar YO'Q.
+    Tarkib o'zgarmagan bo'lsa ham Store'ga qayta yoziladi (oldingi saqlashda Apps Script javob bermagan bo'lsa — takror xavfsiz).
+    Javob: {ok, store (Apps Script yozdimi), xabar ('tahrir' | 'yangi' | 'xato' | '-'), buyurtma}."""
+    try:
+        data = await request.json()
+        if check_init_data(str(data.get('initData') or '')) != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        mid, order = str(data.get('uid') or '').strip(), _order_ol(data.get('order'))
+        kirish = _tahrir_kirish(data.get('tovar'))
+        if not mid.isdigit() or not order or kirish is None:
+            return web.json_response({'error': 'parametr'}, status=400)
+        mid = int(mid)
+        with _MIJOZ_LOCK:
+            b = next((x for x in _mijoz_ol(mid)['buyurtma'] if x.get('order') == order), None)
+            nusxa = [dict(x) for x in (b.get('tovar') or [])] if b else None
+            b = dict(b) if b else None
+        if b is None:
+            return web.json_response({'error': 'Topilmadi'}, status=404)
+        if b.get('holat') == 'bekor':
+            return web.json_response({'error': 'bekor', 'holat': 'bekor'}, status=409)
+        tovar, yoq = await blok(_tahrir_tovar, nusxa, kirish)
+        if yoq:
+            return web.json_response({'error': 'topilmadi', 'nums': yoq}, status=400)
+        xabar = '-'
+        if tovar != nusxa:
+            kod, b = await blok(_tahrir_qoy, mid, order, nusxa, tovar)
+            if kod == 'topilmadi':
+                return web.json_response({'error': 'Topilmadi'}, status=404)
+            if kod in ('bekor', 'band'):
+                return web.json_response({'error': kod, 'holat': (b or {}).get('holat')}, status=409)
+            await blok(_tahrir_bron, mid, order, nusxa, b)
+            xabar = await _tahrir_xabarlar(mid, order, b)
+        store = await blok(_tahrir_store, mid, nusxa, b)
+        return web.json_response({'ok': True, 'store': store, 'xabar': xabar, 'buyurtma': _admin_buyurtma_dict(mid, b)})
+    except Exception as e:
+        logger.error(f'admin_buyurtma_tahrir_endpoint: {type(e).__name__}')
         return web.json_response({'error': 'xato'}, status=500)
 
 
@@ -11161,6 +11422,7 @@ async def main():
     app.router.add_post('/isbot_rasm', isbot_rasm_endpoint)           # 3288: yetkazish isboti rasmi (egasi / admin)
     app.router.add_post('/admin_buyurtmalar', admin_buyurtmalar_endpoint)   # 3288: admin — buyurtmalar ro'yxati
     app.router.add_post('/admin_buyurtma', admin_buyurtma_endpoint)   # 3288: admin — isbot · qabul · yopish
+    app.router.add_post('/admin_buyurtma_tahrir', admin_buyurtma_tahrir_endpoint)   # 3306: admin — tarkib / dona / narx
     app.router.add_post('/kirish_holat', kirish_holat_endpoint)   # BUGUN224: konkurs qatnashchisi — saytda avto-kirish   # BUGUN171: «Sotib olish» — adminga darhol xabar
     app.router.add_post('/konkurs/captcha', konkurs_captcha_endpoint)   # BUGUN125: Mini App tekshiruvi
     app.router.add_post('/konkurs/qatnash', konkurs_qatnash_endpoint)
