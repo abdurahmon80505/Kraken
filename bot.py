@@ -6282,14 +6282,24 @@ def send_konkurs_channel_post(chat_id, text, images, reply_markup):
     """Konkurs natijasini kanalga yuboradi (HTML parse_mode):
     1 rasm  -> sendPhoto (caption + tugma birga)
     ko'p rasm -> sendMediaGroup (caption 1-rasmga) + tugma alohida qisqa xabar.
-    3185: postning (ko'p rasmda — 1-rasm, matni shunda) message_id sini qaytaradi; yuborilmadi — None."""
+    3185: postning (ko'p rasmda — 1-rasm, matni shunda) message_id sini qaytaradi; yuborilmadi — None.
+    3319: matn rasm izohiga sig'masa — rasm(lar) alohida, matn tugma bilan alohida xabar (1 rasmda ham). Albom ketmasa —
+    tugma / matn ham ketmaydi: kanalda yarim post qolmasin."""
     imgs = [i for i in (images or []) if i][:10]
     if not imgs:
         return _tg_mid(req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': text,
             'parse_mode': 'HTML', 'reply_markup': reply_markup
         }, timeout=10))
-    caption_fits = len(text) <= 1000
+    caption_fits = len(text.encode('utf-16-le')) // 2 <= 1000   # chegara 1024 — Telegram birligida (emoji — 2 ta)
+    if len(imgs) == 1 and not caption_fits:
+        rasm = _tg_mid(req.post(f'{TG_API}/sendPhoto', json={'chat_id': chat_id, 'photo': imgs[0]}, timeout=15))
+        if not rasm:
+            return None
+        return _tg_mid(req.post(f'{TG_API}/sendMessage', json={
+            'chat_id': chat_id, 'text': text,
+            'parse_mode': 'HTML', 'reply_markup': reply_markup
+        }, timeout=10)) or rasm
     if len(imgs) == 1:
         r = req.post(f'{TG_API}/sendPhoto', json={
             'chat_id': chat_id, 'photo': imgs[0],
@@ -6311,6 +6321,8 @@ def send_konkurs_channel_post(chat_id, text, images, reply_markup):
             item['parse_mode'] = 'HTML'
         media.append(item)
     mid = _tg_mid(req.post(f'{TG_API}/sendMediaGroup', json={'chat_id': chat_id, 'media': media}, timeout=20))
+    if not mid:
+        return None
     if caption_fits:
         req.post(f'{TG_API}/sendMessage', json={
             'chat_id': chat_id, 'text': '🛍', 'reply_markup': reply_markup
@@ -6322,6 +6334,177 @@ def send_konkurs_channel_post(chat_id, text, images, reply_markup):
             'parse_mode': 'HTML', 'reply_markup': reply_markup
         }, timeout=10)) or mid
     return mid
+
+
+# 3319: /konkursyuborish — post avval admin lichkasiga, kanalga faqat «✅ Kanalga chiqarish» dan keyin (tasodifan bosilsa
+# post qaytarib bo'lmaydi; Owner, 2026-10-31). Kutayotgan post — BITTA: yangi ko'rsatish eskisining «✅» ini eskirtiradi.
+# Takror himoyasi: _konkurs_post bir marta olinadi (event loop ichida, await'siz — qulf kerak emas) + konkursning post_havola si
+# (jadvalda — bot qayta yonsa ham qoladi, QOIDALAR T2) + _konkurs_chiqdi (havola jadvalga yozilmagan bo'lsa — shu ishlash davomida).
+KK_BELGI = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
+_konkurs_post = {}             # {'token', 'id', 'kanal', 'anons', 'pics', 'markup'}
+_konkurs_post_olindi = set()   # bosilgan tokenlar: tez ikkinchi bosish natija xabarini buzmasin
+_konkurs_chiqdi = {}           # konkurs id → chiqqan post (jadvalga yozilmaganlar)
+
+
+def konkurs_anons(k):
+    """Konkurs anonsi posti: (matn, rasmlar, tugma). Sovg'alar — hammasi: 1-3 medal, 4-10 raqam emoji, keyin «11.»."""
+    prize = html_escape(k.get('prize', 'Konkurs'))
+    # prizes: JSON array (["...","..."]) yoki vergulli matn
+    raw = k.get('prizes', '') or ''
+    items = []
+    if raw:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, list):
+                items = [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            # [ va ] qavslarni olib tashlab, vergul bo'yicha bo'lamiz
+            cleaned = str(raw).strip().lstrip('[').rstrip(']')
+            items = [s.strip().strip('"').strip("'") for s in cleaned.split(',') if s.strip()]
+    # Sana -> Toshkent, "25.07.2026 20:00". Zonasiz satr — Toshkent vaqti (ilgari UTC deb +5 qo'shilardi)
+    def _fmt_end(s):
+        ts = _parse_end_time(s)
+        return _kk_vaqt(ts) if ts else str(s)
+    lines = [f"🎊 <b>{prize}</b> konkursga start berdik! 🎊", ""]
+    if items:
+        lines.append("🎁 Sovg'alar:")
+        for i, it in enumerate(items):
+            belgi = KK_BELGI[i] if i < len(KK_BELGI) else f"{i + 1}."
+            lines.append(f"{belgi} {html_escape(it)}")
+        lines.append("")
+    lines.append(f"⏰ Konkurs tugashi: {_fmt_end(k.get('end_time', ''))}")
+    lines.append("")
+    lines.append("Hoziroq qatnashing 👇")
+    anons = "\n".join(lines)
+    # Rasmlar: yig'ilgan sovrin rasmlari
+    pics = []
+    praw = k.get('prizePics', '') or ''
+    if praw:
+        pics = [p.strip() for p in str(praw).split(',') if p.strip()]
+    markup = {"inline_keyboard": [[{
+        "text": "🎁 Konkursda qatnashish",
+        "url": f"https://t.me/{BOT_USERNAME}?startapp=konkurs"
+    }]]}
+    return anons, pics, markup
+
+
+def _kk_post_chiqqan(k):
+    """Shu konkurs anonsi kanalga chiqqanmi: havola ('' — chiqmagan)."""
+    return str(k.get('post_havola') or '').strip() or _konkurs_chiqdi.get(k.get('id'), '')
+
+
+def _kk_post_xabar(chat, xabar_id, matn, tugmalar=None):
+    """Tasdiq xabarini almashtiradi; tugmalar berilmasa — eskilari olib tashlanadi."""
+    tana = {'chat_id': int(chat), 'message_id': xabar_id, 'text': matn, 'parse_mode': 'HTML',
+            'disable_web_page_preview': True}
+    try:
+        r = req.post(f'{TG_API}/editMessageText', json={**tana, 'reply_markup': {'inline_keyboard': tugmalar or []}}, timeout=10)
+        if tugmalar and not _tg_mid(r):   # tugma rad etilsa ham matn yangilansin — «⏳» da qolib ketmasin
+            req.post(f'{TG_API}/editMessageText', json=tana, timeout=10)
+    except Exception as e:
+        logger.error(f"konkurs tasdiq xabari: {type(e).__name__}")
+
+
+def _kk_post_tugmalar(token):
+    return [[{"text": "✅ Kanalga chiqarish", "callback_data": f"kpost_ok:{token}"},
+             {"text": "↩️ Bekor", "callback_data": f"kpost_no:{token}"}]]
+
+
+async def konkurs_post_korsat(chat_id):
+    """/konkursyuborish: anons posti faqat admin lichkasiga, ostida «✅» · «↩️». Kanalga hech narsa ketmaydi."""
+    _konkurs_cache['time'] = 0
+    k = await blok(get_konkurs)
+    if not k or not k.get('id') or not _kk_aktivmi(k):
+        await blok(send_msg, chat_id, "😕 Hozirda aktiv konkurs yo'q.")
+    elif _kk_yashirinmi(k) and not _kk_sinovmi(k.get('prize')):
+        # BUGUN147: yashirin konkurs anonsi kanalga ketsa — tugma bosgan obunachi konkursni ko'rmaydi
+        await blok(send_msg, chat_id, "❌ Konkurs oynasi yashirin — anons kanalga yuborilmadi.\n"
+                                      "Avval oching: /konkursochiq, keyin qayta /konkursyuborish")
+    elif _kk_post_chiqqan(k):
+        await blok(send_msg, chat_id, f"ℹ️ Bu konkurs posti allaqachon chiqqan: {html_escape(_kk_post_chiqqan(k))}"
+                   + ("\nQayta chiqarish kerak bo'lsa — admin panelda post havolasini o'chiring." if k.get('post_havola') else ""))
+    else:
+        anons, pics, markup = konkurs_anons(k)
+        kanal = _kk_kanal(k)   # sinov — asosiy kanalga emas (KANAL_YOLI)
+        try:
+            mid = await blok(send_konkurs_channel_post, ADMIN_ID, anons, pics, markup)
+        except Exception as e:
+            logger.error(f"konkurs ko'rsatish: {type(e).__name__}")
+            mid = None
+        if not mid:
+            await blok(send_msg, chat_id, "❌ Postni ko'rsatib bo'lmadi (rasm yoki Telegram xatosi). Qayta: /konkursyuborish")
+            return
+        token = os.urandom(4).hex()
+        _konkurs_post.clear()
+        _konkurs_post.update(token=token, id=k['id'], kanal=kanal, anons=anons, pics=pics, markup=markup)
+        await blok(send_msg, ADMIN_ID, f"👆 Kanalda shunday chiqadi.\nKanal: {html_escape(str(kanal))}\n"
+                                       "Hali hech narsa ketmadi — tasdiqlang:",
+                   {"inline_keyboard": _kk_post_tugmalar(token)})
+        if chat_id != ADMIN_ID:
+            await blok(send_msg, chat_id, "📩 Post lichkangizga yuborildi — o'sha yerda tasdiqlang.")
+
+
+async def konkurs_post_tugma(chat, xabar_id, data):
+    """«✅ Kanalga chiqarish» (kpost_ok:<token>) · «↩️ Bekor» (kpost_no:<token>)."""
+    amal, token = data.split(':', 1)
+    if _konkurs_post.get('token') != token:
+        if token not in _konkurs_post_olindi:
+            await blok(_kk_post_xabar, chat, xabar_id, "⌛ Bu tasdiq ishlatilgan yoki eskirgan — kanalga qayta ketmaydi.\n"
+                                                       "Yangisi: /konkursyuborish")
+        return
+    p = dict(_konkurs_post)
+    _konkurs_post.clear()
+    _konkurs_post_olindi.add(token)
+    if amal == 'kpost_no':
+        await blok(_kk_post_xabar, chat, xabar_id, "↩️ Bekor qilindi — kanalga hech narsa ketmadi.")
+        return
+    await blok(_kk_post_xabar, chat, xabar_id, "⏳ Kanalga chiqarilmoqda…")
+    _konkurs_cache['time'] = 0
+    k = await blok(get_konkurs)
+    if not k or not k.get('id'):
+        qaytdi = not _konkurs_post   # shu orada yangi ko'rsatish bo'lmagan bo'lsa — tugmalar qaytadi
+        if qaytdi:
+            _konkurs_post.update(p)
+            _konkurs_post_olindi.discard(token)
+        await blok(_kk_post_xabar, chat, xabar_id, "⚠️ Jadval javob bermadi — kanalga hech narsa ketmadi."
+                   + (" Qayta bosing:" if qaytdi else " Qayta: /konkursyuborish"), _kk_post_tugmalar(token) if qaytdi else None)
+        return
+    if k['id'] == p['id'] and _kk_post_chiqqan(k):
+        await blok(_kk_post_xabar, chat, xabar_id, f"ℹ️ Post allaqachon chiqqan — qayta ketmadi: {html_escape(_kk_post_chiqqan(k))}")
+        return
+    sabab = ''
+    if k['id'] != p['id'] or not _kk_aktivmi(k):
+        sabab = "Bu konkurs endi aktiv emas."
+    elif _kk_yashirinmi(k) and not _kk_sinovmi(k.get('prize')):
+        sabab = "Konkurs oynasi yashirin: /konkursochiq, keyin qayta /konkursyuborish"
+    elif konkurs_anons(k)[:2] != (p['anons'], p['pics']):
+        sabab = "Konkurs ko'rsatilgandan keyin o'zgargan — yangisini ko'ring: /konkursyuborish"
+    if sabab:
+        await blok(_kk_post_xabar, chat, xabar_id, f"❌ Kanalga ketmadi. {sabab}")
+        return
+    kanal = p['kanal']
+    try:
+        mid = await blok(send_konkurs_channel_post, kanal, p['anons'], p['pics'], p['markup'])
+    except Exception as e:   # kutish tugagan bo'lsa post chiqqan bo'lishi mumkin — o'zi qayta yubormaydi
+        logger.error(f"konkurs post: {type(e).__name__}")
+        mid = None
+    if not mid:
+        await blok(_kk_post_xabar, chat, xabar_id, f"❌ Kanalga chiqqani tasdiqlanmadi. {html_escape(str(kanal))} ni tekshiring; "
+                                                   "chiqmagan bo'lsa — qayta /konkursyuborish")
+        return
+    # 3185: saytdagi «Do'stlarga ulashish» shu postni ulashadi — havola konkursga o'zi yoziladi
+    havola = post_havola(kanal, mid)
+    _konkurs_chiqdi[k['id']] = havola or f"{kanal}, xabar {mid}"
+    await blok(_kk_post_xabar, chat, xabar_id, f"✅ Konkurs anonsi kanalga chiqdi: {html_escape(str(kanal))}",
+               [[{"text": f"✅ Chiqdi: {havola.replace('https://', '')}", "url": havola}]] if havola else None)
+    if havola and '/t.me/c/' not in havola:   # yopiq kanal posti — do'st ocholmaydi
+        r = await _kk_sorov('konkursPostHavola', urinish=2, id=k['id'], havola=havola)
+        if r and r.get('ok'):
+            _konkurs_cache['time'] = 0
+            _konkurs_chiqdi.pop(k['id'], None)   # endi jadvalda: admin panelda o'chirilsa — qayta chiqarsa bo'ladi
+            await blok(send_msg, chat, f"🔗 Saytdagi «Do'stlarga ulashish» endi shu postni ulashadi:\n{havola}")
+        else:
+            await blok(send_msg, chat, f"⚠️ Post havolasi saytga yozilmadi — admin panelda qo'lda qo'ying:\n{havola}")
 
 
 def _maxfiy(e):
@@ -7563,6 +7746,9 @@ async def handle_update(data):
             # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
             if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_adm:
                 asyncio.create_task(blok(kanal_tasdiq, cq_chat, cq_data.split(':', 1)[1], cq_data.startswith('kanal_ok:')))
+            # 3319: konkurs anonsi tasdiqi (faqat admin lichkasiga keladi)
+            if cq_data.startswith(('kpost_ok:', 'kpost_no:')) and cq_adm:
+                asyncio.create_task(konkurs_post_tugma(cq_chat, cq.get('message', {}).get('message_id'), cq_data))
             # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin); 3238: Kollajlar mavzusidagi «✅ Kanalda shunga o'tkazish» / «↩»
             if cq_data.startswith(('kollaj:', 'slayd:', 'kg:', 'kgq:')) and cq_adm:
                 asyncio.create_task(blok(kollaj_almashtir, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
@@ -7747,66 +7933,8 @@ async def handle_update(data):
                 await start_konkurs_flow(chat_id, user)
 
         elif text == '/konkursyuborish' and adm:
-            # ADMIN: aktiv konkurs anonsini kanalga yuboradi.
-            _konkurs_cache['time'] = 0
-            k = await blok(get_konkurs)
-            if not k or not k.get('id') or not _kk_aktivmi(k):
-                await blok(send_msg, chat_id, "😕 Hozirda aktiv konkurs yo'q.")
-            elif _kk_yashirinmi(k) and not _kk_sinovmi(k.get('prize')):
-                # BUGUN147: yashirin konkurs anonsi kanalga ketsa — tugma bosgan obunachi konkursni ko'rmaydi
-                await blok(send_msg, chat_id, "❌ Konkurs oynasi yashirin — anons kanalga yuborilmadi.\n"
-                                              "Avval oching: /konkursochiq, keyin qayta /konkursyuborish")
-            else:
-                prize = html_escape(k.get('prize', 'Konkurs'))
-                # prizes: JSON array (["...","..."]) yoki vergulli matn
-                raw = k.get('prizes', '') or ''
-                items = []
-                if raw:
-                    try:
-                        parsed = json.loads(raw) if isinstance(raw, str) else raw
-                        if isinstance(parsed, list):
-                            items = [str(x).strip() for x in parsed if str(x).strip()]
-                    except Exception:
-                        # [ va ] qavslarni olib tashlab, vergul bo'yicha bo'lamiz
-                        cleaned = str(raw).strip().lstrip('[').rstrip(']')
-                        items = [s.strip().strip('"').strip("'") for s in cleaned.split(',') if s.strip()]
-                # 1-3 medal, 4-5 raqam
-                marks = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣']
-                # Sana -> Toshkent, "25.07.2026 20:00". Zonasiz satr — Toshkent vaqti (ilgari UTC deb +5 qo'shilardi)
-                def _fmt_end(s):
-                    ts = _parse_end_time(s)
-                    return _kk_vaqt(ts) if ts else str(s)
-                lines = [f"🎊 <b>{prize}</b> konkursga start berdik! 🎊", ""]
-                if items:
-                    lines.append("🎁 Sovg'alar:")
-                    for i, it in enumerate(items[:5]):
-                        lines.append(f"{marks[i]} {html_escape(it)}")
-                    lines.append("")
-                lines.append(f"⏰ Konkurs tugashi: {_fmt_end(k.get('end_time', ''))}")
-                lines.append("")
-                lines.append("Hoziroq qatnashing 👇")
-                anons = "\n".join(lines)
-                # Rasmlar: yig'ilgan sovrin rasmlari
-                pics = []
-                praw = k.get('prizePics', '') or ''
-                if praw:
-                    pics = [p.strip() for p in str(praw).split(',') if p.strip()]
-                markup = {"inline_keyboard": [[{
-                    "text": "🎁 Konkursda qatnashish",
-                    "url": f"https://t.me/{BOT_USERNAME}?startapp=konkurs"
-                }]]}
-                kanal = _kk_kanal(k)   # sinov — asosiy kanalga emas (KANAL_YOLI)
-                mid = await blok(send_konkurs_channel_post, kanal, anons, pics, markup)
-                await blok(send_msg, chat_id, f"✅ Konkurs anonsi kanalga yuborildi: {kanal}")
-                # 3185: saytdagi «Do'stlarga ulashish» shu postni ulashadi — havola konkursga o'zi yoziladi
-                havola = post_havola(kanal, mid)
-                if havola and '/t.me/c/' not in havola:   # yopiq kanal posti — do'st ocholmaydi
-                    r = await _kk_sorov('konkursPostHavola', urinish=2, id=k['id'], havola=havola)
-                    if r and r.get('ok'):
-                        _konkurs_cache['time'] = 0
-                        await blok(send_msg, chat_id, f"🔗 Saytdagi «Do'stlarga ulashish» endi shu postni ulashadi:\n{havola}")
-                    else:
-                        await blok(send_msg, chat_id, f"⚠️ Post havolasi saytga yozilmadi — admin panelda qo'lda qo'ying:\n{havola}")
+            # ADMIN: aktiv konkurs anonsi — avval lichkaga, kanalga «✅» dan keyin (3319; fonda — T1)
+            asyncio.create_task(konkurs_post_korsat(chat_id))
 
         elif text == '/konkurstimer' and adm:
             # Admin zaxira: aktiv konkurs taymerini qayta o'rnatadi + holatni ko'rsatadi
