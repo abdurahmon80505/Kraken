@@ -8832,7 +8832,7 @@ def _u16(s):
 
 def _buyurtma_holat_matn(text, entities, holat, ts):
     """Admin xabari (text + entities, Telegram'dan qaytgan) → (yangi text, entities): holat qatoridan pasti almashadi.
-    Holat qatori topilmasa (boshqa xabar) — None."""
+    Holat qatori topilmasa (boshqa xabar) yoki xabarda shu holat allaqachon yozilgan bo'lsa (3302) — None."""
     if holat not in _HOLAT_QATOR:
         return None
     m = None
@@ -8844,6 +8844,8 @@ def _buyurtma_holat_matn(text, entities, holat, ts):
     v = _BUYURTMA_VAQT_RE.search(dum)
     eski = dum.split('\n', 1)[0]
     e, nom = _HOLAT_QATOR[holat]
+    if eski.split(' → ')[-1].startswith(f'{e} {nom}'):
+        return None
     zanjir = '' if eski.startswith('⏳') else eski + ' → '
     qator = f"{zanjir}{e} {nom} · {_kk_vaqt(ts)[-5:]}"
     yangi = bosh + '\n\n' + qator + (f"\n🕒 Buyurtma: {v.group(1)}" if v else '')
@@ -8858,6 +8860,60 @@ def _buyurtma_holat_matn(text, entities, holat, ts):
         ents.append(y)
     ents.append({'type': 'bold', 'offset': _u16(bosh + '\n\n' + zanjir + e + ' '), 'length': _u16(nom)})
     return yangi, ents
+
+
+# 3302: bir buyurtmaning admin xabarlari (buyurtma + chek nusxasi) — holat tugmasi qaysi birida bosilsa ham HAMMASIDA holat qatori
+# yangilanadi. NEGA: Owner 2026-10-31 — chekdagi «To'landi» bosilgan, chek xabarida esa «⏳ To'lov kutilmoqda» qolgan: bot faqat bosilgan
+# xabarni tahrirlardi, matnni ham faqat holat YANGI surilganda (boshqa xabarda allaqachon bosilgan bo'lsa — «eski», faqat tugmalar).
+# Telegram'da xabar matnini o'qib bo'lmaydi — yozuvda `admin_xb`: har xabarning id si va joriy matni (text + entities). Render qayta
+# yonsa yozuv Sheets'dan tiklanadi, `admin_xb` yo'q — o'shanda faqat bosilgan xabar (eskicha).
+_ADMIN_XB_MAX = 6
+
+
+def _html_b_ents(html):
+    """Faqat <b> teglari bo'lgan HTML → (oddiy matn, entities). Chek nusxasi uchun: copyMessage caption'ni qaytarmaydi."""
+    matn, ents, bosh = '', [], None
+    for q in re.split(r'(</?b>)', html or ''):
+        if q == '<b>':
+            bosh = _u16(matn)
+        elif q == '</b>':
+            if bosh is not None and _u16(matn) > bosh:
+                ents.append({'type': 'bold', 'offset': bosh, 'length': _u16(matn) - bosh})
+            bosh = None
+        else:
+            matn += _html.unescape(q)
+    return matn, ents
+
+
+def _admin_xb_yoz(uid, order, mid, caption, text, ents):
+    """Admin xabarining joriy matni yozuvga (shu id bo'lsa — almashadi)."""
+    if not mid or not text:
+        return
+    with _MIJOZ_LOCK:
+        b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
+        if not b:
+            return
+        royxat = [x for x in (b.get('admin_xb') or []) if x.get('m') != mid]
+        royxat.append({'m': int(mid), 'c': 1 if caption else 0, 't': text, 'e': list(ents or [])})
+        b['admin_xb'] = royxat[-_ADMIN_XB_MAX:]
+        _mijoz_saqlash()
+
+
+async def _admin_xb_tahrir(chat_id, message_id, caption, yangi_m, klava, uid, order):
+    """Holat qatori almashgan matn + tugmalar → Telegram; yetsa yangi matn yozuvga. Natija — _kk_tg niki."""
+    if caption:
+        natija, j = await blok(_kk_tg, 'editMessageCaption', {
+            'chat_id': int(chat_id), 'message_id': message_id, 'caption': yangi_m[0],
+            'caption_entities': yangi_m[1], 'reply_markup': klava}, urinish=2)
+    else:
+        natija, j = await blok(_kk_tg, 'editMessageText', {
+            'chat_id': int(chat_id), 'message_id': message_id, 'text': yangi_m[0], 'entities': yangi_m[1],
+            'reply_markup': klava, 'link_preview_options': {'is_disabled': True}}, urinish=2)
+    if natija == 'yuborildi':
+        r = (j or {}).get('result') or {}
+        await blok(_admin_xb_yoz, uid, order, message_id, caption, r.get('caption' if caption else 'text') or yangi_m[0],
+                   r.get('caption_entities' if caption else 'entities') or yangi_m[1])
+    return natija
 
 
 def _buyurtma_klava(uid, order, holat, bron_nums):
@@ -8956,26 +9012,28 @@ def _sotuv_sheet_yoz(uid, b):
 
 
 async def _buyurtma_xabar_yangila(chat_id, message_id, xabar, uid, order, b, joriy, kod):
-    """Admin buyurtma xabari: tugmalar yangilanadi, holat o'zgargan bo'lsa (kod 'ok') — matndagi holat qatori ham."""
+    """Admin buyurtma xabari: tugmalar yangilanadi, xabardagi holat qatori joriy holatda bo'lmasa — u ham.
+    3302: 'eski' da ham (holat boshqa xabarda surilgan); shu buyurtmaning boshqa admin xabarlari (`admin_xb`) ham yangilanadi."""
     bron_nums = [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')]
     klava = _buyurtma_klava(uid, order, joriy, bron_nums)
     xb = xabar or {}
     rasmli = not xb.get('text') and bool(xb.get('caption'))   # BUGUN296: chek nusxasi — rasm, matni caption'da
+    surildi = kod in ('ok', 'eski') and b
+    ts = (b or {}).get('holat_ts') or time.time()
     yangi_m = _buyurtma_holat_matn(xb.get('caption') if rasmli else xb.get('text'),
-                                   xb.get('caption_entities') if rasmli else xb.get('entities'), joriy,
-                                   b.get('holat_ts') or time.time()) if (kod == 'ok' and b) else None
+                                   xb.get('caption_entities') if rasmli else xb.get('entities'), joriy, ts) if surildi else None
     natija = 'xato'
-    if yangi_m and rasmli:
-        natija, _ = await blok(_kk_tg, 'editMessageCaption', {
-            'chat_id': int(chat_id), 'message_id': message_id, 'caption': yangi_m[0],
-            'caption_entities': yangi_m[1], 'reply_markup': klava}, urinish=2)
-    elif yangi_m:
-        natija, _ = await blok(_kk_tg, 'editMessageText', {
-            'chat_id': int(chat_id), 'message_id': message_id, 'text': yangi_m[0], 'entities': yangi_m[1],
-            'reply_markup': klava, 'link_preview_options': {'is_disabled': True}}, urinish=2)
+    if yangi_m:
+        natija = await _admin_xb_tahrir(chat_id, message_id, rasmli, yangi_m, klava, uid, order)
     if natija != 'yuborildi':
         await blok(req.post, f'{TG_API}/editMessageReplyMarkup', json={
             'chat_id': int(chat_id), 'message_id': message_id, 'reply_markup': klava}, timeout=10)
+    for x in (b.get('admin_xb') or []) if surildi else ():
+        if x.get('m') == message_id:
+            continue
+        ym = _buyurtma_holat_matn(x.get('t'), x.get('e'), joriy, ts)
+        if ym:
+            await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
 
 
 async def _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija):
@@ -9387,15 +9445,21 @@ def _chek_adminga(uid, b, mid, davomi=False):
     klava = {'inline_keyboard': [yoz]} if davomi else {
         'inline_keyboard': [yoz, [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f'bh:tolandi:{uid}:{order}'}]]}
     matn = _chek_admin_matn(b, davomi)
-    natija, _ = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
+    natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
                                        'parse_mode': 'HTML', 'reply_markup': klava}, urinish=2)
     if natija in ('yuborildi', 'noaniq'):   # noaniq — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki nusxa bo'lmasin)
+        if natija == 'yuborildi' and not davomi:   # 3302: holat tugmasi buyurtma xabarida bosilsa — chek nusxasi ham yangilansin
+            _admin_xb_yoz(uid, order, ((j or {}).get('result') or {}).get('message_id'), True, *_html_b_ents(matn))
         return True
     f, _ = _kk_tg('forwardMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
     if f != 'yuborildi':
         return False
-    return _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava},
-                  urinish=2)[0] in ('yuborildi', 'noaniq')
+    natija, j = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava},
+                       urinish=2)
+    if natija == 'yuborildi' and not davomi:
+        r = (j or {}).get('result') or {}
+        _admin_xb_yoz(uid, order, r.get('message_id'), False, r.get('text'), r.get('entities'))
+    return natija in ('yuborildi', 'noaniq')
 
 
 def _chek_topshir(uid, user, order, mids, fid):
@@ -9737,13 +9801,15 @@ def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
     for k in kutish:
         if k:
             time.sleep(k)
-        natija, _ = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
+        natija, j = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
                                            'link_preview_options': {'is_disabled': True}}, timeout=15, urinish=2)
         if natija == 'xato':   # HTML buzuq bo'lsa ham xabar yetsin
             oddiy = _html.unescape(re.sub(r'<[^>]+>', '', matn))
-            natija, _ = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': oddiy, 'reply_markup': klava}, timeout=15, urinish=2)
+            natija, j = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': oddiy, 'reply_markup': klava}, timeout=15, urinish=2)
         if natija == 'yuborildi':
             _buyurtma_xabar_belgila(uid, order, _kk_vaqt(time.time())[-5:])
+            r = (j or {}).get('result') or {}   # 3302: chekda bosilsa — shu xabar ham yangilansin
+            _admin_xb_yoz(uid, order, r.get('message_id'), False, r.get('text'), r.get('entities'))
             return True
     logger.error(f'buyurtma xabari: №{order} adminga yetmadi — fon sikli qayta yuboradi')
     return False
