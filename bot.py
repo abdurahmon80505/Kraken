@@ -6074,7 +6074,7 @@ def _kk_qatnash_yoz(st, qurilma, iz):
     """Apps Script joinKonkurs — kalit bilan (qurilma belgisi yoziladi). Javob dict yoki None (tarmoq / kalit yo'q)."""
     data = json.dumps({'konkurs_id': str(st.get('konkurs_id') or ''), 'user_id': str(st.get('user_id') or ''),
                        'username': st.get('username') or '', 'ism': st.get('ism') or '', 'phone': st.get('phone') or '',
-                       'qurilma': qurilma, 'qurilma_izi': iz}, ensure_ascii=False)
+                       'qurilma': qurilma, 'qurilma_izi': iz, 'captcha': st.get('captcha') or ''}, ensure_ascii=False)
     return _kk_sheet('joinKonkurs', timeout=25, data=data)   # BUGUN232: 15 → 25 s (sayt 30 s kutadi)
 
 
@@ -6150,55 +6150,210 @@ async def konkurs_captcha_endpoint(request):
         return web.json_response({'ok': False, 'sabab': 'xato'}, status=500)
 
 
+# ── 3322 (foydalanuvchi, 2026-10-31): 19:00 tarqatmadan keyin ~500 kishi birdan «Qatnashish» bosdi — har biri alohida
+# joinKonkurs (Apps Script bitta _kQulf — ketma-ket yozadi), sayt 30 s kutib «❌ Участие не засчитано» ko'rsatdi.
+# Endi: imzo va savol tekshirilgach so'rov NAVBATGA qo'yiladi, sayt darhol ✅ oladi. Bitta fon ishchi navbatni
+# ≤ KK_NAVBAT_PARTIYA tadan BITTA joinKonkursKop bilan yozadi (bitta qulf, jadval bir marta o'qiladi), keyin Telegram xabari.
+# Captcha natijasi qatnashishni TO'SMAYDI — jadvalda «⚠️ captcha: …» belgi (foydalanuvchi: hech kim «не засчитано» olmasin).
+# Takror yo'q: navbatda bir akkaunt — bitta; jadvalda user_id / telefon tekshiruvi — Apps Script'da (eskicha). Javob kelmasa
+# (tarmoq / qulf band) — partiya navbatda qoladi va qayta yuboriladi: yozilib ulgurganlari «already» bo'ladi, ikkinchi qator yo'q.
+# Navbat faylda (KK_NAVBAT_FAYL) — jarayon qayta yonsa davom etadi; Render deploy'da disk yangi bo'ladi, shu sabab SIGTERM
+# kelganda navbat ≤ KK_NAVBAT_TUGAT_S ichida yozib bo'linadi (Render ~30 s beradi).
+KK_NAVBAT_FAYL = os.environ.get('KK_NAVBAT_FAYL',
+                                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kk_navbat.json'))
+KK_NAVBAT_PARTIYA = 20      # Apps Script KONKURS_KOP_MAX = 25
+KK_NAVBAT_TAKROR = 3        # ketma-ket shuncha javobsiz — ishchi to'xtaydi, navbat joyida (kk_navbat_loop qayta uyg'otadi)
+KK_NAVBAT_S = 15
+KK_NAVBAT_TUGAT_S = 25
+_KK_NAVBAT = []             # faqat event loop ichida o'zgaradi
+_kk_navbat_ish = {'task': None, 'saqla': None}
+_KK_NAVBAT_MAYDON = ('qid', 'konkurs_id', 'user_id', 'username', 'ism', 'phone', 'qurilma', 'qurilma_izi', 'captcha')
+_KK_RAD_MATN = {   # yozilmadi — sabab Telegram'da (sayt allaqachon ✅ ko'rsatgan)
+    'telefon': {'uz': "☎️ Bu raqam bilan konkursda allaqachon qatnashilgan — bitta raqam bilan bir marta qatnashiladi.",
+                'ru': "☎️ С этим номером уже участвуют в розыгрыше — один номер участвует один раз."},
+    'yopiq': {'uz': "⌛ Konkurs tugagan — qatnashish yopildi.",
+              'ru': "⌛ Розыгрыш завершён — участие закрыто."},
+}
+
+
+def _kk_rad_matn(sabab, til):
+    m = _KK_RAD_MATN[sabab]
+    return m[til] if til in m else m['uz'] + '\n' + m['ru']
+
+
+def _kk_navbat_yuklash():
+    try:
+        with open(KK_NAVBAT_FAYL, encoding='utf-8') as f:
+            d = json.load(f)
+        _KK_NAVBAT[:] = [x for x in d if isinstance(x, dict) and x.get('qid') and x.get('user_id')]
+        if _KK_NAVBAT:
+            logger.info(f'konkurs navbat: fayldan {len(_KK_NAVBAT)} ta')
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.error(f'konkurs navbat yuklash: {type(e).__name__}')
+
+
+def _kk_navbat_saqla():
+    try:
+        vaq = KK_NAVBAT_FAYL + '.tmp'
+        with open(vaq, 'w', encoding='utf-8') as f:
+            json.dump(_KK_NAVBAT, f, ensure_ascii=False)
+        os.replace(vaq, KK_NAVBAT_FAYL)
+    except Exception as e:
+        logger.error(f'konkurs navbat saqlash: {type(e).__name__}')
+
+
+async def _kk_navbat_saqla_kech():
+    """0,5 s ichidagi hamma o'zgarish — bitta yozuv (500 kishi birdan kirsa 500 marta to'liq fayl yozilmasin)."""
+    await asyncio.sleep(0.5)
+    _kk_navbat_ish['saqla'] = None
+    _kk_navbat_saqla()
+
+
+def _kk_navbat_ozgardi():
+    t = _kk_navbat_ish.get('saqla')
+    if t is None or t.done():
+        _kk_navbat_ish['saqla'] = asyncio.create_task(_kk_navbat_saqla_kech())
+
+
+def _kk_navbat_uygot():
+    t = _kk_navbat_ish.get('task')
+    if _KK_NAVBAT and (t is None or t.done()):
+        _kk_navbat_ish['task'] = asyncio.create_task(_kk_navbat_ishla())
+
+
+def _kk_kop_yoz(partiya):
+    """BITTA joinKonkursKop (kalit tanada). {qid: natija} yoki None (tarmoq / Apps Script javob bermadi).
+    Eski Apps Script (joinKonkursKop yo'q → msg 'action') — har biri eski joinKonkurs bilan."""
+    royxat = [{k: str(x.get(k) or '') for k in _KK_NAVBAT_MAYDON} for x in partiya]
+    r = _kk_post('joinKonkursKop', timeout=90, royxat=royxat)
+    if r and r.get('ok') and isinstance(r.get('natija'), list):
+        return {str(n.get('qid')): n for n in r['natija'] if isinstance(n, dict) and n.get('qid')}
+    if r and r.get('msg') == 'action':
+        javob = {}
+        for x in partiya:
+            n = _kk_qatnash_yoz(x, x.get('qurilma'), x.get('qurilma_izi'))
+            if n:
+                javob[x['qid']] = n
+        return javob
+    if r:
+        logger.error(f"konkurs navbat: joinKonkursKop {r.get('msg') or 'xato'}")
+    return None
+
+
+async def _kk_navbat_ishla():
+    xato = 0
+    while _KK_NAVBAT:
+        partiya = _KK_NAVBAT[:KK_NAVBAT_PARTIYA]
+        natija = await blok(_kk_kop_yoz, partiya)
+        tayyor = [x for x in partiya if natija and x['qid'] in natija]
+        if not tayyor:
+            xato += 1
+            if xato >= KK_NAVBAT_TAKROR:
+                logger.error(f'konkurs navbat: jadval javob bermadi — {len(_KK_NAVBAT)} ta navbatda qoldi')
+                return
+            await asyncio.sleep(5 * xato)
+            continue
+        xato = 0
+        olindi = {x['qid'] for x in tayyor}
+        _KK_NAVBAT[:] = [x for x in _KK_NAVBAT if x['qid'] not in olindi]
+        _kk_navbat_ozgardi()
+        # Xabarlar — alohida vazifada: keyingi partiya Telegram'ni kutmasdan yoziladi
+        asyncio.create_task(_kk_navbat_xabar([(x, natija[x['qid']]) for x in tayyor]))
+
+
+async def _kk_navbat_xabar(juftlar):
+    for x, r in juftlar:
+        try:
+            await _kk_qatnash_natija(x, r)
+        except Exception as e:
+            logger.error(f'konkurs navbat xabar: {type(e).__name__}')
+
+
+async def _kk_qatnash_natija(x, r):
+    uid, kid, msg = int(x['user_id']), x.get('konkurs_id'), r.get('msg')
+    if r.get('ok') or (msg == 'already' and r.get('sabab') != 'telefon'):
+        _konkurs_cache['time'] = 0
+        _kk_qatnashchi_qosh(kid, uid)   # BUGUN147: kanaldan chiqish keshiga darhol
+        if r.get('ok'):
+            await _kk_son_xabari(kid, r.get('count'))   # BUGUN226: har 20 kishida adminga
+        await blok(send_msg, uid, _kk_qatnash_matn(x.get('til')))
+        if r.get('shubha'):
+            q = [f"⚠️ <b>Konkurs {html_escape(str(kid))}: bir qurilmadan bir nechta akkaunt</b>",
+                 "(bloklanmadi — jadvalda «ogohlantirish» ustunida belgilandi)", "",
+                 f"🆕 Hozir kirgan: {_kk_kim(x.get('username'), x.get('ism'), x.get('user_id'))}"]
+            for s in r['shubha']:
+                sabab = 'shu qurilma' if s.get('sabab') == 'qurilma' else "o'xshash qurilma, 5 daq ichida"
+                q.append(f"👤 Avvalgi ({sabab}): {_kk_kim(s.get('username'), s.get('ism'), s.get('user_id'))}")
+            await _kk_admin("\n".join(q))
+    elif msg in ('already', 'yopiq'):
+        await blok(send_msg, uid, _kk_rad_matn('telefon' if msg == 'already' else 'yopiq', x.get('til')))
+    else:
+        logger.error(f"konkurs navbat: {msg or 'xato'} (…{str(uid)[-3:]})")
+
+
+async def kk_navbat_loop():
+    while True:
+        await asyncio.sleep(KK_NAVBAT_S)
+        try:
+            _kk_navbat_uygot()
+        except Exception as e:
+            logger.error(f'konkurs navbat sikl: {type(e).__name__}')
+
+
+async def _kk_navbat_tugat():
+    """SIGTERM (Render deploy / qayta ishga tushirish): navbatni ≤ KK_NAVBAT_TUGAT_S yozib, faylga saqlab chiqadi."""
+    try:
+        if _KK_NAVBAT:
+            logger.info(f'SIGTERM: konkurs navbatida {len(_KK_NAVBAT)} ta — yozilyapti')
+            _kk_navbat_uygot()
+            t = _kk_navbat_ish.get('task')
+            if t:
+                await asyncio.wait([t], timeout=KK_NAVBAT_TUGAT_S)
+        _kk_navbat_saqla()
+        logger.info(f'SIGTERM: konkurs navbatida {len(_KK_NAVBAT)} ta qoldi')
+    finally:
+        logging.shutdown()
+        os._exit(0)
+
+
 async def konkurs_qatnash_endpoint(request):
-    """Mini App: javob + qurilma belgisi → qatnashish. ok:true — FAQAT jadvalga yozilgach (yoki oldin yozilgan).
-    Xato / uzilish — ok:false, holat va o'tgan tekshiruv saqlanadi: mijoz «Qayta urinish» bosadi."""
+    """Mini App: javob + qurilma belgisi → navbat (3322). ok:true — navbatga qo'yildi (yoki allaqachon navbatda);
+    jadvalga fon ishchi yozadi, natija — Telegram xabarida. ok:false — faqat imzo / savol yo'q / holat yo'q."""
     try:
         data = await request.json()
         uid = check_init_data(data.get('initData', ''))
         if not uid:
             return web.json_response({'ok': False, 'sabab': 'imzo'}, status=401)
         uid = int(uid)
+        if any(x['user_id'] == str(uid) for x in _KK_NAVBAT):   # ikki marta bosdi / tarmoq qayta yubordi
+            return web.json_response({'ok': True, 'already': False, 'navbat': True})
         now = time.time()
         c = _kk_captcha.get(uid)
         if not c or c['id'] != str(data.get('id') or ''):
             return web.json_response({'ok': False, 'sabab': 'captcha'})
+        belgi = ''
         if not c.get('otdi'):
-            if now - c['vaqt'] > KK_CAPTCHA_UMR_S or now - c['vaqt'] < KK_CAPTCHA_MIN_S \
-                    or str(data.get('javob') or '') != c['javob']:
-                _kk_captcha.pop(uid, None)            # har noto'g'ri javob — yangi savol
-                return web.json_response({'ok': False, 'sabab': 'notogri'})
-            c['otdi'] = now
-        elif now - c['otdi'] > KK_CAPTCHA_OTDI_S:
-            _kk_captcha.pop(uid, None)
-            return web.json_response({'ok': False, 'sabab': 'captcha'})
+            if now - c['vaqt'] > KK_CAPTCHA_UMR_S:
+                belgi = 'eskirgan'
+            elif now - c['vaqt'] < KK_CAPTCHA_MIN_S:
+                belgi = 'tez'
+            elif str(data.get('javob') or '') != c['javob']:
+                belgi = 'notogri'
         st = user_states.get(uid) or {}
         if st.get('step') != 'captcha':
             return web.json_response({'ok': False, 'sabab': 'holat'})
-        r = await blok(_kk_qatnash_yoz, st, _kk_xesh(data.get('qurilma')), _kk_xesh(data.get('iz')))
-        if not r:
-            return web.json_response({'ok': False, 'sabab': 'xato'})     # holat qoladi — qayta urinish
-        msg = r.get('msg')
-        if r.get('ok') or msg in ('already', 'yopiq'):        # yakuniy javob — holat tozalanadi
-            if user_states.get(uid, {}).get('step') == 'captcha':
-                user_states.pop(uid, None)
-            _kk_captcha.pop(uid, None)
-        if r.get('ok') or (msg == 'already' and r.get('sabab') != 'telefon'):
-            _konkurs_cache['time'] = 0
-            _kk_qatnashchi_qosh(st.get('konkurs_id'), uid)   # BUGUN147: kanaldan chiqish keshiga darhol
-            if r.get('ok'):
-                await _kk_son_xabari(st.get('konkurs_id'), r.get('count'))   # BUGUN226: har 20 kishida adminga
-            await blok(send_msg, uid, _kk_qatnash_matn(_kk_init_til(data.get('initData'))))
-            if r.get('shubha'):
-                q = [f"⚠️ <b>Konkurs {html_escape(str(st.get('konkurs_id')))}: bir qurilmadan bir nechta akkaunt</b>",
-                     "(bloklanmadi — jadvalda «ogohlantirish» ustunida belgilandi)", "",
-                     f"🆕 Hozir kirgan: {_kk_kim(st.get('username'), st.get('ism'), st.get('user_id'))}"]
-                for x in r['shubha']:
-                    sabab = 'shu qurilma' if x.get('sabab') == 'qurilma' else "o'xshash qurilma, 5 daq ichida"
-                    q.append(f"👤 Avvalgi ({sabab}): {_kk_kim(x.get('username'), x.get('ism'), x.get('user_id'))}")
-                await _kk_admin("\n".join(q))
-            return web.json_response({'ok': True, 'already': not r.get('ok')})
-        return web.json_response({'ok': False, 'sabab': r.get('sabab') if msg == 'already' else (msg or 'xato')})
+        user_states.pop(uid, None)
+        _kk_captcha.pop(uid, None)
+        _KK_NAVBAT.append({
+            'qid': f'{uid}-{int(now * 1000)}', 'konkurs_id': str(st.get('konkurs_id') or ''), 'user_id': str(uid),
+            'username': st.get('username') or '', 'ism': st.get('ism') or '', 'phone': st.get('phone') or '',
+            'qurilma': _kk_xesh(data.get('qurilma')), 'qurilma_izi': _kk_xesh(data.get('iz')), 'captcha': belgi,
+            'til': _kk_init_til(data.get('initData')), 'vaqt': now})
+        _kk_navbat_ozgardi()
+        _kk_navbat_uygot()
+        return web.json_response({'ok': True, 'already': False, 'navbat': True})
     except Exception as e:
         logger.error(f'konkurs_qatnash: {type(e).__name__}')
         return web.json_response({'ok': False, 'sabab': 'xato'}, status=500)
@@ -11800,8 +11955,11 @@ async def eski_webhook(request):
 
 
 async def main():
+    # 3322: blok() sukut ipxonasi (CPU×5, Render'da ~10) — 500 kishi birdan kirsa Telegram / Sheets so'rovlari navbatda qolardi
+    asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=64))
     _bron_yuklash()   # BUGUN208
     _mijoz_yuklash()  # BUGUN225
+    _kk_navbat_yuklash()   # 3322
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/webhook-eski', eski_webhook)   # BUGUN145: eski bot → yangi bot havolasi
@@ -11861,6 +12019,13 @@ async def main():
     asyncio.create_task(mijoz_birlashtir_loop())   # 3184: takror Mijozlar qatorlari — kunda bir marta, 04:00
     # Bot ishga tushganda: aktiv konkursga taymer + yetkazilmay qolgan xabarlar davomi (holat jadvaldan — BUGUN108)
     asyncio.create_task(konkurs_tiklash())
+    asyncio.create_task(kk_navbat_loop())   # 3322: konkurs qatnashish navbati (fayldan qolgani ham)
+    _kk_navbat_uygot()
+    try:   # 3322: Render deploy — SIGTERM; navbat yozib bo'linadi (Windows'da yo'q — o'tkaziladi)
+        import signal
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(_kk_navbat_tugat()))
+    except (NotImplementedError, AttributeError, RuntimeError):
+        pass
     asyncio.create_task(guruh_tiklash())   # 3110: /guruh mavzulari jadvaldan (qayta ishga tushsa ham qoladi)
     # Bot ishga tushganda: e'lon xotirasi (G10.3) + oxirgi elon raqami — BITTA yuklashdan
     try:
