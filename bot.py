@@ -11413,6 +11413,27 @@ async def eski_webhook(request):
     return web.json_response({'ok': True})
 
 
+def _webhook_ornat(render_url):
+    """Ishga tushganda ikkala botning webhook'i: yangi bot → /webhook, eski bot → /webhook-eski (aralashtirilmaydi).
+    Epaqa: yangi bot so'rovida timeout ham, try ham yo'q edi — Telegram javob bermasa main() osilib qolardi (fon sikllari:
+    buyurtma xabari, chek eslatmasi, konkurs taymeri ishga tushmasdi), tarmoq xatosida esa bot butunlay yiqilardi.
+    Endi xato — faqat logda (xato turi; URL'da token bor), bot ishlayveradi: Telegram oldingi webhook'ni saqlab turadi."""
+    try:
+        # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
+        r = req.post(f'{TG_API}/setWebhook', json=webhook_sozlama(f'{render_url}/webhook', ALLOWED_UPDATES), timeout=20)
+        logger.info(f'Webhook: {r.json()}')
+    except Exception as e:
+        logger.error(f'setWebhook: {type(e).__name__} — bot ishlayveradi (Telegram oldingi webhook bilan)')
+    if ESKI_BOT_TOKEN and ESKI_BOT_TOKEN != BOT_TOKEN:
+        # BUGUN145: eski bot o'z yo'liga — javobni eski token bilan beradi (yangi bot havolasi)
+        try:
+            r2 = req.post(f'https://api.telegram.org/bot{ESKI_BOT_TOKEN}/setWebhook', timeout=20,
+                          json=webhook_sozlama(f'{render_url}/webhook-eski', ['message', 'callback_query']))
+            logger.info(f'Eski bot webhook: {r2.json()}')
+        except Exception as e:
+            logger.error(f'eski bot webhook: {type(e).__name__}')
+
+
 async def main():
     _bron_yuklash()   # BUGUN208
     _mijoz_yuklash()  # BUGUN225
@@ -11453,17 +11474,7 @@ async def main():
     await site.start()
     render_url = os.environ.get('RENDER_URL', '')
     if render_url:
-        # BUGUN6 §2: allowed_updates — `chat_member` (kanal xush kelibsiz) sukut bo'yicha kelmaydi
-        r = req.post(f'{TG_API}/setWebhook', json=webhook_sozlama(f'{render_url}/webhook', ALLOWED_UPDATES))
-        logger.info(f'Webhook: {r.json()}')
-        if ESKI_BOT_TOKEN and ESKI_BOT_TOKEN != BOT_TOKEN:
-            # BUGUN145: eski bot o'z yo'liga — javobni eski token bilan beradi (yangi bot havolasi)
-            try:
-                r2 = req.post(f'https://api.telegram.org/bot{ESKI_BOT_TOKEN}/setWebhook', timeout=20,
-                              json=webhook_sozlama(f'{render_url}/webhook-eski', ['message', 'callback_query']))
-                logger.info(f'Eski bot webhook: {r2.json()}')
-            except Exception as e:
-                logger.error(f'eski bot webhook: {type(e).__name__}')
+        await blok(_webhook_ornat, render_url)
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
