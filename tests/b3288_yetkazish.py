@@ -272,8 +272,8 @@ kod, b = bot._buyurtma_holat_qoy(MIJOZ, 'TEST07', 'yetkazildi')
 sinov("bot tugmasi «Yetkazildi» — qabul_kim 'admin'", kod == 'ok' and b['yetkaz'].get('qabul_kim') == 'admin', repr(b))
 kod, b = bot._buyurtma_holat_qoy(MIJOZ, 'TEST07', 'yopildi')
 sinov("bot tugmasi «🔒 Yopish» — yopildi, yop_kim 'admin'", kod == 'ok' and b['holat'] == 'yopildi' and b['yetkaz'].get('yop_kim') == 'admin')
-kl = bot._buyurtma_klava(MIJOZ, 'TEST07', 'yolda', [])
-sinov('admin klaviaturasida «🔒 Yopish»', '🔒' in json.dumps(kl, ensure_ascii=False), repr(kl))
+kl = bot._buyurtma_klava(MIJOZ, 'TEST07', 'yetkazildi', [])
+sinov('admin klaviaturasida «🔒 Yopish» (3301: yetkazilgach)', '🔒' in json.dumps(kl, ensure_ascii=False), repr(kl))
 sinov("_HOLAT_TASDIQ da 'yopildi' (sotuv yozuvi)", 'yopildi' in bot._HOLAT_TASDIQ)
 
 # ── 9. admin ro'yxati ──
