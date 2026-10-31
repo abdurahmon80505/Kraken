@@ -8350,17 +8350,8 @@ async def share_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         loop = asyncio.get_event_loop()
         mid, sabab = await loop.run_in_executor(None, save_prepared_share, uid, num)
         if not mid:
@@ -8424,6 +8415,23 @@ def _bron_qoy(num, uid, order):
     _bron_saqlash()
 
 
+def _nums_oqi(data, num):
+    """BUGUN224: savatdan — `nums` (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat 1–6 xonali raqam, takrorsiz.
+    Qaytaradi — num'dan boshqa raqamlar ro'yxati yoki None (buzuq → endpoint 400 qaytaradi).
+    Epaqa: ilgari shu 12 qator 5 ta endpointda (/bron_tekshir, /share, /buyurtma, /elon_changed, /kanal_post) aynan takrorlangan edi."""
+    xom = data.get('nums') or []
+    if not isinstance(xom, list) or len(xom) > 10:
+        return None
+    qolgan = []
+    for n in xom:
+        n = str(n or '').strip()
+        if not re.fullmatch(r'\d{1,6}', n):
+            return None
+        if n != num and n not in qolgan:
+            qolgan.append(n)
+    return qolgan
+
+
 def _init_data_user(init_data):
     """Imzosi to'g'ri initData dan Telegram foydalanuvchi ma'lumoti (ism, username, id); aks holda None."""
     uid = check_init_data(init_data)
@@ -8483,17 +8491,8 @@ async def bron_tekshir_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         b = _bron_olish(num)
         if not b or b['uid'] == u['id']:
             return web.json_response({'bron': False})
@@ -10029,17 +10028,9 @@ async def buyurtma_endpoint(request):
             kurs = 0
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        qolgan_nums = _nums_oqi(data, num)   # BUGUN224: savatdan — qolgan raqamlar
+        if qolgan_nums is None:
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         # BUGUN236: dona soni — {num: dona} (faqat shu buyurtmadagi raqamlar, 1..99; omborda borigacha — _buyurtma_soni)
         sonlar = {}
         sonlar_xom = data.get('sonlar') or {}
@@ -11195,17 +11186,8 @@ async def elon_changed_endpoint(request):
         num = str(elon.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         elon['num'] = int(num)
         with _elon_cache_lock:
             eski = _ELON_CACHE['by_num'].get(num)
@@ -11248,17 +11230,8 @@ async def kanal_post_endpoint(request):
         num = str(data.get('num', '') or '').strip()
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        # BUGUN224: savatdan — nums (hamma raqam, birinchisi = num). Ko'pi bilan 10 ta, faqat raqam, takrorsiz
-        nums_xom = data.get('nums') or []
-        if not isinstance(nums_xom, list) or len(nums_xom) > 10:
+        if _nums_oqi(data, num) is None:   # BUGUN224: savat raqamlari — faqat tekshiruv (bu yerda ishlatilmaydi)
             return web.json_response({'error': 'Nomer notogri'}, status=400)
-        qolgan_nums = []
-        for n in nums_xom:
-            n = str(n or '').strip()
-            if not re.fullmatch(r'\d{1,6}', n):
-                return web.json_response({'error': 'Nomer notogri'}, status=400)
-            if n != num and n not in qolgan_nums:
-                qolgan_nums.append(n)
         amal = str(data.get('amal', 'post'))
         yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
         if amal == 'yana':

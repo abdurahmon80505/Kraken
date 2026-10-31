@@ -360,6 +360,32 @@ print("  · admin xabari yozuvda yo'q (bot qayta yongan) — jim, xatosiz")
 buyurtma('TE04', xabar=False, num='24')
 st, j = chaqir(bot.buyurtma_bekor_endpoint(Sorov({'initData': 'mijoz', 'order': 'TE04'})))
 sinov("200, tahrir yo'q", st == 200 and not tahrirlar(), repr(SOROV)[:300])
+
+
+# ── J. «nums» tekshiruvi — bitta yordamchi (5 ta endpointda takror edi) ──────────────────────────────────────────────────
+print("— J. _nums_oqi: savat raqamlari — xulq avvalgidek, kod bitta joyda")
+sinov("nums yo'q → []", bot._nums_oqi({}, '21') == [] and bot._nums_oqi({'nums': None}, '21') == [])
+sinov("num chiqariladi, takror olinadi, tartib saqlanadi", bot._nums_oqi({'nums': ['21', 22, ' 23 ', '22']}, '21') == ['22', '23'])
+sinov("10 tagacha — ok, 11 ta — None", bot._nums_oqi({'nums': [str(i) for i in range(1, 11)]}, '1') == [str(i) for i in range(2, 11)]
+      and bot._nums_oqi({'nums': [str(i) for i in range(1, 12)]}, '1') is None)
+sinov("ro'yxat emas / raqam emas / 7 xonali — None", all(bot._nums_oqi({'nums': x}, '1') is None
+                                                       for x in ('21,22', {'a': 1}, ['21', 'x'], ['1234567'], ['2.5'])))
+manba = open(bot.__file__, encoding='utf-8').read()
+sinov("takroriy blok qolmadi: 5 ta endpoint yordamchini chaqiradi", 'nums_xom' not in manba
+      and manba.count('_nums_oqi(data, num)') - manba.count('def _nums_oqi(data, num)') == 5)
+bot.check_init_data = lambda s, max_age=86400: {'admin': ADMIN, 'mijoz': MIJOZ}.get(s)
+for nom, init in (('share_endpoint', 'mijoz'), ('bron_tekshir_endpoint', 'mijoz'), ('buyurtma_endpoint', 'mijoz'),
+                  ('elon_changed_endpoint', 'admin'), ('kanal_post_endpoint', 'admin')):
+    d = {'initData': init, 'num': '21', 'nums': ['21', 'yomon'], 'elon': {'num': '21'}, 'order': 'TE09', 'name': 'S',
+         'phone': '+998900000001', 'tur': 'emu', 'manzil': 'Toshkent', 'kurs': 12000}
+    if nom == 'bron_tekshir_endpoint':
+        bot._init_data_user = (lambda asl: (lambda s: {'id': MIJOZ, 'ism': 'S', 'username': ''} if s == 'mijoz' else asl(s)))(
+            bot._init_data_user)
+    r = asyncio.run(getattr(bot, nom)(Sorov(d)))
+    sinov(f"/{nom.replace('_endpoint', '')}: buzuq nums → 400 «Nomer notogri» (avvalgidek)",
+          r.status == 400 and json.loads(r.body).get('error') == 'Nomer notogri', f'{r.status} {r.body[:100]}')
+r = asyncio.run(bot.bron_tekshir_endpoint(Sorov({'initData': 'mijoz', 'num': '21', 'nums': ['21', '22']})))
+sinov("/bron_tekshir: to'g'ri nums → 200 (bron tekshiruvi ishladi)", r.status == 200 and 'bron' in json.loads(r.body), r.body[:100])
 bot.check_init_data = _asl_init
 
 
