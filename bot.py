@@ -8474,8 +8474,10 @@ def _bron_ogoh_yubor(num, ikkinchi, sabab):
             f"👤 2-mijoz: {_bron_mijoz_matn(ikkinchi)}\n"
             f"1-mijoz olmasa — shu odamga o'zingiz aloqaga chiqasiz.")
     klava = {'inline_keyboard': [
-        [{'text': '2-mijozga yozish', 'url': f"tg://user?id={ikkinchi['id']}"}],
-        [{'text': '🔓 Bronni bekor qilish', 'callback_data': f"bron_och:{num}:{b.get('order', '')}"}]]}
+        [{'text': '2-mijozga yozish', 'url': f"tg://user?id={ikkinchi['id']}"}]]}
+    if not (b and _bron_tolanganmi(b)):   # 3304: to'langan buyurtma broni — tugma yo'q
+        klava['inline_keyboard'].append(
+            [{'text': '🔓 Bronni bekor qilish', 'callback_data': f"bron_och:{num}:{b.get('order', '')}"}])
     try:
         r = req.post(f'{TG_API}/sendMessage', json={
             'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava}, timeout=10).json()
@@ -8517,12 +8519,22 @@ async def bron_tekshir_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+def _bron_tolanganmi(b):
+    """3304: bron egasi buyurtmasi to'langanmi (yoki to'lovni kutmay jo'natilgan) — _HOLAT_TASDIQ. Yozuv topilmasa — False (eskicha)."""
+    with _MIJOZ_LOCK:
+        x = next((x for x in _mijoz_ol(b.get('uid'))['buyurtma'] if x.get('order') == b.get('order')), None)
+        return bool(x and x.get('holat') in _HOLAT_TASDIQ)
+
+
 async def bron_bekor_tugma(chat_id, cq_data):
-    """Admin «🔓 Bronni bekor qilish» tugmasi: bron_och:<num>:<order>. Bron boshqa buyurtmaga o'tgan bo'lsa tegmaydi."""
+    """Admin «🔓 Bronni bekor qilish» tugmasi: bron_och:<num>:<order>. Bron boshqa buyurtmaga o'tgan bo'lsa tegmaydi.
+    3304: buyurtma to'langan bo'lsa ham tegmaydi — eski xabarda (to'lovdan oldin chiqqan) tugma qolgan bo'lishi mumkin."""
     try:
         _, num, order = (cq_data.split(':', 2) + ['', ''])[:3]
         b = _BRON.get(num)
-        if b and (not order or b['order'] == order):
+        if b and (not order or b['order'] == order) and await blok(_bron_tolanganmi, b):
+            matn = f"ℹ️ To'langan buyurtma — bron bekor qilinmadi (№{num}, buyurtma №{b['order']})."
+        elif b and (not order or b['order'] == order):
             _BRON.pop(num, None)
             _bron_saqlash()
             matn = f"🔓 №{num} — bron bekor qilindi, e'lon hammaga ochiq."
@@ -8920,7 +8932,9 @@ def _buyurtma_klava(uid, order, holat, bron_nums):
     """Adminga boradigan buyurtma xabarining tugmalari: Mijozga yozish · KEYINGI bosqich · bronni bekor qilish.
     3301: faqat keyingi bosqich tugmasi (bajarilgani — xabar matnidagi holat qatorida, BUGUN295). NEGA: Owner 2026-10-31 — «hamma tugma
     birdan turibdi, bosilgani ham bilinishi qiyin». Hozirgi qoida saqlangan: to'lovni kutmay ham jo'natish mumkin — «kutilmoqda» da
-    ikkinchi tugma. Bron — yetkazilguncha turadi; bosilgan bosqich orqaga qaytmaydi (_buyurtma_holat_qoy)."""
+    ikkinchi tugma. Bosilgan bosqich orqaga qaytmaydi (_buyurtma_holat_qoy).
+    3304: «🔓 Bronni bekor qilish» — FAQAT «⏳ To'lov kutilmoqda» da. NEGA: Owner 2026-10-31 — «to'lov keldidan keyin chiqmasin»:
+    to'langan (yoki to'lovni kutmay jo'natilgan) buyurtmada bron ochilsa, e'lon yana hammaga sotuvga chiqib qoladi."""
     qator = [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]
     if holat in _HOLAT_TARTIB:
         i = _HOLAT_TARTIB.index(holat)
@@ -8930,7 +8944,7 @@ def _buyurtma_klava(uid, order, holat, bron_nums):
             qator.append([{'text': "⏭ To'lovni kutmay — Yo'lda", 'callback_data': f'bh:yolda:{uid}:{order}'}])
     else:   # bekor — tugma emas, holat
         qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
-    if holat not in ('yetkazildi', 'yopildi'):
+    if holat == 'kutilmoqda':
         qator += [[{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
                     'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]
     return {'inline_keyboard': qator}
