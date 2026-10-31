@@ -236,5 +236,19 @@ sinov("clean_color ichidagi ortiqcha import olib tashlandi — ishlashi o'zgarma
       bot.clean_color('Obsidian Black (Qora)') == 'Obsidian Black' and bot.clean_color('') == '' and bot.clean_color(None) == '')
 
 
+# ── E. Mijozga ko'rinadigan matn: imlo ──────────────────────────────────────────────────────────────────────────────
+print("— E. matn: «Yangi Openbox!», konkurs xabarida gap bosh harf bilan")
+sinov("holati_matni('openbox') → «Yangi Openbox!» (ilgari «Yengi»)", bot.holati_matni('openbox', '')[0] == 'Yangi Openbox!'
+      and bot.holati_matni('openbox', '98')[0] == 'Yangi Openbox! (98 tsikl)', repr(bot.holati_matni('openbox', '98')))
+sinov("ruschasi va boshqa holatlar o'zgarmadi", bot.holati_matni('openbox', '')[1:] == ('Новое Опенбокс!', '📦')
+      and bot.holati_matni('new', '')[0] == 'Yangi ochilmagan!' and bot.holati_matni('used', '5')[0] == 'Ishlatilgan (5 tsikl)')
+_, olx = bot.build_olx_text({'num': 7, 'nameUz': 'Pixel 9', 'price': 400, 'condition': 'openbox', 'cycle': '3'}, {})
+sinov("OLX matnida ham «• Holati: Yangi Openbox! (3 tsikl)»", '• Holati: Yangi Openbox! (3 tsikl)' in olx and 'Yengi' not in olx, olx)
+cap, _ = bot._kk_maglub_xabari('Pixel 9', '🥇 @a')
+sinov("konkurs mag'lub xabari: «…sovg'a qilamiz!\\nIstalgan smartfonni tanlang…»",
+      "sovg'a qilamiz!\nIstalgan smartfonni tanlang" in cap and '\nistalgan' not in cap, cap)
+sinov("butun bot matnida «Yengi» qolmadi (izohdan tashqari)", 'Yengi' not in manba.replace('«Yengi» → «Yangi»', ''))
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)

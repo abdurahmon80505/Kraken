@@ -712,7 +712,7 @@ def holati_matni(cond, cycle):
     if cond == 'new':
         return ("Yangi ochilmagan!", "Новое запечатанное!", "📦")
     if cond == 'openbox':
-        return (f"Yengi Openbox!{sikl_uz}", f"Новое Опенбокс!{sikl_ru}", "📦")
+        return (f"Yangi Openbox!{sikl_uz}", f"Новое Опенбокс!{sikl_ru}", "📦")   # epaqa: «Yengi» → «Yangi» (imlo)
     # used
     return (f"Ishlatilgan{sikl_uz}", f"Б.у{sikl_ru}", "🔸")
 
@@ -4887,7 +4887,7 @@ def _kk_maglub_xabari(prize, win_text):
         f"🎁 <b>{html_escape(prize)}</b> konkursi yakunlandi!\n\n"
         f"🏆 <b>G'oliblar / Победители:</b>\n{win_text}\n\n"
         f"🎁 Ammo sizga <b>10$lik vaucher</b> sovg'a qilamiz!\n"
-        f"istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"
+        f"Istalgan smartfonni tanlang va 10$ chegirma bilan xarid qiling. 🛒\n"   # epaqa: gap bosh harf bilan
         f"❗️Vaucher faqat 1 kun davomida amal qiladi.\n\n"
         f"🎁 Но мы дарим вам <b>ваучер на 10$</b>!\n"
         f"Выберите любой смартфон и получите скидку 10$ на покупку. 🛒\n"
