@@ -7586,6 +7586,11 @@ async def handle_update(data):
             # BUGUN296: mijoz — «🧾 To'landim — chek yuborish» (chk:) va «bu chek qaysi buyurtma?» (chm:); faqat o'z lichkasida
             if cq_data.startswith(('chk:', 'chm:')) and cq_user.get('id') and cq_chat == cq_user.get('id'):
                 asyncio.create_task(chek_tugma(cq_user['id'], cq_data, cq_user))
+            # 3262: mijoz — baho yulduzi (bb:) va «Yozmayman» (bbn:), faqat o'z lichkasida; admin — «✅ Chiqarish» / «❌» / «🙈» (shm:)
+            if cq_data.startswith(('bb:', 'bbn:')) and cq_user.get('id') and cq_chat == cq_user.get('id'):
+                asyncio.create_task(blok(_sharh_tugma_ish, cq_user['id'], cq_chat, cq_msg.get('message_id'), cq_data))
+            if cq_data.startswith('shm:') and cq_adm:
+                asyncio.create_task(blok(_sharh_mod_ish, cq_chat, cq_msg.get('message_id'), cq_data))
             return
 
         if not chat_id:
@@ -7617,6 +7622,14 @@ async def handle_update(data):
                 and _chek_fayl(message) is not None and (not adm or await blok(_chek_kutyapti, chat_id))):
             asyncio.create_task(chek_qabul(chat_id, user, message))
             return
+
+        # 3262: yulduz bosilgach 30 daqiqa ichidagi matn — sharh. Konkurs raqami, e'lon raqami, eski tugma — o'z yo'lida
+        if (text and not text.startswith('/') and message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id
+                and chat_id not in user_states and not _elon_num_from_text(text) and not _eski_tugmami(text)):
+            sharh_order = _sharh_kutyapti(chat_id)
+            if sharh_order:
+                asyncio.create_task(blok(_sharh_matn_qabul, chat_id, sharh_order, text))
+                return
 
         # ── ADMIN rasm yuborsa ──
         photo = message.get('photo')
@@ -10206,14 +10219,15 @@ def _mijoz_sync_yubor():
                 data = None
             else:
                 b = next((x for x in (m or {}).get('buyurtma', []) if x.get('order') == k[2]), None)
-                data = json.dumps(_buyurtma_sheet_dict(k[1], b), ensure_ascii=False) if b else None
+                d = (_sharh_sheet_dict if k[0] == 's' else _buyurtma_sheet_dict)(k[1], b) if b else None   # 3262: 's' — «Sharhlar»
+                data = json.dumps(d, ensure_ascii=False) if d else None
                 par = None
         if k[0] == 't':
             j = _kk_sheet('mijozTelYoz', timeout=40, **par)
         elif data is None:
             j = {'ok': True}   # yozuv endi yo'q (30 tadan oshib tushgan) — yuboradigan narsa yo'q
         else:
-            j = _kk_sheet('buyurtmaYoz', timeout=40, data=data)
+            j = _kk_sheet('sharhYoz' if k[0] == 's' else 'buyurtmaYoz', timeout=40, data=data)
         if j and j.get('ok'):
             with _MIJOZ_SYNC_QULF:
                 _MIJOZ_SYNC.discard(k)
@@ -10580,6 +10594,17 @@ async def buyurtma_bekor_endpoint(request):
 # yerda o'zgarmaydi. 3262 (sharh / baho) shu /buyurtma_sharh ni ishlatadi.
 _YETKAZ_AMAL = {'isbot': 'yolda', 'qabul': 'yetkazildi', 'yop': 'yopildi', 'sharh': 'yopildi'}
 _SHARH_MATN_MAX = 500
+# 3262: sharh / baho. Oqim: «📦 Yetkazildi» dan 3 kun o'tib bot bir marta so'raydi (yulduz tugmalari) → matn 30 daqiqagacha → adminga bitta
+# xabar → «✅ Chiqarish» → saytda. Sayt «Buyurtmalarim» dan kelgan sharh ham shu yerga tushadi (faqat adminga darhol ketadi).
+# yetkaz.sharh: baho · matn · ts · num · spec · model · ism (qisqa) · bot (botdan keldi) · mod_ts ·
+# hol: yoz (admin xabari hali yo'q) · x (yuborilmoqda) · mod (admin qarorini kutadi) · chiqdi · rad. Hol yo'q — 3262 dan oldingi sharh.
+# yetkaz.baho_sor: so'ralgan vaqt · 'blok' (mijoz botni to'xtatgan) — Render qayta yonsa ham ikki marta so'ralmaydi.
+SHARH_SOR_S = 3 * 86400
+SHARH_MATN_KUT_S = 1800
+SHARH_ORALIQ_S = 600
+SHARH_SOR_MAX = 20   # bir tekshiruvda nechta mijozga so'rov
+SHARH_BOSHI = 1793451600   # 2026-10-31 18:00 Toshkent: bundan oldin yetkazilganlardan so'ralmaydi (eski mijozlarga birdan xabar ketmasin)
+_SHARH_YOMON = re.compile(r"\b(jalab|qotoq|qo'taq|gandon|ahmoq|сука|бля|хуй|хуе|пизд|ебан|ёбан|мудак)", re.I)   # faqat belgi — qaror adminda
 _ISBOT_HAVOLA_RE = re.compile(r'https://[^\s<>"\']{3,500}')
 _ISBOT_RASM_MAX = 5 * 1024 * 1024
 _ADMIN_BUYURTMA_MAX = 300   # admin ro'yxatida oxirgi buyurtmalar
@@ -10645,25 +10670,272 @@ def _buyurtma_yetkaz(uid, order, amal, kim, isbot=None, sharh=None):
             b['holat'], b['holat_ts'] = yangi, hozir
         _mijoz_saqlash()
         _mijoz_sync_belgila('b', uid, order)
+        if amal == 'sharh':
+            _mijoz_sync_belgila('s', uid, order)   # 3262: «Sharhlar» varag'i
         return 'ok', dict(b)
 
 
 def _yetkaz_adminga(uid, b, amal):
-    """Fon oqimida: mijoz qabul qildi / sharh qoldirdi — adminga qisqa xabar."""
+    """Fon oqimida: mijoz qabul qildi — adminga qisqa xabar (sharh — _sharh_adminga)."""
     try:
         o = html_escape(b.get('order', ''))
-        kim = f"👤 {html_escape(b.get('ism', '') or '—')}"
-        if amal == 'qabul':
-            matn = f"📦 <b>Mijoz qabul qildi</b> №{o}\n{kim}"
-        else:
-            s = (b.get('yetkaz') or {}).get('sharh') or {}
-            baho = int(s.get('baho') or 0)
-            izoh = f"«{html_escape(s.get('matn'))}»\n" if s.get('matn') else ''
-            matn = f"⭐ <b>Sharh</b> №{o} — {'★' * baho}{'☆' * (5 - baho)}\n{izoh}{kim}\n🔒 Buyurtma yopildi"
+        matn = f"📦 <b>Mijoz qabul qildi</b> №{o}\n👤 {html_escape(b.get('ism', '') or '—')}"
         _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': {
             'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]}}, urinish=2)
     except Exception as e:
         logger.error(f'yetkaz adminga: {type(e).__name__}')
+
+
+def _sharh_ism(ism):
+    """«Abdurahmon Sobirov» → «Abdurahmon S.» (saytga shu chiqadi); to'liq ism, raqam — yo'q."""
+    q = re.sub(r"[^\w'’ -]|\d|_", ' ', str(ism or '')).split()
+    return (q[0][:20] + (f' {q[1][0].upper()}.' if len(q) > 1 else '')) if q else ''
+
+
+def _sharh_tovar(b):
+    """Buyurtmaning eng qimmat tovari → {num, spec, model}. Sekin bo'lishi mumkin (Sheets) — qulf ostida chaqirilmaydi.
+    Nega spec: sharh modelga bog'lanadi — e'lon sotilsa ham shu modelning boshqa e'lonlarida ko'rinadi."""
+    def narx(x):
+        try:
+            return float(x.get('narx') or 0)
+        except (TypeError, ValueError):
+            return 0
+    t = max(b.get('tovar') or [{}], key=narx)
+    num, spec, model = str(t.get('num') or ''), '', str(t.get('nom') or '')
+    try:
+        e, md = elon_cache_get(num) if num else (None, {})
+        if e:
+            spec = str(e.get('specId') or '')
+            model = model_display_name((md or {}).get(spec), 'uz') or model
+    except Exception as e:
+        logger.error(f'sharh tovar: {type(e).__name__}')
+    return {'num': num, 'spec': spec, 'model': model[:120]}
+
+
+def _sharh_buyurtma(uid, order):
+    """Qulf ostida chaqiriladi: (buyurtma, yetkaz.sharh) — yo'q bo'lsa (None, None)."""
+    b = next((x for x in (_MIJOZ.get(str(uid)) or {}).get('buyurtma', []) if x.get('order') == order), None)
+    return (b, (b.get('yetkaz') or {}).get('sharh')) if b else (None, None)
+
+
+def _sharh_yoz(uid, order, baho, matn, bot=False):
+    """Bot va sayt yo'li uchun bitta yozuv. Qaytaradi — _buyurtma_yetkaz natijasi (kod, nusxa). Bloklaydi (e'lon keshi)."""
+    with _MIJOZ_LOCK:
+        b, _ = _sharh_buyurtma(uid, order)
+        b = dict(b) if b else {}
+    sharh = dict(_sharh_tovar(b), baho=baho, matn=matn, ism=_sharh_ism(b.get('ism')), hol='yoz', **({'bot': 1} if bot else {}))
+    return _buyurtma_yetkaz(uid, order, 'sharh', 'mijoz', sharh=sharh)
+
+
+def _sharh_yangila(uid, order, shart=None, **maydon):
+    """yetkaz.sharh maydonlarini o'zgartiradi (shart — faqat shu `hol` da). Qaytaradi — buyurtma nusxasi yoki None."""
+    with _MIJOZ_LOCK:
+        b, s = _sharh_buyurtma(uid, order)
+        if not s or (shart and s.get('hol') != shart):
+            return None
+        s.update(maydon)
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+        _mijoz_sync_belgila('s', uid, order)
+        return dict(b)
+
+
+def _sharh_sheet_dict(uid, b):
+    """Bitta sharh → Apps Script `sharhYoz` ma'lumoti (3262 dan oldingi sharh — None)."""
+    s = (b.get('yetkaz') or {}).get('sharh') or {}
+    if not s.get('hol'):
+        return None
+    return {'order': b.get('order'), 'user_id': str(uid), 'num': s.get('num') or '', 'specId': s.get('spec') or '',
+            'model': s.get('model') or '', 'baho': s.get('baho'), 'matn': s.get('matn') or '', 'ism': s.get('ism') or '',
+            'til': b.get('til') or '', 'ts': s.get('ts'), 'mod_ts': s.get('mod_ts') or '',
+            'holat': s['hol'] if s['hol'] in ('chiqdi', 'rad') else 'kutilmoqda'}
+
+
+def _sharh_admin_klava(uid, order, hol):
+    qator = []
+    if hol != 'chiqdi':
+        qator.append({'text': '✅ Chiqarish', 'callback_data': f'shm:ok:{uid}:{order}'})
+    if hol == 'chiqdi':
+        qator.append({'text': '🙈 Yashirish', 'callback_data': f'shm:rad:{uid}:{order}'})
+    elif hol != 'rad':
+        qator.append({'text': '❌ Chiqarmaslik', 'callback_data': f'shm:rad:{uid}:{order}'})
+    return {'inline_keyboard': [qator, [{'text': '✍️ Mijozga yozish', 'url': f'tg://user?id={uid}'}]]}
+
+
+def _sharh_admin_matn(b, s):
+    baho, matn = int(s.get('baho') or 0), s.get('matn') or ''
+    belgi = (["⚠️ Past baho"] if baho <= 2 else []) + (["⚠️ Yomon so'z bor"] if _SHARH_YOMON.search(matn) else [])
+    model = f" · {html_escape(s['model'])}" if s.get('model') else ''
+    return (''.join(f'{x}\n' for x in belgi) +
+            f"⭐ <b>Yangi baho</b> — №{html_escape(b.get('order', ''))}{model} · {'★' * baho}{'☆' * (5 - baho)}\n" +
+            (f"«{html_escape(matn)}»\n" if matn else "(matnsiz)\n") +
+            f"👤 {html_escape(s.get('ism') or '—')}\n🔒 Buyurtma yopildi\n\nSaytga faqat «✅ Chiqarish» dan keyin chiqadi.")
+
+
+def _sharh_adminga(uid, order, qayta=False):
+    """Adminga moderatsiya xabari — BITTA. 'x' bilan band qilinadi; aniq rad etilsa — sikl keyin qayta yuboradi.
+    qayta — sikl: yuborish orasida bot o'chib, 'x' da qolib ketgani ham olinadi. Natija: _kk_tg natijasi yoki ''."""
+    with _MIJOZ_LOCK:
+        b, s = _sharh_buyurtma(uid, order)
+        if not s or s.get('hol') not in (('yoz', 'x') if qayta else ('yoz',)):
+            return ''
+        s['hol'] = 'x'
+        _mijoz_saqlash()
+        b, s = dict(b), dict(s)
+    natija, _ = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': _sharh_admin_matn(b, s), 'parse_mode': 'HTML',
+                                       'reply_markup': _sharh_admin_klava(uid, order, 'mod')}, urinish=2)
+    _sharh_yangila(uid, order, hol='mod' if natija in ('yuborildi', 'noaniq') else 'yoz')
+    return natija
+
+
+def _sharh_til(b, uz, ru):
+    til = b.get('til')
+    return uz if til == 'uz' else ru if til == 'ru' else f'{uz}\n\n{ru}'
+
+
+def _sharh_sor_matn(b, model):
+    o, m = html_escape(b.get('order', '')), f" — {html_escape(model)}" if model else ''
+    return _sharh_til(b, f"📦 <b>Buyurtma №{o}</b>{m}\nXarid yoqdimi? 1 dan 5 gacha baholang — boshqa xaridorlarga yordam beradi.",
+                      f"📦 <b>Заказ №{o}</b>{m}\nКак вам покупка? Оцените от 1 до 5 — это поможет другим покупателям.")
+
+
+def _sharh_sor_klava(order):
+    return {'inline_keyboard': [[{'text': f'{n}⭐', 'callback_data': f'bb:{n}:{order}'} for n in range(1, 6)]]}
+
+
+def _sharh_sor_belgi(uid, order, qiymat):
+    with _MIJOZ_LOCK:
+        b, _ = _sharh_buyurtma(uid, order)
+        if not b:
+            return
+        y = dict(b.get('yetkaz') or {})
+        if qiymat:
+            y['baho_sor'] = qiymat
+        else:
+            y.pop('baho_sor', None)
+        b['yetkaz'] = y
+        _mijoz_saqlash()
+        _mijoz_sync_belgila('b', uid, order)
+
+
+def _sharh_sor_kerak(b, hozir):
+    y = b.get('yetkaz') or {}
+    ts = float(b.get('holat_ts') or 0)
+    return (b.get('holat') == 'yetkazildi' and not y.get('sharh') and not y.get('baho_sor') and ts >= SHARH_BOSHI
+            and hozir - ts >= SHARH_SOR_S)
+
+
+def _sharh_ish(hozir=None):
+    """Bir tekshiruv: 30 daqiqa o'tgan sharhlar → adminga; 3 kun o'tgan buyurtmalar → mijozga (10:00–20:00). Qaytaradi — (admin, mijoz)."""
+    hozir = int(hozir if hozir is not None else time.time())
+    if _chek_tun(hozir):
+        return 0, 0
+    kunduz = 10 <= int(_kk_vaqt(hozir)[11:13]) < 20
+    adm, sor = [], []
+    with _MIJOZ_LOCK:
+        for uid, m in list(_MIJOZ.items()):
+            for b in m.get('buyurtma', []):
+                s = (b.get('yetkaz') or {}).get('sharh') or {}
+                yosh = hozir - float(s.get('ts') or 0)
+                if (s.get('hol') == 'yoz' and yosh >= SHARH_MATN_KUT_S) or (s.get('hol') == 'x' and yosh >= 2 * SHARH_MATN_KUT_S):
+                    adm.append((uid, b.get('order')))
+                elif kunduz and _sharh_sor_kerak(b, hozir):
+                    sor.append((uid, b.get('order')))
+    n_adm = sum(1 for uid, order in adm if _sharh_adminga(uid, order, qayta=True) in ('yuborildi', 'noaniq'))
+    n_sor = 0
+    for uid, order in sor[:SHARH_SOR_MAX]:
+        with _MIJOZ_LOCK:   # yuborishdan oldin qayta tekshiramiz va band qilamiz — ikki marta ketmasin
+            b, _ = _sharh_buyurtma(uid, order)
+            if not b or not _sharh_sor_kerak(b, hozir):
+                continue
+            b = dict(b)
+        _sharh_sor_belgi(uid, order, hozir)
+        natija, _ = _kk_tg('sendMessage', {'chat_id': uid, 'text': _sharh_sor_matn(b, _sharh_tovar(b)['model']), 'parse_mode': 'HTML',
+                                           'reply_markup': _sharh_sor_klava(order)}, urinish=2)
+        if natija == 'bloklagan':
+            _sharh_sor_belgi(uid, order, 'blok')
+        elif natija == 'xato':
+            _sharh_sor_belgi(uid, order, '')   # aniq ketmadi — keyingi tekshiruvda qayta
+        else:
+            n_sor += 1
+    return n_adm, n_sor
+
+
+async def sharh_loop():
+    """3262: har 10 daqiqada — baho so'rash va kechikkan sharhlarni adminga yuborish."""
+    await asyncio.sleep(150)   # ishga tushganda avval mijoz_sync_loop Sheets'dan yuklab olsin
+    while True:
+        try:
+            await blok(_sharh_ish)
+        except Exception as e:
+            logger.error(f'sharh_loop: {type(e).__name__}')
+        await asyncio.sleep(SHARH_ORALIQ_S)
+
+
+def _sharh_kutyapti(uid, hozir=None):
+    """Mijozdan sharh matni kutilayotgan buyurtma ('' — yo'q). Xotira emas, yozuvning o'zi: bot qayta yonsa ham ishlaydi."""
+    hozir = hozir if hozir is not None else time.time()
+    with _MIJOZ_LOCK:
+        for b in (_MIJOZ.get(str(uid)) or {}).get('buyurtma', []):
+            s = (b.get('yetkaz') or {}).get('sharh') or {}
+            if s.get('bot') and s.get('hol') == 'yoz' and hozir - float(s.get('ts') or 0) < SHARH_MATN_KUT_S:
+                return b.get('order')
+    return ''
+
+
+def _sharh_rahmat(b):
+    return _sharh_til(b, "Rahmat, fikringiz qabul qilindi — tekshiruvdan so'ng saytda chiqadi.",
+                      "Спасибо, отзыв принят — после проверки он появится на сайте.")
+
+
+def _sharh_tugma_ish(uid, chat, msg_id, data):
+    """Mijoz: bb:<n>:<order> (yulduz) · bbn:<order> («Yozmayman») — xabar o'sha joyida o'zgaradi."""
+    q = data.split(':')
+    if q[0] == 'bb' and len(q) == 3 and q[1] in ('1', '2', '3', '4', '5'):
+        kod, b = _sharh_yoz(uid, q[2], int(q[1]), '', bot=True)
+        if kod == 'ok':
+            n = int(q[1])
+            yul = '★' * n + '☆' * (5 - n)
+            matn = _sharh_til(b, f"Rahmat! {yul}\nXohlasangiz, bir-ikki gap yozing (nima yoqdi, nima yoqmadi). Yozmasangiz ham bo'ladi.",
+                              f"Спасибо! {yul}\nЕсли хотите, напишите пару слов (что понравилось, что нет). Можно и без отзыва.")
+            tu = 'Yozmayman' if b.get('til') == 'uz' else 'Пропустить' if b.get('til') == 'ru' else 'Yozmayman / Пропустить'
+            klava = {'inline_keyboard': [[{'text': tu, 'callback_data': f'bbn:{q[2]}'}]]}
+        elif kod == 'eski':
+            matn, klava = _sharh_til(b, "Bu buyurtma allaqachon baholangan. Rahmat!", "Этот заказ уже оценён. Спасибо!"), None
+        else:
+            return
+    elif q[0] == 'bbn' and len(q) == 2:
+        with _MIJOZ_LOCK:
+            b, s = _sharh_buyurtma(uid, q[1])
+            b = dict(b) if s else None
+        if not b:
+            return
+        _sharh_adminga(uid, q[1])
+        matn, klava = _sharh_rahmat(b), None
+    else:
+        return
+    _kk_tg('editMessageText', {'chat_id': chat, 'message_id': msg_id, 'text': matn, 'parse_mode': 'HTML',
+                               **({'reply_markup': klava} if klava else {})}, urinish=2)
+
+
+def _sharh_matn_qabul(uid, order, matn):
+    """Mijoz yozgan matn → sharhga, keyin adminga. Muddat o'tib ketgan / allaqachon yuborilgan — jim."""
+    b = _sharh_yangila(uid, order, shart='yoz', matn=re.sub(r'\s+', ' ', str(matn or '')).strip()[:_SHARH_MATN_MAX])
+    if not b:
+        return
+    _sharh_adminga(uid, order)
+    _kk_tg('sendMessage', {'chat_id': uid, 'text': _sharh_rahmat(b), 'parse_mode': 'HTML'}, urinish=2)
+
+
+def _sharh_mod_ish(chat, msg_id, data):
+    """Admin: shm:ok|rad:<uid>:<order>. Saytga «Sharhlar» varag'i orqali o'tadi (sharhYoz ro'yxat keshini tozalaydi)."""
+    q = data.split(':')
+    if len(q) != 4 or q[1] not in ('ok', 'rad'):
+        return
+    hol = 'chiqdi' if q[1] == 'ok' else 'rad'
+    if _sharh_yangila(q[2], q[3], hol=hol, mod_ts=int(time.time())):
+        _kk_tg('editMessageReplyMarkup', {'chat_id': chat, 'message_id': msg_id,
+                                          'reply_markup': _sharh_admin_klava(q[2], q[3], hol)}, urinish=2)
 
 
 def _isbot_rasm_yubor(uid, b, rasm):
@@ -10729,7 +11001,7 @@ async def buyurtma_qabul_endpoint(request):
 
 async def buyurtma_sharh_endpoint(request):
     """3288: mijoz sharhi — {initData, order, baho 1–5, matn ≤ 500}. Qabul qilingandan keyin (409); buyurtma «yopildi» bo'ladi.
-    Bitta buyurtmaga bitta sharh (takror — eskisi qoladi). Adminga fonda «⭐ Sharh». 3262 (sharh / baho) shu yo'lni ishlatadi."""
+    Bitta buyurtmaga bitta sharh (takror — eskisi qoladi). Adminga fonda moderatsiya xabari (3262)."""
     try:
         data = await request.json()
         uid = check_init_data(data.get('initData', ''))
@@ -10743,13 +11015,13 @@ async def buyurtma_sharh_endpoint(request):
         if not order or not 1 <= baho <= 5:
             return web.json_response({'error': 'order' if not order else 'baho'}, status=400)
         matn = re.sub(r'\s+', ' ', str(data.get('matn') or '')).strip()[:_SHARH_MATN_MAX]
-        kod, b = _buyurtma_yetkaz(uid, order, 'sharh', 'mijoz', sharh={'baho': baho, 'matn': matn})
+        kod, b = await blok(_sharh_yoz, uid, order, baho, matn)
         if kod == 'topilmadi':
             return web.json_response({'error': 'Topilmadi'}, status=404)
         if kod in ('bekor', 'erta'):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
         if kod == 'ok':
-            asyncio.get_event_loop().run_in_executor(None, _yetkaz_adminga, uid, b, 'sharh')
+            asyncio.get_event_loop().run_in_executor(None, _sharh_adminga, uid, order)
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
     except Exception as e:
         logger.error(f'buyurtma_sharh_endpoint: {type(e).__name__}')
@@ -11455,6 +11727,7 @@ async def main():
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
     asyncio.create_task(buyurtma_xabar_loop())   # BUGUN295: adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham)
     asyncio.create_task(chek_eslatma_loop())   # BUGUN305: 1 soat chek kelmasa — adminga bitta eslatma
+    asyncio.create_task(sharh_loop())   # 3262: 3 kundan keyin baho so'rash, sharh — adminga
     asyncio.create_task(mijoz_kop_loop())   # 3176: /start + kanal voqealari — to'plab, fonda (BUGUN232 navbati o'rniga)
     asyncio.create_task(savat_eslatma_loop())   # 3184: savatda qolgan tovar — eslatma (SAVAT_ESLATMA, sukut quruq)
     asyncio.create_task(mijoz_birlashtir_loop())   # 3184: takror Mijozlar qatorlari — kunda bir marta, 04:00
