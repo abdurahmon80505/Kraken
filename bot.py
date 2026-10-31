@@ -7466,6 +7466,18 @@ async def webhook(request):
     return web.json_response({'ok': True})
 
 
+def _cq_toast(cq_data):
+    """answerCallbackQuery matni ('' — toast yo'q). Ishlovchisi ATAYLAB yo'q tugmalar bosilganda — nega hech narsa bo'lmagani.
+    Epaqa: «🧪 NAMUNA» xabaridagi tugmalar (callback «namuna», 3214.1) bosilsa jim edi — endi tushuntiriladi."""
+    if cq_data == 'bh:-':
+        return "✔️ Bu bosqich bajarilgan — holat xabar matnida"
+    if not KOLLAJ_YOQIQ and cq_data.startswith(('kollaj:', 'kg:')):
+        return "🖼 Kollaj hozircha o'chiq"   # 3244
+    if cq_data == 'namuna':
+        return "🧪 Bu namuna — tugma ishlamaydi (haqiqiy xabardagisi ishlaydi)"
+    return ''
+
+
 async def handle_update(data):
     try:
         # BUGUN16 §1: «@bot …» — inline rejim
@@ -7518,12 +7530,9 @@ async def handle_update(data):
                 cq_chat = Joy(cq_chat, cq_msg.get('message_thread_id'))
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
+            toast = _cq_toast(cq_data)
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
-                       json={'callback_query_id': cq_id, **({'text': "✔️ Bu bosqich bajarilgan — holat xabar matnida"}
-                                                            if cq_data == 'bh:-' else
-                                                            {'text': "🖼 Kollaj hozircha o'chiq"}   # 3244
-                                                            if not KOLLAJ_YOQIQ and cq_data.startswith(('kollaj:', 'kg:'))
-                                                            else {})}, timeout=5)
+                       json={'callback_query_id': cq_id, **({'text': toast} if toast else {})}, timeout=5)
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi

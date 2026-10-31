@@ -389,5 +389,25 @@ sinov("/bron_tekshir: to'g'ri nums → 200 (bron tekshiruvi ishladi)", r.status 
 bot.check_init_data = _asl_init
 
 
+# ── M. Ishlovchisi ataylab yo'q tugma — bosilsa tushuntiriladi ─────────────────────────────────────────────────────────
+print("— M. «🧪 NAMUNA» tugmasi bosilsa — «Bu namuna — tugma ishlamaydi»")
+
+
+def tugma_bos(data, kim=ADMIN):
+    SOROV.clear()
+    asyncio.run(bot.handle_update({'update_id': 9000 + MID[0], 'callback_query': {
+        'id': 'q1', 'data': data, 'from': {'id': kim}, 'message': {'message_id': 5, 'chat': {'id': kim}}}}))
+    MID[0] += 1
+    a = sorov('answerCallbackQuery')
+    return a[0].get('text') if a else 'JAVOBSIZ'
+
+
+sinov("namuna → «🧪 Bu namuna — tugma ishlamaydi…»", (tugma_bos('namuna') or '').startswith('🧪 Bu namuna — tugma ishlamaydi'))
+sinov("namuna — boshqa hech narsa qilinmadi (faqat javob)", [u for u, _ in SOROV] == ['answerCallbackQuery'], repr(SOROV)[:200])
+sinov("bh:- → avvalgidek «✔️ Bu bosqich bajarilgan…»", tugma_bos('bh:-') == "✔️ Bu bosqich bajarilgan — holat xabar matnida")
+sinov("kollaj o'chiq → avvalgidek «🖼 Kollaj hozircha o'chiq»", bot.KOLLAJ_YOQIQ or tugma_bos('kollaj:5') == "🖼 Kollaj hozircha o'chiq")
+sinov("oddiy tugma (mijoz, yon:mobile) → toast yo'q, javob baribir ketadi", tugma_bos('yon:mobile', kim=MIJOZ) is None)
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)
