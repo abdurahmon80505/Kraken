@@ -10934,6 +10934,9 @@ _SHARH_MATN_MAX = 500
 # yetkaz.baho_sor: so'ralgan vaqt · 'blok' (mijoz botni to'xtatgan) — Render qayta yonsa ham ikki marta so'ralmaydi.
 SHARH_SOR_S = 3 * 86400
 SHARH_MATN_KUT_S = 1800
+# 3262.1 (Owner: «hozircha sharhlar yo'q bo'lib tursin»): matnli sharh o'chiq — bot faqat 1–5 ⭐ so'raydi, matnga taklif yo'q, yulduz
+# bosilgach adminga darhol; sayt /buyurtma_sharh matnni olmaydi. Yoqish: True + saytda sayt/js/06-detal.js SHARH_MATN=true.
+SHARH_MATN = False
 SHARH_ORALIQ_S = 600
 SHARH_SOR_MAX = 20   # bir tekshiruvda nechta mijozga so'rov
 SHARH_BOSHI = 1793451600   # 2026-10-31 18:00 Toshkent: bundan oldin yetkazilganlardan so'ralmaydi (eski mijozlarga birdan xabar ketmasin)
@@ -11207,6 +11210,8 @@ async def sharh_loop():
 
 def _sharh_kutyapti(uid, hozir=None):
     """Mijozdan sharh matni kutilayotgan buyurtma ('' — yo'q). Xotira emas, yozuvning o'zi: bot qayta yonsa ham ishlaydi."""
+    if not SHARH_MATN:
+        return ''   # 3262.1: matn kutilmaydi — mijoz yozgani oddiy xabar bo'lib qoladi
     hozir = hozir if hozir is not None else time.time()
     with _MIJOZ_LOCK:
         for b in (_MIJOZ.get(str(uid)) or {}).get('buyurtma', []):
@@ -11217,6 +11222,8 @@ def _sharh_kutyapti(uid, hozir=None):
 
 
 def _sharh_rahmat(b):
+    if not SHARH_MATN:
+        return _sharh_til(b, "Rahmat, bahoingiz qabul qilindi.", "Спасибо, ваша оценка принята.")
     return _sharh_til(b, "Rahmat, fikringiz qabul qilindi — tekshiruvdan so'ng saytda chiqadi.",
                       "Спасибо, отзыв принят — после проверки он появится на сайте.")
 
@@ -11229,6 +11236,11 @@ def _sharh_tugma_ish(uid, chat, msg_id, data):
         if kod == 'ok':
             n = int(q[1])
             yul = '★' * n + '☆' * (5 - n)
+            if not SHARH_MATN:   # 3262.1: matn taklifi va «Yozmayman» yo'q — baho adminga darhol
+                _sharh_adminga(uid, q[2])
+                matn, klava = _sharh_til(b, f"Rahmat! {yul}\nBahoingiz qabul qilindi.", f"Спасибо! {yul}\nВаша оценка принята."), None
+                _kk_tg('editMessageText', {'chat_id': chat, 'message_id': msg_id, 'text': matn, 'parse_mode': 'HTML'}, urinish=2)
+                return
             matn = _sharh_til(b, f"Rahmat! {yul}\nXohlasangiz, bir-ikki gap yozing (nima yoqdi, nima yoqmadi). Yozmasangiz ham bo'ladi.",
                               f"Спасибо! {yul}\nЕсли хотите, напишите пару слов (что понравилось, что нет). Можно и без отзыва.")
             tu = 'Yozmayman' if b.get('til') == 'uz' else 'Пропустить' if b.get('til') == 'ru' else 'Yozmayman / Пропустить'
@@ -11347,7 +11359,7 @@ async def buyurtma_sharh_endpoint(request):
             baho = 0
         if not order or not 1 <= baho <= 5:
             return web.json_response({'error': 'order' if not order else 'baho'}, status=400)
-        matn = re.sub(r'\s+', ' ', str(data.get('matn') or '')).strip()[:_SHARH_MATN_MAX]
+        matn = re.sub(r'\s+', ' ', str(data.get('matn') or '')).strip()[:_SHARH_MATN_MAX] if SHARH_MATN else ''   # 3262.1
         kod, b = await blok(_sharh_yoz, uid, order, baho, matn)
         if kod == 'topilmadi':
             return web.json_response({'error': 'Topilmadi'}, status=404)
