@@ -163,7 +163,8 @@ bot._mijoz_tel_qosh = lambda *a, **kw: None
 bot.check_init_data = lambda s, max_age=86400: str(UID)
 bot._kk_qatnash_yoz = lambda st, q, iz: {'ok': True, 'count': 20, 'shubha': [
     {'sabab': 'qurilma', 'username': '', 'ism': 'Avvalgi', 'user_id': 7000000002}]}
-bot._kk_son_yuborilgan.clear()
+bot._kk_kop_yoz = lambda partiya: {x['qid']: bot._kk_qatnash_yoz(x, None, None) for x in partiya}   # 3322: navbat partiyasi
+bot._kk_son_qadam.clear()   # 3324: «har 20» holati — qadam (ilgari _kk_son_yuborilgan)
 USER = {'id': UID, 'username': '', 'first_name': 'Sinov'}
 
 
@@ -178,6 +179,11 @@ async def oqim():
     await bot.handle_phone(UID, '+998901234567', USER)
     bot._kk_captcha[UID] = {'id': 'c1', 'javob': 'olma', 'vaqt': time.time() - 5}
     r = await bot.konkurs_qatnash_endpoint(Sorov())
+    t = bot._kk_navbat_ish.get('task')   # 3322: yozish va xabarlar — fon navbatida
+    if t:
+        await t
+    for v in [v for v in asyncio.all_tasks() if v is not asyncio.current_task() and v is not bot._kk_navbat_ish.get('saqla')]:
+        await v   # navbat xabarlari (qatnashchiga, adminga)
     return holat, json.loads(r.text)
 
 

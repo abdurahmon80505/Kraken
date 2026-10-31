@@ -5427,6 +5427,7 @@ async def konkurs_tiklash():
         k = await blok(get_konkurs)
         if k:
             konkurs_taymer_qoy(k)
+            await _kk_son_boshlash(k)   # 3324: «har 20 kishi» boshlang'ich qadami
         r = await _kk_sorov('konkursYetkazishKerak')
         if r is None:
             logger.warning('konkurs tiklash: Apps Script javob bermadi (eski versiya yoki tarmoq)')
@@ -6404,8 +6405,12 @@ async def konkurs_boshla_endpoint(request):
 # ── BUGUN226 (foydalanuvchi, 2026-10-16): konkursda har 20 yangi ishtirokchida adminga «🎁 Konkursda 40 kishi».
 # Son — Apps Script joinKonkurs javobidagi `count` (jadval qulfi ichida hisoblangan: har qo'shilishga o'z soni) — shu sabab bot
 # qayta yonsa ham bir son ikki marta chiqmaydi (holat jadvalda — T2); `_kk_son_yuborilgan` — shu jarayondagi qo'shimcha himoya.
+# 3324 (Owner, 2026-10-31): 40 xabari kelmadi — endi «aynan 40» emas, CHEGARADAN O'TISH (partiyada 39 → 41 bo'lsa ham
+# bir marta, hozirgi son bilan); yuborilmasa qadam belgilanmaydi — keyingi qo'shilishda qayta urinadi; natija logda.
 KK_SON_QADAM = 20
-_kk_son_yuborilgan = set()
+_kk_son_qadam = {}   # konkurs_id → adminga aytilgan oxirgi qadam (soni // KK_SON_QADAM)
+# 3324: tuzatish chiqqanda bugungi o'tib ketgan 40 uchun bir martalik «hozir N kishi» — faqat shu vaqtgacha yonsa
+KK_SON_QUVISH_GACHA = 1793476800   # 2026-11-01 01:00 Toshkent
 
 
 async def _kk_son_xabari(konkurs_id, soni):
@@ -6413,11 +6418,33 @@ async def _kk_son_xabari(konkurs_id, soni):
         soni = int(soni)
     except (TypeError, ValueError):
         return
-    kalit = (str(konkurs_id), soni)
-    if soni < KK_SON_QADAM or soni % KK_SON_QADAM or kalit in _kk_son_yuborilgan:
+    kid, qadam = str(konkurs_id), soni // KK_SON_QADAM
+    oldin = _kk_son_qadam.setdefault(kid, (soni - 1) // KK_SON_QADAM)   # boshlang'ich yo'q — oldingi son soni-1
+    if qadam <= oldin:
         return
-    _kk_son_yuborilgan.add(kalit)
-    await _kk_admin(f"🎁 Konkursda {soni} kishi")
+    _kk_son_qadam[kid] = qadam   # await'dan oldin — parallel chaqiruv ikkinchi marta yubormasin
+    yetdi = await blok(send_msg, ADMIN_ID, f"🎁 Konkursda {soni} kishi")
+    logger.info(f"konkurs son: {soni} — adminga {'yuborildi' if yetdi else 'YUBORILMADI'}")
+    if not yetdi and _kk_son_qadam.get(kid) == qadam:
+        _kk_son_qadam[kid] = oldin
+
+
+async def _kk_son_boshlash(k):
+    """Bot ishga tushganda: aktiv konkursning jadvaldagi soni — boshlang'ich qadam (o'chib yonganda o'tilgan chegara ham
+    keyingi qo'shilishda aytiladi, aytilgani qaytarilmaydi). 3324: KK_SON_QUVISH_GACHA dan oldin — bir martalik xabar."""
+    if not k or str(k.get('status', '')).lower() != 'active':
+        return
+    try:
+        soni = int(k.get('count'))
+    except (TypeError, ValueError):
+        return
+    kid = str(k.get('id') or k.get('konkurs_id') or '')
+    if not kid or kid in _kk_son_qadam:
+        return
+    _kk_son_qadam[kid] = soni // KK_SON_QADAM
+    if soni >= KK_SON_QADAM and time.time() < KK_SON_QUVISH_GACHA:
+        yetdi = await blok(send_msg, ADMIN_ID, f"🎁 Konkursda {soni} kishi")
+        logger.info(f"konkurs son (bir martalik): {soni} — adminga {'yuborildi' if yetdi else 'YUBORILMADI'}")
 
 
 def _tg_mid(r):
