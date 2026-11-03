@@ -141,11 +141,11 @@ sinov("«↩ Qaytarish» — kanal posti slaydga", '<tg-slideshow>' in ed[-1][2]
 sinov("jadvalda 55 (belgisiz, eski ko'rinish)", ('sheets', {'num': 301, 'channel_message_id': 55}) in LOG)
 sinov("tugma yana «✅ Kanalda shunga o'tkazish»", cb(SOROV[-1][1]['reply_markup']) == ['kg:55'])
 
-# to'plam posti: belgi birinchi e'londa, hammasi kollaj deb biladi
+# to'plam posti: 3242 — belgi HAMMA e'londa (bittasi ko'chsa ham qolgani kollaj bo'lib qoladi)
 muhit()
 bot.kollaj_almashtir(bot.GURUH['id'], 9, 'kg:77')
-sinov("to'plam: post 77 kollaj, belgi bitta e'londa", LOG[-1][0] == 'edit' and '<tg-collage>' in LOG[-1][2]
-      and [x[1]['channel_message_id'] for x in LOG if x[0] == 'sheets'] == ['77k'], repr(LOG))
+sinov("to'plam: post 77 kollaj, belgi ikkala e'londa", LOG[-1][0] == 'edit' and '<tg-collage>' in LOG[-1][2]
+      and [x[1]['channel_message_id'] for x in LOG if x[0] == 'sheets'] == ['77k', '77k'], repr(LOG))
 bot.toplam_tahrir(77)
 sinov("to'plam keyingi tahrirda ham kollaj", '<tg-collage>' in LOG[-1][2])
 
