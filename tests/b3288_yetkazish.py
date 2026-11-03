@@ -240,12 +240,15 @@ sinov("sharh qabuldan oldin — 409 erta", chaqir(bot.buyurtma_sharh_endpoint, {
 sinov("baho 0 — 400", chaqir(bot.buyurtma_sharh_endpoint, {'initData': str(MIJOZ), 'order': 'TEST01', 'baho': 0})[0] == 400)
 sinov("baho 6 — 400", chaqir(bot.buyurtma_sharh_endpoint, {'initData': str(MIJOZ), 'order': 'TEST01', 'baho': '6'})[0] == 400)
 SOROV.clear()
+bot.SHARH_MATN = True   # 3262.1: matn odatda o'chiq — bu yerda yoqilgan holat (b32621_sharh_matn.py — o'chig'i)
+SOROV.clear()
 k, j = chaqir(bot.buyurtma_sharh_endpoint, {'initData': str(MIJOZ), 'order': 'TEST01', 'baho': 4,
                                             'matn': '  Zo\'r,\n tez   keldi ' + 'x' * 600})
 sinov('sharh — 200, yopildi', k == 200 and j.get('holat') == 'yopildi', (k, j))
 sh = yozuv('TEST01')['yetkaz'].get('sharh') or {}
 sinov('sharh matni — bo\'shliqlar siqildi, ≤ 500', sh.get('baho') == 4 and sh.get('matn', '').startswith("Zo'r, tez keldi x")
       and len(sh.get('matn', '')) == 500, repr(sh)[:120])
+bot.SHARH_MATN = False
 asyncio.run(_kut())
 s = oxirgi('sendMessage', ADMIN)
 sinov('adminga «⭐ Sharh» ★★★★☆ + «Buyurtma yopildi»', s and '★★★★☆' in s[1]['text'] and 'Buyurtma yopildi' in s[1]['text'], repr(s))
