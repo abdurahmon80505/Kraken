@@ -2199,7 +2199,7 @@ POST_CHANNEL = os.environ.get('POST_CHANNEL_ID', TEST_CHANNEL)
 # env POST_KANALLAR = "mobile=@nuqta_tech_mobile pc=@nuqta_tech_PC camera=@nuqta_tech_camera" (yoki -100… raqam).
 # Env yo'q — hamma yo'nalish POST_CHANNEL'ga, bitta post (avvalgidek). Yozilmagan yo'nalish — POST_CHANNEL.
 # channel_message_id: «123» — eski (POST_CHANNEL'dagi bitta post) yoki «mobile:123 pc:45» — har kanaldagi post.
-# To'plam va katalog postlari — avvalgidek faqat POST_CHANNEL.
+# 3403: to'plam posti ham o'z yo'nalishi kanaliga (kanal_toplam); katalog — umumiy kanalda.
 POST_KANALLAR = {k.strip().lower(): v.strip() for k, _, v in
                  (x.partition('=') for x in re.split(r'[\s,;]+', os.environ.get('POST_KANALLAR', '')) if '=' in x)
                  if k.strip() and v.strip()}
@@ -2248,7 +2248,7 @@ def umumiy_kanal():
 # (ular kanalga post emas, a'zoga xabar).
 KANAL_YOLI = {
     'elon': 'asosiy',          # e'lon posti: avto (faollashganda), sayt «📣 Kanalga» / «Yana keldi», /post, /yana, ommaviy, tomchi
-    'toplam': 'asosiy',        # to'plam posti (/toplam, saytda belgilab)
+    'toplam': 'asosiy',        # to'plam posti (/toplam, saytda belgilab) — yo'nalish kanaliga (kanal_toplam)
     'katalog': 'asosiy',       # /katalog (qadaladi)
     'guruh': 'guruh',          # rang guruhi posti: GURUH_KANAL_ID bo'sh / test → TEST; «asl» → asosiy; boshqa — o'sha chat
     'konkurs': 'konkurs',      # konkurs natijasi / g'oliblar (konkursni Owner boshlaydi)
@@ -2364,6 +2364,27 @@ def elon_kanali(num):
     elon, _ = elon_cache_get(num)
     p = kanal_postlar(elon)
     return p[0][1] if p else kanal_tanla('elon')
+
+
+KANAL_QISQA = {'mobile': 'Mobile', 'pc': 'PC', 'camera': 'Camera'}
+
+
+def kanal_nomi(chat):
+    """Kanal → admin o'qiydigan qisqa nom: «Camera»; yo'nalish kanali bo'lmasa — manzilning o'zi (3403)."""
+    for y, nom in KANAL_QISQA.items():
+        if chat == MAIN_KANALLAR.get(y) or str(chat).lstrip('@').lower() == YON_KANAL[y][1].lower():
+            return nom
+    return str(chat)
+
+
+def elon_kanallari(nums):
+    """Shu e'lonlarning postlari turgan kanallar (takrorsiz, chiqish tartibida) — javob va adminga xabar uchun (3403)."""
+    out = []
+    for n in nums:
+        for _, chat, _ in kanal_postlar(elon_cache_get(n)[0]):
+            if chat not in out:
+                out.append(chat)
+    return out
 
 
 def kop_donali(elon):
@@ -2666,14 +2687,16 @@ def kanal_tahrir(num):
     mid = kanal_msg_id(elon)
     if not mid:
         return False, "post yo'q"
-    if toplam_postmi(elon, models):
-        return toplam_tahrir(mid)
     # A26: tahrirda ham suv belgisi (joyi o'zgargan bo'lsa — yangi joyda). editMessageText — bildirishnomasiz
     # MS3.1: har kanaldagi posti (yo'nalishi o'ziniki); kollaj — asosiy post bo'yicha
+    # 3403: ikki yo'nalishli e'lon bir kanalda to'plamda, boshqasida alohida bo'lishi mumkin — har post o'z ko'rinishida
     natija = (True, '')
     for y, chat, m in kanal_postlar(elon):
-        ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=kollajmi(mid),
-                                    yonalish=y or post_yonalish(elon, models, mid=m))
+        if post_toplammi(elon, models, y, chat, m):
+            ok, xato = toplam_tahrir(m, chat)
+        else:
+            ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=kollajmi(mid),
+                                        yonalish=y or post_yonalish(elon, models, mid=m))
         if not ok and natija[0]:
             natija = (False, xato)
     return natija
@@ -2733,24 +2756,28 @@ def kanal_ochir(num):
     elon, models = elon_cache_get(num)
     if not elon:
         return False, "e'lon topilmadi"
-    mid = kanal_msg_id(elon)
-    if not mid:
+    postlar = kanal_postlar(elon)
+    if not postlar:
         return True, ''
-    if toplam_postmi(elon, models):
-        kanal_id_yoz(num, None)
-        return toplam_tahrir(mid)
+    toplamlar = [(c, m) for y, c, m in postlar if post_toplammi(elon, models, y, c, m)]   # 3403: har kanalda alohida
     qoldi, xato = [], ''   # MS3.1: hamma kanaldagi posti; o'chmagani id'da qoladi
-    for y, chat, m in kanal_postlar(elon):
+    for y, chat, m in postlar:
+        if (chat, m) in toplamlar:
+            continue
         ok, x = delete_msg(chat, m)
         if not ok:
             qoldi.append((y, m))
             xato = xato or x
     if not qoldi:
         kanal_id_yoz(num, None)
-        return True, ''
-    if qoldi[0][0] and len(qoldi) < len(kanal_postlar(elon)):
+    elif qoldi[0][0] and len(qoldi) < len(postlar):
         kanal_id_yoz(num, ' '.join(_tok(y, m) for y, m in qoldi))
-    return False, xato
+    natija = not qoldi
+    for chat, m in toplamlar:   # id yozilgandan keyin: to'plam shu e'lonsiz qayta yasaladi
+        ok, x = toplam_tahrir(m, chat)
+        if not ok:
+            natija, xato = False, xato or x
+    return natija, xato
 
 
 def kanal_yana_keldi(num, yonalish=None):
@@ -2761,11 +2788,13 @@ def kanal_yana_keldi(num, yonalish=None):
     if not elon:
         return None, "e'lon topilmadi"
     mid = kanal_msg_id(elon)
-    toplamda = bool(mid) and toplam_postmi(elon, models)
-    eskilar = [] if toplamda or not mid else kanal_postlar(elon)   # MS3.1: hamma kanaldagisi
+    postlar = kanal_postlar(elon)   # MS3.1: hamma kanaldagisi
+    toplamlar = [(c, m) for y, c, m in postlar if post_toplammi(elon, models, y, c, m)]
+    eskilar = [p for p in postlar if (p[1], p[2]) not in toplamlar]
     yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
-    if yangi and toplamda:
-        toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
+    if yangi:
+        for chat, m in toplamlar:
+            toplam_tahrir(m, chat)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
     if yangi and eskilar:
         _eski_ochir(eskilar, f'№{num}')
     return yangi, xato
@@ -2839,26 +2868,35 @@ def toplam_elonlar():
     return _toplam_items(lambda e: not kanal_msg_id(e))
 
 
-def _mid_elonlar(mid, hammasi=False):
-    """Shu postga (channel_message_id) yozilgan e'lonlar — har qanday tur. hammasi=False — faqat faollari."""
+def _mid_elonlar(mid, hammasi=False, chat=None):
+    """Shu postga (channel_message_id) yozilgan e'lonlar — har qanday tur. hammasi=False — faqat faollari.
+    3403: message_id har kanalda o'zicha sanaladi (Mobile'dagi 300 va Camera'dagi 300 — boshqa-boshqa post), shuning uchun
+    solishtirish (kanal, id) bo'yicha. chat yo'q — umumiy kanaldagi post (faqat id saqlagan eski tugmalar)."""
+    chat = chat or (umumiy_kanal() if MAIN_KANALLAR else None)
     with _elon_cache_lock:
         items = list(_ELON_CACHE['by_num'].values())
         models = dict(_ELON_CACHE['models'])
-    out = [e for e in items if kanal_msg_id(e) == int(mid)
+    out = [e for e in items if any(m == int(mid) and chat in (None, c) for _, c, m in kanal_postlar(e))
            and (hammasi or elon_status(e) not in ('deleted', 'waited'))]
     out.sort(key=lambda e: _tur_kalit(e, models))
     return out, models
 
 
+def post_toplammi(elon, models, y, chat, mid):
+    """Shu kanaldagi post to'plammi: case/part/accessory (/toplam) yoki shu (kanal, id) ga 2+ e'lon yozilgan (B29)."""
+    # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
+    # 3184.5: id «mobile:123» — o'z alohida posti (kanal_post), to'plam emas
+    if not y and not guruh_idsi(elon) and elon_turi(elon, models) in TOPLAM_TURLAR:
+        return True
+    return len(_mid_elonlar(mid, hammasi=True, chat=chat)[0]) > 1
+
+
 def toplam_postmi(elon, models):
-    """E'lonning posti to'plammi: case/part/accessory (/toplam) yoki bitta id'ga 2+ e'lon yozilgan (saytdan belgilab, B29)."""
-    mid = kanal_msg_id(elon)
-    if guruh_idsi(elon):
-        # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
-        return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
-    if elon_turi(elon, models) in TOPLAM_TURLAR and not any(y for y, _, _ in kanal_postlar(elon)):
-        return True   # 3184.5: id «mobile:123» — o'z alohida posti (kanal_post), to'plam emas
-    return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
+    """E'lonning biror posti to'plammi (post_toplammi)."""
+    postlar = kanal_postlar(elon)
+    if not postlar:
+        return not guruh_idsi(elon) and elon_turi(elon, models) in TOPLAM_TURLAR
+    return any(post_toplammi(elon, models, *p) for p in postlar)
 
 
 def _narx_son(e):
@@ -2964,12 +3002,14 @@ def build_toplam_html(items, models_by_id, kollaj=False):
     )
 
 
-def toplam_tahrir(mid):
-    """Shu to'plam postiga kirgan (id bir xil) e'lonlar bo'yicha post qayta yasalib tahrirlanadi; hech kim qolmasa — o'chadi."""
-    items, models = _mid_elonlar(mid)
+def toplam_tahrir(mid, chat=None):
+    """Shu to'plam postiga kirgan (id bir xil) e'lonlar bo'yicha post qayta yasalib tahrirlanadi; hech kim qolmasa — o'chadi.
+    chat — post turgan kanal (3403); yo'q — umumiy kanal."""
+    chat = chat or kanal_tanla('toplam')
+    items, models = _mid_elonlar(mid, chat=chat)
     if not items:
-        return delete_msg(kanal_tanla('toplam'), mid)
-    return edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=kollajmi(mid)))
+        return delete_msg(chat, mid)
+    return edit_rich(chat, mid, build_toplam_html(items, models, kollaj=kollajmi(mid)))
 
 
 def kollaj_tugma(mid, kollaj=False):
@@ -3110,11 +3150,27 @@ def kollaj_almashtir(admin_chat, xabar_id, data):
         logger.error(f'kollaj tugmasi: {e}')
 
 
+def toplam_guruhlari(items, models):
+    """3403: to'plam kanallarga bo'linadi — {kanal: (yo'nalish, [e'lonlar])}. Ikki yo'nalishli e'lon ikkala kanalda
+    (kanal_post kabi); ikki yo'nalish bitta kanalga tushsa — bir marta."""
+    out = {}
+    for e in items:
+        bor = set()
+        for y in [y for y in elon_yonalishlar(e, models) if y in YON_KANAL] or ['mobile']:
+            chat = kanal_tanla('toplam', y)
+            if chat not in bor:
+                bor.add(chat)
+                out.setdefault(chat, (y, []))[1].append(e)
+    return out
+
+
 def kanal_toplam(nums):
-    """B29 (A18 a): saytda belgilangan e'lonlar → kanalga BITTA to'plam posti.
-    Kanalda posti bor / chala / o'chirilgan e'lon o'tkazib yuboriladi (ikki marta chiqmasin).
+    """B29 (A18 a): saytda belgilangan e'lonlar → har kanalga BITTA to'plam posti (3403: o'z yo'nalishi kanaliga; turli
+    yo'nalish — har kanalga o'zinikilar, kanalga bittasi tushsa — o'sha e'lonning oddiy posti).
+    Kanalda posti bor / chala / o'chirilgan / OLX e'lon o'tkazib yuboriladi (ikki marta chiqmasin).
     Bitta qolsa va u telefon/kamera bo'lsa — oddiy post (kanal_post).
-    Natija: (mid, xato, yuborilgan nomerlar, [{'num', 'sabab'}])."""
+    id: hammasi umumiy kanalda — eskicha «a123»; boshqa kanalga ketsa — «camera:a123» (ikki kanalda — «mobile:a5 pc:a7»).
+    Natija: (mid, xato, yuborilgan nomerlar, [{'num', 'sabab'}]); mid — birinchi chiqqan post."""
     tanlangan, otkazildi, models = [], [], {}
     for n in dict.fromkeys(str(x) for x in nums):
         elon, md = elon_cache_get(n)
@@ -3123,6 +3179,8 @@ def kanal_toplam(nums):
             otkazildi.append({'num': int(n), 'sabab': "topilmadi yoki chala / o'chirilgan"})
         elif kanal_msg_id(elon):
             otkazildi.append({'num': int(n), 'sabab': 'kanalda posti bor'})
+        elif 'olx' in elon_yonalishlar(elon, models):   # 3228: yashirin bo'lim — kanal_post kabi
+            otkazildi.append({'num': int(n), 'sabab': "OLX e'loni kanalga chiqmaydi"})
         elif guruh_idsi(elon):   # BUGUN251: rang guruhi o'z posti bilan chiqadi
             otkazildi.append({'num': int(n), 'sabab': "rang guruhida — guruh blokidan «Kanalga»"})
         else:
@@ -3134,12 +3192,34 @@ def kanal_toplam(nums):
     if len(tanlangan) == 1 and elon_turi(tanlangan[0], models) not in TOPLAM_TURLAR:
         mid, xato = kanal_post(yuborildi[0])
         return mid, xato, (yuborildi if mid else []), otkazildi
-    mid, xato = send_rich(kanal_tanla('toplam'), build_toplam_html(tanlangan, models))
-    if not mid:
-        return None, xato, [], otkazildi
-    for n in yuborildi:
-        kanal_id_yoz(n, mid)
-    return mid, '', yuborildi, otkazildi
+    guruhlar = toplam_guruhlari(tanlangan, models)
+    if list(guruhlar) == [kanal_tanla('toplam')]:
+        mid, xato = send_rich(kanal_tanla('toplam'), build_toplam_html(tanlangan, models))
+        if not mid:
+            return None, xato, [], otkazildi
+        for n in yuborildi:
+            kanal_id_yoz(n, mid)
+        return mid, '', yuborildi, otkazildi
+    postlar, xatolar = {}, []
+    for chat, (y, items) in guruhlar.items():
+        if len(items) == 1:
+            m, x = kanal_rich_yubor(int(float(items[0].get('num', 0) or 0)), items[0], models, chat, yonalish=y)
+        else:
+            m, x = send_rich(chat, build_toplam_html(items, models))
+        if not m:
+            xatolar.append(f'{chat}: {x}')
+            logger.error(f'kanal_toplam → {chat}: {x}')
+            continue
+        for e in items:
+            postlar.setdefault(int(float(e.get('num', 0) or 0)), []).append((y, int(m)))
+    if not postlar:
+        return None, '; '.join(xatolar), [], otkazildi
+    for n, p in postlar.items():
+        kanal_id_yoz(n, ' '.join(_tok(y, m) for y, m in p))
+    otkazildi += [{'num': n, 'sabab': 'kanalga ketmadi'} for n in yuborildi if n not in postlar]
+    if xatolar:
+        send_msg(admin_joy('post'), f"⚠️ To'plam ba'zi kanalga chiqmadi: <code>{html_escape('; '.join(xatolar))}</code>")
+    return next(iter(postlar.values()))[0][1], '', [n for n in yuborildi if n in postlar], otkazildi
 
 
 def build_katalog_html():
@@ -3178,7 +3258,8 @@ def kanal_taklif(admin_chat, tur):
         return
     key = f'{tur}{int(time.time())}'
     _KANAL_KUTMOQDA[key] = {'tur': tur, 'html': html, 'nums': nums}
-    send_msg(admin_chat, izoh + f"\nKanal: {kanal_tanla(tur)}", {"inline_keyboard": [[
+    kanal = ', '.join(kanal_nomi(c) for c in toplam_guruhlari(items, models)) if tur == 'toplam' else kanal_tanla(tur)
+    send_msg(admin_chat, izoh + f"\nKanal: {kanal}", {"inline_keyboard": [[
         {"text": "✅ Kanalga yuborish", "callback_data": f"kanal_ok:{key}"},
         {"text": "❌ Bekor", "callback_data": f"kanal_no:{key}"}]]})
 
@@ -3191,17 +3272,20 @@ def kanal_tasdiq(admin_chat, key, ok):
     if not ok:
         send_msg(admin_chat, "❌ Bekor qilindi.")
         return
-    kanal = kanal_tanla(p['tur'])
-    mid, xato = send_rich(kanal, p['html'])
-    if not mid:
-        send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
-        return
-    if p['tur'] == 'toplam':
-        for n in p['nums']:
-            kanal_id_yoz(n, mid)
-        send_msg(admin_chat, f"✅ To'plam kanalga chiqdi (id {mid}), {len(p['nums'])} ta e'longa yozildi.", kollaj_tugma(mid))
+    if p['tur'] == 'toplam':   # 3403: o'z yo'nalishi kanaliga — saytdagi to'plam bilan bitta yo'l
+        mid, xato, yuborildi, _ = kanal_toplam(p['nums'])
+        if not mid:
+            send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
+            return
+        nomlar = ', '.join(kanal_nomi(c) for c in elon_kanallari(yuborildi))
+        send_msg(admin_chat, f"✅ To'plam kanalga chiqdi — {nomlar} (id {mid}), {len(yuborildi)} ta e'longa yozildi.", kollaj_tugma(mid))
         kollaj_nusxa_fonda(mid)
     else:
+        kanal = kanal_tanla(p['tur'])
+        mid, xato = send_rich(kanal, p['html'])
+        if not mid:
+            send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
+            return
         try:
             req.post(f'{TG_API}/pinChatMessage', json={'chat_id': kanal, 'message_id': mid, 'disable_notification': True}, timeout=15)
         except Exception as e:
@@ -12053,9 +12137,10 @@ async def kanal_post_endpoint(request):
             return web.json_response({'ok': False, 'error': xato})
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
         kanal = elon_kanali(num)
-        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {kanal}", kollaj_tugma(mid))
+        kanallar = [kanal_nomi(c) for c in elon_kanallari([num])] or [kanal_nomi(kanal)]   # 3403: «✅ Camera kanaliga chiqdi»
+        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {', '.join(kanallar)}", kollaj_tugma(mid))
         kollaj_nusxa_fonda(mid)
-        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal})
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal, 'kanallar': kanallar})
     except Exception as e:
         logger.error(f'kanal_post_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -12063,7 +12148,8 @@ async def kanal_post_endpoint(request):
 
 async def kanal_toplam_endpoint(request):
     """B29 (BUGUN31): saytda uzoq bosib belgilangan e'lonlar → «📣 Yuborish» → bitta to'plam posti.
-    Faqat admin (initData). {initData, nums: [248, 251, …]} → {ok, mid, kanal, nums, otkazildi}."""
+    Faqat admin (initData). {initData, nums: [248, 251, …]} → {ok, mid, kanal, kanallar, nums, otkazildi}.
+    3403: kanal — birinchi kanal, kanallar — chiqqan kanallar nomi (["Camera", "PC"])."""
     try:
         data = await request.json()
         uid = check_init_data(data.get('initData', ''))
@@ -12078,12 +12164,14 @@ async def kanal_toplam_endpoint(request):
         mid, xato, yuborildi, otkazildi = await blok(kanal_toplam, nums)
         if not mid:
             return web.json_response({'ok': False, 'error': xato, 'otkazildi': otkazildi})
-        izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {kanal_tanla('toplam')}"
+        chatlar = elon_kanallari(yuborildi) or [kanal_tanla('toplam')]
+        kanallar = [kanal_nomi(c) for c in chatlar]
+        izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {', '.join(kanallar)}"
         if otkazildi:
             izoh += "\n⏭ O'tkazildi: " + ', '.join(f"№{o['num']} ({html_escape(o['sabab'])})" for o in otkazildi)
         await blok(send_msg, admin_joy('post'), izoh, kollaj_tugma(mid))
         kollaj_nusxa_fonda(mid)
-        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal_tanla('toplam'), 'nums': yuborildi, 'otkazildi': otkazildi})
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': chatlar[0], 'kanallar': kanallar, 'nums': yuborildi, 'otkazildi': otkazildi})
     except Exception as e:
         logger.error(f'kanal_toplam_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -12298,6 +12386,8 @@ async def main():
     if KANAL_TOMCHI_BOSHI:
         asyncio.create_task(tomchi_loop())   # 3184.5: 15 kunlik tomchi (env yo'q — o'chiq)
     # 3227: sozlama holati — faqat bor / yo'q (qiymat logga yozilmaydi)
+    # 3403: env o'qilganini ko'rish uchun — faqat yo'nalish nomlari, kanal manzili logga yozilmaydi
+    logger.info("sozlama: yo'nalish kanallari — %s", ', '.join(sorted(k for k in MAIN_KANALLAR if k != '*')) or 'alohida emas')
     logger.info('sozlama: asosiy kanal %s · tomchi %s · webhook kaliti %s', 'ulangan' if MAIN_KANALLAR else "yo'q",
                 'yoqilgan' if KANAL_TOMCHI_BOSHI else "o'chiq", 'bor' if WEBHOOK_SECRET else "yo'q")
     logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
