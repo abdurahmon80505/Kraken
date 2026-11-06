@@ -56,6 +56,8 @@ ELONLAR = {
     '104': {'num': 104, 'status': 'active', 'yonalish': 'mobile', 'specId': 'm1'},
     '105': {'num': 105, 'status': 'active', 'yonalish': 'mobile', 'specId': 'm1', 'guruh': 'g1'},
     '106': {'num': 106, 'status': 'deleted', 'yonalish': 'mobile', 'specId': 'm1'},
+    '107': {'num': 107, 'status': 'active', 'yonalish': 'mobile', 'specId': 'm1'},
+    '108': {'num': 108, 'status': 'active', 'yonalish': 'olx', 'specId': 'm1'},
 }
 YUBORILDI, ID_YOZILDI, GURUH_YOZILDI, ADMIN = [], [], [], []
 
@@ -101,13 +103,24 @@ sinov("o'chirilgan e'lon test kanalga ham chiqmaydi", bot.kanal_sinov_post(106)[
 
 tozala()
 mid, xato, yub, otk = bot.kanal_sinov_toplam(['101', '103', '105', '106'])
-sinov("to'plam → TEST (kanalda posti bori ham olinadi)", mid and YUBORILDI == [('toplam', TEST)] and sorted(yub) == [101, 103],
-      f'{YUBORILDI} {yub}')
+sinov("to'plam → TEST (kanalda posti bori ham olinadi; 3403: har yo'nalish alohida post)",
+      mid and sorted(YUBORILDI) == [(101, TEST), (103, TEST)] and sorted(yub) == [101, 103], f'{YUBORILDI} {yub}')
 sinov("to'plam — guruhdagi va o'chirilgan o'tkazildi", sorted(o['num'] for o in otk) == [105, 106], str(otk))
 sinov("to'plam — id yozilmadi", not ID_YOZILDI, str(ID_YOZILDI))
 tozala()
 mid, xato, yub, otk = bot.kanal_sinov_toplam(['101'])
 sinov("to'plamda 1 ta telefon/PC — oddiy post, TEST", mid and YUBORILDI == [(101, TEST)], str(YUBORILDI))
+tozala()
+mid, xato, yub, otk = bot.kanal_sinov_toplam(['104', '107'])
+sinov("to'plam: bir yo'nalishdan 2 ta — bitta post, TEST", mid and YUBORILDI == [('toplam', TEST)] and sorted(yub) == [104, 107],
+      f'{YUBORILDI} {yub}')
+tozala()
+mid, xato, yub, otk = bot.kanal_sinov_toplam(['101', '102', '104', '107'])
+sinov("to'plam: uch yo'nalish — asl kanalga hech narsa ketmadi", mid and len(YUBORILDI) == 3 and all(c == TEST for _, c in YUBORILDI)
+      and sorted(yub) == [101, 102, 104, 107] and not ID_YOZILDI, f'{YUBORILDI} {yub}')
+tozala()
+mid, xato, yub, otk = bot.kanal_sinov_toplam(['108', '104', '107'])
+sinov("to'plam: OLX e'loni o'tkazildi", [o['num'] for o in otk] == [108] and sorted(yub) == [104, 107], f'{otk} {yub}')
 
 tozala()
 mid, xato, havola = bot.guruh_sinov_yubor('g1')
@@ -158,8 +171,8 @@ sinov('/kanal_post test:"true" (satr) — test emas (faqat true)', r.get('ok') a
       f'{r} {YUBORILDI}')
 tozala()
 r = chaqir(bot.kanal_toplam_endpoint, {'nums': ['101', '104'], 'test': True})
-sinov('/kanal_toplam test:true → TEST', r.get('test') is True and r.get('kanal') == TEST and YUBORILDI == [('toplam', TEST)]
-      and not ID_YOZILDI, f'{r} {YUBORILDI}')
+sinov('/kanal_toplam test:true → TEST', r.get('test') is True and r.get('kanal') == TEST
+      and sorted(YUBORILDI) == [(101, TEST), (104, TEST)] and not ID_YOZILDI, f'{r} {YUBORILDI}')
 tozala()
 r = chaqir(bot.kanal_guruh_endpoint, {'id': 'g1', 'amal': 'yubor', 'test': True})
 sinov('/kanal_guruh yubor test:true → TEST, sinov belgisi', r.get('sinov') is True and r.get('test') is True

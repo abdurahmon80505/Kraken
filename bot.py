@@ -3796,6 +3796,8 @@ def kanal_sinov_toplam(nums):
         models = md or models
         if not elon or elon_status(elon) in ('deleted', 'waited'):
             otkazildi.append({'num': int(n), 'sabab': "topilmadi yoki chala / o'chirilgan"})
+        elif 'olx' in elon_yonalishlar(elon, models):   # 3228: yashirin bo'lim — test kanalga ham chiqmaydi
+            otkazildi.append({'num': int(n), 'sabab': "OLX e'loni kanalga chiqmaydi"})
         elif guruh_idsi(elon):
             otkazildi.append({'num': int(n), 'sabab': "rang guruhida — guruh blokidan «Kanalga»"})
         else:
@@ -3807,8 +3809,23 @@ def kanal_sinov_toplam(nums):
     if len(tanlangan) == 1 and elon_turi(tanlangan[0], models) not in TOPLAM_TURLAR:
         mid, xato = kanal_sinov_post(yuborildi[0])
         return mid, xato, (yuborildi if mid else []), otkazildi
-    mid, xato = send_rich(kanal_tanla('sinov'), build_toplam_html(tanlangan, models))
-    return mid, xato, (yuborildi if mid else []), otkazildi
+    # 3403 dagidek bo'linadi (asl kanalda qanday chiqsa, testda ham shunday ko'rinsin), lekin HAR post test kanalga:
+    # toplam_guruhlari kaliti — asl kanal, u faqat guruhlash uchun, unga hech narsa yuborilmaydi
+    chat, birinchi, chiqdi, xatolar = kanal_tanla('sinov'), None, [], []
+    for y, items in toplam_guruhlari(tanlangan, models).values():
+        if len(items) == 1:
+            m, x = kanal_rich_yubor(int(float(items[0].get('num', 0) or 0)), items[0], models, chat, yonalish=y)
+        else:
+            m, x = send_rich(chat, build_toplam_html(items, models))
+        if not m:
+            xatolar.append(x)
+            continue
+        birinchi = birinchi or m
+        chiqdi += [n for n in (int(float(e.get('num', 0) or 0)) for e in items) if n not in chiqdi]
+    if not birinchi:
+        return None, '; '.join(str(x) for x in xatolar), [], otkazildi
+    otkazildi += [{'num': n, 'sabab': 'test kanalga ketmadi'} for n in yuborildi if n not in chiqdi]
+    return birinchi, '', [n for n in yuborildi if n in chiqdi], otkazildi
 
 
 def guruh_sinov_yubor(gid, alohida=False):
