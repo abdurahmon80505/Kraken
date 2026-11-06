@@ -64,6 +64,7 @@ KUTILGAN = {   # tur: (asosiy kanal yo'q, asosiy kanal ulangan)
     'konkurs_sinov': (TEST, TEST),
     'richtest': (TEST, TEST),
     'rasm_yuklash': (TEST, TEST),
+    'sinov': (TEST, TEST),            # 3346: saytdagi «🧪 Test kanal» richagi
 }
 print('1. Post turi → kanal')
 sinov('KANAL_YOLI — hamma tur sinovda bor', set(bot.KANAL_YOLI) == set(KUTILGAN),

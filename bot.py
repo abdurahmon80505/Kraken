@@ -2255,6 +2255,7 @@ KANAL_YOLI = {
     'konkurs_sinov': 'test',   # sinov konkursi (sovrin «TEST…» / 🧪)
     'richtest': 'test',        # /testpost N (/richtest N) — admin qo'lda bitta postni testga (id yozilmaydi)
     'rasm_yuklash': 'test',    # rasm file_id olish uchun vaqtincha yuklash (darhol o'chadi)
+    'sinov': 'test',           # 3346: saytdagi «🧪 Test kanal» yoqiq — «Kanalga» / belgilab «Yuborish» / guruh (id yozilmaydi)
 }
 
 
@@ -3768,6 +3769,108 @@ def guruh_ranglar_fon(gid):
         send_msg(admin_joy('post'), izoh)
     except Exception as e:
         logger.error(f'guruh_ranglar_fon {gid}: {e}')
+
+
+# ── 3346 (Owner 2026-11-03): saytdagi «🧪 Test kanal» richagi ──
+# Yoqiq bo'lsa sayt so'rovga test: true qo'shadi → «Kanalga» (PC, Mobile, Camera), belgilab «Yuborish» va guruh «Kanalga» —
+# hammasi TEST kanalga (KANAL_YOLI['sinov']). Jadvalga HECH NARSA yozilmaydi (channel_message_id, Guruhlar kanal id'si):
+# aks holda bot test postni asl kanaldagi post deb tahrirlab / o'chirib yurardi. Asl kanaldagi post o'chmaydi, OLX albomi yo'q.
+def kanal_sinov_post(num, yonalish=None):
+    """E'lon posti test kanalga — asl postdek (yo'nalish, rasm, matn), id yozilmaydi. (mid, xato)."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return None, "e'lon topilmadi"
+    if elon_status(elon) in ('deleted', 'waited'):
+        return None, "chala yoki o'chirilgan e'lon postlanmaydi"
+    if 'olx' in elon_yonalishlar(elon, models):
+        return None, "OLX e'loni kanalga chiqmaydi"
+    return kanal_rich_yubor(num, elon, models, kanal_tanla('sinov'), yonalish=post_yonalish(elon, models, tanlangan=yonalish))
+
+
+def kanal_sinov_toplam(nums):
+    """kanal_toplam'ning test nusxasi: kanalda posti borlari ham olinadi (sinash uchun), id yozilmaydi.
+    (mid, xato, yuborilgan nomerlar, [{'num', 'sabab'}])."""
+    tanlangan, otkazildi, models = [], [], {}
+    for n in dict.fromkeys(str(x) for x in nums):
+        elon, md = elon_cache_get(n)
+        models = md or models
+        if not elon or elon_status(elon) in ('deleted', 'waited'):
+            otkazildi.append({'num': int(n), 'sabab': "topilmadi yoki chala / o'chirilgan"})
+        elif 'olx' in elon_yonalishlar(elon, models):   # 3228: yashirin bo'lim — test kanalga ham chiqmaydi
+            otkazildi.append({'num': int(n), 'sabab': "OLX e'loni kanalga chiqmaydi"})
+        elif guruh_idsi(elon):
+            otkazildi.append({'num': int(n), 'sabab': "rang guruhida — guruh blokidan «Kanalga»"})
+        else:
+            tanlangan.append(elon)
+    if not tanlangan:
+        return None, "yuboriladigan e'lon yo'q", [], otkazildi
+    tanlangan.sort(key=lambda e: _tur_kalit(e, models))
+    yuborildi = [int(float(e.get('num', 0) or 0)) for e in tanlangan]
+    if len(tanlangan) == 1 and elon_turi(tanlangan[0], models) not in TOPLAM_TURLAR:
+        mid, xato = kanal_sinov_post(yuborildi[0])
+        return mid, xato, (yuborildi if mid else []), otkazildi
+    # 3403 dagidek bo'linadi (asl kanalda qanday chiqsa, testda ham shunday ko'rinsin), lekin HAR post test kanalga:
+    # toplam_guruhlari kaliti — asl kanal, u faqat guruhlash uchun, unga hech narsa yuborilmaydi
+    chat, birinchi, chiqdi, xatolar = kanal_tanla('sinov'), None, [], []
+    for y, items in toplam_guruhlari(tanlangan, models).values():
+        if len(items) == 1:
+            m, x = kanal_rich_yubor(int(float(items[0].get('num', 0) or 0)), items[0], models, chat, yonalish=y)
+        else:
+            m, x = send_rich(chat, build_toplam_html(items, models))
+        if not m:
+            xatolar.append(x)
+            continue
+        birinchi = birinchi or m
+        chiqdi += [n for n in (int(float(e.get('num', 0) or 0)) for e in items) if n not in chiqdi]
+    if not birinchi:
+        return None, '; '.join(str(x) for x in xatolar), [], otkazildi
+    otkazildi += [{'num': n, 'sabab': 'test kanalga ketmadi'} for n in yuborildi if n not in chiqdi]
+    return birinchi, '', [n for n in yuborildi if n in chiqdi], otkazildi
+
+
+def guruh_sinov_yubor(gid, alohida=False):
+    """Guruh posti test kanalga, Guruhlar'ga yozilmaydi. alohida — fonda har rang test kanalga, keyin guruh postidagi
+    havolalar ularga. (mid, xato, havola)."""
+    g, azolar, models = guruh_ol(str(gid or '').strip(), yangila=True)
+    if not g:
+        return None, 'Guruh topilmadi', ''
+    if not [e for e in azolar if elon_status(e) != 'sold']:
+        return None, "Guruhda sotuvdagi rang yo'q", ''
+    chat = kanal_tanla('sinov')
+    mid, xato = _429_bilan(send_rich, chat, guruh_post_qur(g, azolar, models, {}))
+    if not mid:
+        return None, xato, ''
+    havola = post_havola(chat, mid)
+    if alohida:
+        _fonda(_guruh_sinov_ranglar, g, azolar, models, int(mid))
+    else:
+        send_msg(admin_joy('post'), f"🧪 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}» TEST kanalga: {havola or mid}")
+    return int(mid), '', havola
+
+
+def _guruh_sinov_ranglar(g, azolar, models, mid):
+    """guruh_sinov_yubor(alohida) foni: har sotuvdagi rang test kanalga, keyin guruh posti shu havolalar bilan tahrir."""
+    try:
+        chat, havolalar, xatolar = kanal_tanla('sinov'), {}, []
+        for e in [x for x in azolar if elon_status(x) != 'sold']:
+            _uxla(GURUH_ORALIQ_S)
+            num = _gnum(e)
+            m, x = _429_bilan(kanal_rich_yubor, num, e, models, chat)
+            if m:
+                havolalar[num] = post_havola(chat, m)
+            else:
+                xatolar.append(f'№{num}: {x}')
+        if havolalar:
+            ok, x = _429_bilan(edit_rich, chat, mid, guruh_post_qur(g, azolar, models, havolalar))
+            if not ok:
+                xatolar.append(f'guruh posti tahriri: {x}')
+        izoh = (f"🧪 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}» TEST kanalga: guruh posti + "
+                f"{len(havolalar)} ta rang ({post_havola(chat, mid) or mid})")
+        if xatolar:
+            izoh += '\n⚠️ ' + '\n⚠️ '.join(html_escape(x) for x in xatolar)
+        send_msg(admin_joy('post'), izoh)
+    except Exception as e:
+        logger.error(f'_guruh_sinov_ranglar: {e}')
 
 
 # ── 3184.5 (2026-10-25): kanalga OMMAVIY yuborish (konkursdan oldin — eski e'lonlar) va 15 kunlik TOMCHI ──
@@ -12129,6 +12232,13 @@ async def kanal_post_endpoint(request):
                 qolgan_nums.append(n)
         amal = str(data.get('amal', 'post'))
         yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
+        if data.get('test') is True:   # 3346: «🧪 Test kanal» — test kanalga, id yozilmaydi, asl post o'chmaydi («yana» ham)
+            mid, xato = await blok(kanal_sinov_post, num, yon)
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato, 'test': True})
+            kanal = kanal_tanla('sinov')
+            await blok(send_msg, admin_joy('post'), f"🧪 №{num} TEST kanalga (saytdan, id {mid}) — {kanal}")
+            return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal, 'test': True})
         if amal == 'yana':
             mid, xato = await blok(kanal_yana_keldi, num, yon)
         else:
@@ -12161,6 +12271,15 @@ async def kanal_toplam_endpoint(request):
         nums = [str(n).strip() for n in nums]
         if not all(re.fullmatch(r'\d{1,6}', n) for n in nums):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        if data.get('test') is True:   # 3346: «🧪 Test kanal»
+            mid, xato, yuborildi, otkazildi = await blok(kanal_sinov_toplam, nums)
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato, 'otkazildi': otkazildi, 'test': True})
+            kanal = kanal_tanla('sinov')
+            await blok(send_msg, admin_joy('post'), f"🧪 Saytdan to'plam TEST kanalga: {len(yuborildi)} ta e'lon "
+                                                     f"(№{', №'.join(str(n) for n in yuborildi)}, id {mid}) — {kanal}")
+            return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal, 'nums': yuborildi, 'otkazildi': otkazildi,
+                                      'test': True})
         mid, xato, yuborildi, otkazildi = await blok(kanal_toplam, nums)
         if not mid:
             return web.json_response({'ok': False, 'error': xato, 'otkazildi': otkazildi})
@@ -12191,6 +12310,14 @@ async def kanal_guruh_endpoint(request):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,20}', gid):
             return web.json_response({'error': 'Guruh id notogri'}, status=400)
         amal = str(data.get('amal', 'yubor'))
+        if data.get('test') is True and amal in ('yubor', 'alohida'):   # 3346: «🧪 Test kanal» — Guruhlar'ga yozilmaydi
+            if amal == 'alohida':
+                return web.json_response({'ok': False, 'error': "Test rejimida: «📣 Kanalga» → «Ha — har rang alohida»"})
+            mid, xato, havola = await blok(guruh_sinov_yubor, gid, bool(data.get('alohida')))
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato})
+            return web.json_response({'ok': True, 'mid': mid, 'havola': havola, 'test': True, 'sinov': True,
+                                      'alohida': bool(data.get('alohida'))})
         if amal == 'yubor':
             mid, xato, havola = await blok(guruh_yubor, gid, bool(data.get('alohida')))
             if not mid:
