@@ -7984,12 +7984,22 @@ async def handle_update(data):
             await handle_rasmlar_xabar(chat_id, message)
             return
 
-        # BUGUN296: lichkada rasm / rasm-fayl / PDF — mijozning cheki (admin bo'lsa — faqat o'zi «chek kutilmoqda» qo'ygan bo'lsa,
-        # ya'ni sinab ko'rayotgan bo'lsa; aks holda admin rasmi eskicha e'lon yaratadi)
-        if (message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id
-                and _chek_fayl(message) is not None and (not adm or await blok(_chek_kutyapti, chat_id))):
-            asyncio.create_task(chek_qabul(chat_id, user, message))
-            return
+        # BUGUN296: lichkada rasm / fayl — mijozning cheki (admin bo'lsa — faqat o'zi «chek kutilmoqda» qo'ygan bo'lsa,
+        # ya'ni sinab ko'rayotgan bo'lsa; aks holda admin rasmi eskicha e'lon yaratadi).
+        # 3386: «chek kutilmoqda» (To'landim bosilgan) yoki chek qabul qilingach 30 daqiqa (qo'shimcha) — HAR QANDAY xabar (matn, ovoz,
+        # video, stiker, joylashuv…) ham chek: rad etilmaydi, buyurtmaga bog'lanib adminga boradi. Buyruq (/…), eski tugma, faol
+        # konkursga qo'lda yozilgan telefon — o'z yo'lida; sharh (yulduzdan keyingi matn) kutilsa — qo'shimcha emas, sharh.
+        if (message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id and _chek_mazmun(message)
+                and not text.startswith('/') and not _eski_tugmami(text)):
+            chek_kod = await blok(_chek_oyna, chat_id)
+            if _chek_fayl(message) is not None and (not adm or chek_kod == 'kut'):
+                asyncio.create_task(chek_qabul(chat_id, user, message))
+                return
+            if (chek_kod and (not adm or chek_kod == 'kut') and chat_id not in user_states
+                    and (chek_kod == 'kut' or not _sharh_kutyapti(chat_id))
+                    and not (text and _phone_ok(text) and await tiklash_holati(chat_id, user))):
+                asyncio.create_task(chek_qabul(chat_id, user, message))
+                return
 
         # 3262: yulduz bosilgach 30 daqiqa ichidagi matn — sharh. Konkurs raqami, e'lon raqami, eski tugma — o'z yo'lida
         if (text and not text.startswith('/') and message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id
@@ -7997,10 +8007,6 @@ async def handle_update(data):
             sharh_order = _sharh_kutyapti(chat_id)
             if sharh_order:
                 asyncio.create_task(blok(_sharh_matn_qabul, chat_id, sharh_order, text))
-                return
-            # 3375: «chek kutilmoqda» da faylsiz matn — chek emas, mijozga «faylni yuboring» (admin matni — o'z yo'lida)
-            if not adm and not _phone_ok(text) and await blok(_chek_kutyapti, chat_id):
-                asyncio.create_task(blok(_chek_matn_keldi, chat_id, user))
                 return
 
         # ── ADMIN rasm yuborsa ──
@@ -9563,7 +9569,7 @@ async def yolda_isbot_qabul(chat_id, message, k):
 #  2) «To'landim» (yoki saytdagi tugma → ?start=chek_<raqam>) — bot «chek rasmini yuboring — №…» deydi; «chek kutilmoqda» holati
 #     buyurtma yozuvida (chek = 'kut') — Sheets'dagi «chek» ustuniga ham yoziladi, bot qayta yonsa ham yo'qolmaydi;
 #  3) rasm yoki istalgan fayl (PDF, …) kelsa (3375: matn chek emas): holat bor — o'sha buyurtmaga; yo'q — oxirgi to'lanmagan buyurtmaga; bir nechta bo'lsa — tugma bilan so'raydi;
-#  4) mijozga «🧾 Chek yuborildi — tekshirilmoqda…» (3375) + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
+#  4) mijozga «🧾 Yuborildi — tekshirilmoqda…» (3375, 3386) + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
 # Bir xil rasm (file_unique_id) ikkinchi marta adminga bormaydi. Albom (bir nechta rasm) — bitta javob, hammasi adminga.
 TOLOV_URL = os.environ.get('TOLOV_URL', 'https://nuqta-tech-tolov.netlify.app/').strip()   # sayt SOTIB_TOLOV_JONLI bilan bir xil
 _CHEK_QULF = threading.Lock()
@@ -9753,14 +9759,15 @@ def _chek_boshla(uid, order, user=None):
         _chek_yubor(uid, _chek_matn(til, f"✅ Buyurtma №{o} — to'lov allaqachon qabul qilingan. Rahmat!",
                                     f"✅ Заказ №{o} — оплата уже принята. Спасибо!"))
         return 'tolangan'
-    _chek_yubor(uid, _chek_matn(til, f"🧾 Chekni shu yerga yuboring — buyurtma №{o}\nRasm, skrinshot yoki fayl (PDF). Matn chek hisoblanmaydi.",
-                                f"🧾 Отправьте сюда чек — заказ №{o}\nФото, скриншот или файл (PDF). Текст не считается чеком."))
+    _chek_yubor(uid, _chek_matn(til, f"🧾 Chekni shu yerga yuboring — buyurtma №{o}\nRasm, skrinshot, fayl yoki shunchaki yozib yuboring — hammasi adminga boradi.",
+                                f"🧾 Отправьте сюда чек — заказ №{o}\nФото, скриншот, файл или просто напишите — всё уйдёт админу."))
     return 'kutilmoqda'
 
 
 def _chek_fayl(message):
-    """Chek bo'la oladigan xabar: rasm yoki ISTALGAN fayl (3375: PDF, skrinshot, boshqa tur — cheklanmaydi) → file_unique_id
-    ('' bo'lishi mumkin). Matn, stiker, ovoz — None (matn chek emas: _chek_matn_keldi tushuntiradi)."""
+    """Rasm yoki ISTALGAN fayl (3375: PDF, skrinshot, boshqa tur) → file_unique_id ('' bo'lishi mumkin), boshqasi — None.
+    Rasm / fayl «chek kutilmoqda» siz ham chek (ochiq buyurtmaga). 3386: matn, ovoz, video… ham chek — lekin faqat «chek
+    kutilmoqda» yoki qo'shimcha oynasida (_chek_oyna). Takror chek (dup) — faqat rasm / fayl bo'yicha."""
     ph = message.get('photo')
     if ph:
         return (ph[-1].get('file_unique_id') or ph[-1].get('file_id') or '')
@@ -9770,21 +9777,59 @@ def _chek_fayl(message):
     return None
 
 
-def _chek_matn_keldi(uid, user):
-    """3375: «chek kutilmoqda» holatida mijoz FAYLSIZ matn yozdi (masalan «Buyurtma №… — to'lov cheki») — matn chek emas.
-    Buyurtma raqami bilan «chekni fayl qilib yuboring» deydi; holat o'zgarmaydi. Qaytaradi — buyurtma raqami yoki None."""
+# 3386: chek — mijoz nima yuborsa (3375 dagi «matn chek hisoblanmaydi» rad etishi olib tashlandi; Owner 2026-11-06: matn ham chek
+# o'rnida kelishi mumkin — «kecha to'ladim», «naqd beraman»…)
+_CHEK_MAZMUN = ('text', 'photo', 'document', 'video', 'animation', 'audio', 'voice', 'video_note', 'sticker', 'contact',
+                'location', 'venue', 'poll', 'dice', 'story')
+_CHEK_IZOHLI = ('photo', 'document', 'video', 'animation', 'audio', 'voice')   # copyMessage nusxasiga izoh (caption) qo'yiladi
+_CHEK_IZOH_SIG = 800     # nusxa izohida mijoz so'zi shundan uzun bo'lsa — sarlavha alohida xabar (Telegram izohi ≤ 1024)
+_CHEK_MATN_SIG = 3500    # sarlavha + mijoz matni bitta xabarda (Telegram ≤ 4096)
+_CHEK_OYNA_S = 1800
+_CHEK_OYNA = {}   # uid → {'order', 't'}: chek qabul qilingach 30 daqiqa keyingi xabarlar shu buyurtmaga «➕ qo'shimcha» (xotirada)
+
+
+def _chek_mazmun(message):
+    """Xabarda chek bo'la oladigan narsa bormi (xizmat xabari — yo'q)."""
+    return any(message.get(k) for k in _CHEK_MAZMUN)
+
+
+def _chek_tur(message):
+    """'matn' — faqat matn (sarlavha bilan bitta xabar) · 'izohli' — rasm / fayl / video / ovoz… (nusxa izohi bilan) ·
+    'boshqa' — stiker, dumaloq video, joylashuv… (izohsiz nusxa + sarlavha javob bo'lib). Mazmuni noma'lum — 'izohli'."""
+    if any(message.get(k) for k in _CHEK_IZOHLI):
+        return 'izohli'
+    if any(message.get(k) for k in _CHEK_MAZMUN if k != 'text'):
+        return 'boshqa'
+    return 'matn' if 'text' in message else 'izohli'
+
+
+def _chek_soz(message):
+    """Mijoz yozgan so'z: matn yoki rasm / fayl izohi."""
+    return str(message.get('text') or message.get('caption') or '').strip()
+
+
+def _chek_qisqa(soz, sig):
+    soz = str(soz or '').strip()
+    return soz if len(soz) <= sig else soz[:sig - 1].rstrip() + '…'
+
+
+def _chek_oyna(uid, hozir=None):
+    """3386: 'kut' — «To'landim» bosilgan, chek kutilmoqda · 'oyna' — chek qabul qilinganiga 30 daqiqa bo'lmagan va buyurtma hali
+    to'lov kutmoqda (keyingi xabar — qo'shimcha) · None — chek holati yo'q (xabar o'z yo'lida)."""
+    hozir = hozir or time.time()
+    with _CHEK_QULF:
+        oy = _CHEK_OYNA.get(uid)
+        if oy and hozir - oy['t'] > _CHEK_OYNA_S:
+            _CHEK_OYNA.pop(uid, None)
+            oy = None
+        oy = dict(oy) if oy else None
     with _MIJOZ_LOCK:
-        b = next((dict(x) for x in _chek_buyurtmalar(uid) if x.get('chek') == 'kut' and x.get('holat') == 'kutilmoqda'), None)
-    if not b:
-        return None
-    o = html_escape(b.get('order', ''))
-    _chek_yubor(uid, _chek_matn(
-        _chek_tel_til(user, b),
-        f"🧾 Buyurtma №{o} — chek <b>fayl</b> bo'lib kelishi kerak: rasm, skrinshot yoki PDF. Matn chek hisoblanmaydi.\n\n"
-        f"Chekni shu yerga yuboring (📎 → Rasm yoki Fayl).",
-        f"🧾 Заказ №{o} — чек нужно отправить <b>файлом</b>: фото, скриншот или PDF. Текст не считается чеком.\n\n"
-        f"Отправьте чек сюда (📎 → Фото или Файл)."))
-    return b.get('order')
+        ochiq = [b for b in _chek_buyurtmalar(uid) if b.get('holat') == 'kutilmoqda']
+        if any(b.get('chek') == 'kut' for b in ochiq):
+            return 'kut'
+        if oy and any(b.get('order') == oy['order'] for b in ochiq):
+            return 'oyna'
+    return None
 
 
 def _chek_kutyapti(uid):
@@ -9793,43 +9838,73 @@ def _chek_kutyapti(uid):
         return any(b.get('chek') == 'kut' and b.get('holat') == 'kutilmoqda' for b in _chek_buyurtmalar(uid))
 
 
-def _chek_admin_matn(b, davomi=False):
+def _chek_admin_matn(b, davomi=False, soz='', yoq=False):
+    """Admin'ga chek sarlavhasi. soz — mijoz yozgan so'z («💬»), holat qatoridan OLDIN (holat tugmasi pastini almashtiradi).
+    davomi — 3386: birinchi chekdan keyingi xabar «➕ Qo'shimcha» (tugmasiz). yoq — saytdan hech narsasiz «Yuborish»."""
     o = html_escape(b.get('order', ''))
+    izoh = f"\n💬 {html_escape(soz)}" if soz else ''
     if davomi:
-        return f"🧾 <b>Chek (davomi)</b> — №{o}"
-    return (f"🧾 <b>Chek keldi</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
-            f"👤 {html_escape(b.get('ism') or '—')}\n\n"
+        return f"➕ <b>Qo'shimcha</b> — №{o}{izoh}"
+    nom = "Mijoz to'ladim dedi (chek yo'q)" if yoq else 'Chek keldi'
+    return (f"🧾 <b>{nom}</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
+            f"👤 {html_escape(b.get('ism') or '—')}{izoh}\n\n"
             f"⏳ To'lov kutilmoqda\n🕒 {_kk_vaqt(time.time())}")
 
 
-def _chek_adminga(uid, b, mid, davomi=False):
-    """Chek nusxasi (copyMessage) + izoh + «✅ To'lov keldi». Nusxa bo'lmasa — forward, u ham bo'lmasa — False."""
-    order = b.get('order')
+def _chek_adminga(uid, b, xabar, davomi=False):
+    """Chek adminga, buyurtma sarlavhasi bilan (davomi bo'lmasa «✅ To'lov keldi» tugmasi). xabar — mijoz xabari (dict; eski
+    chaqiruv — message_id). 3386: har qanday tur —
+      rasm / fayl / video / ovoz — nusxa (copyMessage), izohida sarlavha + mijoz so'zi;
+      matn — sarlavha + matnning o'zi bitta xabarda (message_id yo'q — saytdan izoh yoki hech narsa: «chek yo'q»);
+      stiker, joylashuv… (izoh qo'yib bo'lmaydi) yoki juda uzun izoh — nusxa, sarlavha unga javob bo'lib alohida.
+    Nusxa bo'lmasa — forward. Hech biri ketmasa — False."""
+    if not isinstance(xabar, dict):
+        xabar = {'message_id': xabar}
+    order, mid = b.get('order'), xabar.get('message_id')
+    tur, soz = _chek_tur(xabar), _chek_soz(xabar)
     yoz = [{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]
     tolandi = _HOLAT_ADMIN['tolandi']
     klava = {'inline_keyboard': [yoz]} if davomi else {
         'inline_keyboard': [yoz, [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f'bh:tolandi:{uid}:{order}'}]]}
-    matn = _chek_admin_matn(b, davomi)
-    natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
-                                       'parse_mode': 'HTML', 'reply_markup': klava}, urinish=2)
-    if natija in ('yuborildi', 'noaniq'):   # noaniq — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki nusxa bo'lmasin)
-        if natija == 'yuborildi' and not davomi:   # 3302: holat tugmasi buyurtma xabarida bosilsa — chek nusxasi ham yangilansin
-            _admin_xb_yoz(uid, order, ((j or {}).get('result') or {}).get('message_id'), True, *_html_b_ents(matn))
-        return True
-    f, _ = _kk_tg('forwardMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
-    if f != 'yuborildi':
-        return False
-    natija, j = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava},
-                       urinish=2)
+    nusxa, soz_alohida = None, soz
+    if mid and tur == 'izohli' and len(soz) <= _CHEK_IZOH_SIG:
+        matn = _chek_admin_matn(b, davomi, soz)
+        natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
+                                           'parse_mode': 'HTML', 'reply_markup': klava}, urinish=2)
+        if natija in ('yuborildi', 'noaniq'):   # noaniq — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki nusxa bo'lmasin)
+            if natija == 'yuborildi' and not davomi:   # 3302: holat tugmasi buyurtma xabarida bosilsa — chek nusxasi ham yangilansin
+                _admin_xb_yoz(uid, order, ((j or {}).get('result') or {}).get('message_id'), True, *_html_b_ents(matn))
+            return True
+        nusxa = 'forward'
+    elif mid and (tur != 'matn' or len(soz) > _CHEK_MATN_SIG):   # izohsiz nusxa (asl izoh / matn o'zida qoladi)
+        natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
+        nusxa = (((j or {}).get('result') or {}).get('message_id') or 'yoq') if natija in ('yuborildi', 'noaniq') else 'forward'
+        if tur == 'matn':
+            soz_alohida = ''
+    if nusxa == 'forward':
+        f, fj = _kk_tg('forwardMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
+        if f != 'yuborildi':
+            return False
+        nusxa = ((fj or {}).get('result') or {}).get('message_id') or 'yoq'
+        soz_alohida = '' if tur == 'matn' else soz_alohida
+    matn = _chek_admin_matn(b, davomi, _chek_qisqa(soz_alohida, _CHEK_MATN_SIG),
+                            yoq=not mid and not soz and not davomi)
+    p = {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava}
+    if isinstance(nusxa, int):
+        p['reply_parameters'] = {'message_id': nusxa, 'allow_sending_without_reply': True}
+    natija, j = _kk_tg('sendMessage', p, urinish=2)
     if natija == 'yuborildi' and not davomi:
         r = (j or {}).get('result') or {}
         _admin_xb_yoz(uid, order, r.get('message_id'), False, r.get('text'), r.get('entities'))
     return natija in ('yuborildi', 'noaniq')
 
 
-def _chek_topshir(uid, user, order, mids, fid):
-    """Chek aniq buyurtmaga biriktirildi: holat belgilanadi, adminga nusxa, mijozga «qabul qilindi». mids[0] — asosiy xabar,
-    qolgani (albom) — «davomi». Admin nusxasi yetmasa — holat qaytariladi va mijozga rost aytiladi (jimgina «qabul» demaydi)."""
+def _chek_topshir(uid, user, order, xabarlar, fid):
+    """Chek aniq buyurtmaga biriktirildi: holat belgilanadi, adminga nusxa, mijozga «qabul qilindi». xabarlar[0] — asosiy xabar
+    (3386: mijoz xabari dict — istalgan tur; eski chaqiruv — message_id), qolgani (albom) — «➕ qo'shimcha». Admin nusxasi
+    yetmasa — holat qaytariladi va mijozga rost aytiladi (jimgina «qabul» demaydi). Qabul qilingach 30 daqiqa keyingi xabarlar
+    shu buyurtmaga qo'shimcha (_CHEK_OYNA)."""
+    mids = xabarlar
     with _MIJOZ_LOCK:
         b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
         if not b:
@@ -9842,9 +9917,11 @@ def _chek_topshir(uid, user, order, mids, fid):
     if _chek_adminga(uid, b, mids[0]):
         for m in mids[1:]:
             _chek_adminga(uid, b, m, davomi=True)
+        with _CHEK_QULF:
+            _CHEK_OYNA[uid] = {'order': order, 't': time.time()}
         _chek_yubor(uid, _chek_matn(
-            til, f"🧾 <b>Chek yuborildi — tekshirilmoqda</b>\nBuyurtma №{o}. Admin to'lovni tekshiradi; tasdiqlangach shu yerga xabar keladi.",
-            f"🧾 <b>Чек отправлен — проверяется</b>\nЗаказ №{o}. Админ проверит оплату; после подтверждения придёт сообщение сюда."),
+            til, f"🧾 <b>Yuborildi — tekshirilmoqda</b>\nBuyurtma №{o}. Admin to'lovni tekshiradi; tasdiqlangach shu yerga xabar keladi.",
+            f"🧾 <b>Отправлено — проверяется</b>\nЗаказ №{o}. Админ проверит оплату; после подтверждения придёт сообщение сюда."),
             {'inline_keyboard': [[_chek_admin_tugma()]]})
         return 'qabul'
     # 3375: yetmasa — chek shu buyurtmani kutib qoladi (qayta yuborilgan fayl o'sha buyurtmaga bog'lanadi); adminga lichka yo'li yo'q
@@ -9858,7 +9935,7 @@ def _chek_topshir(uid, user, order, mids, fid):
     return 'adminga_yetmadi'
 
 
-_CHEK_ILOVA_MAX = 10 * 1024 * 1024   # 3375: ilovadan chek — rasm (sayt siqadi) yoki istalgan fayl ≤ 10 MB (aiohttp: client_max_size)
+_CHEK_ILOVA_MAX = 10 * 1024 * 1024   # admin «isbot» rasmi ≤ 10 MB. 3386: chekda o'lcham cheklanmaydi — Telegram rad etsa «katta»
 _CHEK_ILOVA_QULF = threading.Lock()
 _CHEK_ILOVA_OXIRGI = {}   # uid → oxirgi yuklash vaqti (ketma-ket bosish ikki chek yubormasin)
 
@@ -9873,12 +9950,21 @@ def _chek_fayl_nomi(nom):
     return nom or 'chek'
 
 
-def _chek_ilovadan(uid, user, order, rasm, nom='chek.jpg', mime='image/jpeg'):
+def _chek_tg_katta(j):
+    """Telegram faylni o'lchami uchun rad etdimi (413 / «too big» / javob JSON emas)."""
+    j = j if isinstance(j, dict) else {}
+    t = str(j.get('description') or '').lower()
+    return not j or j.get('error_code') == 413 or 'too big' in t or 'too large' in t
+
+
+def _chek_ilovadan(uid, user, order, rasm=b'', nom='chek.jpg', mime='image/jpeg', izoh=''):
     """3259: chek saytdan («Buyurtmalarim»). 3375: rasm (JPEG — sendPhoto) yoki istalgan fayl (PDF… — sendDocument).
-    Fayl mijozning bot chatiga yuboriladi (o'zida ham qoladi), so'ng
-    bot chatidagi chek bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + «✅ To'lov keldi», mijozga «Chek yuborildi — tekshirilmoqda»).
+    3386: fayl ham, izoh ham ixtiyoriy. Fayl mijozning bot chatiga yuboriladi (o'zida ham qoladi), so'ng bot chatidagi chek
+    bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + izoh + «✅ To'lov keldi», mijozga «Yuborildi — tekshirilmoqda»).
+    Faylsiz — adminga izoh matni, hech narsa bo'lmasa «Mijoz to'ladim dedi (chek yo'q)».
     Natija: 'qabul' · 'adminga_yetmadi' · 'topilmadi' · 'tolangan' · 'bekor' · 'bot_yoq' (yangi botda /start yo'q —
-    sayt botni ochadi) · 'xato'. Holat faqat 'kutilmoqda' bo'lsa qabul qilinadi."""
+    sayt botni ochadi) · 'katta' (Telegram faylni olmadi — boshqasi) · 'xato'. Holat faqat 'kutilmoqda' bo'lsa qabul qilinadi."""
+    soz = _chek_qisqa(izoh, _CHEK_MATN_SIG)
     with _MIJOZ_LOCK:
         b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
         b = dict(b) if b else None
@@ -9888,28 +9974,34 @@ def _chek_ilovadan(uid, user, order, rasm, nom='chek.jpg', mime='image/jpeg'):
         return 'bekor'
     if b.get('holat') != 'kutilmoqda':
         return 'tolangan'
+    if not rasm:   # 3386: faylsiz — mijoz yozgan izoh yoki hech narsa (adminga «chek yo'q»)
+        return _chek_topshir(uid, user, order, [{'message_id': None, 'text': soz}], '')
     o = html_escape(order)
-    izoh = _chek_matn(_chek_tel_til(user, b), f"🧾 Chek — buyurtma №{o} (ilovadan)", f"🧾 Чек — заказ №{o} (из приложения)")
+    yozuv = _chek_matn(_chek_tel_til(user, b), f"🧾 Chek — buyurtma №{o} (ilovadan)", f"🧾 Чек — заказ №{o} (из приложения)")
     natija, j = 'xato', None
     if rasm[:3] == bytes((0xFF, 0xD8, 0xFF)) and len(rasm) <= 5 * 1024 * 1024:   # JPEG — rasm bo'lib chiqadi
-        natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': izoh, 'parse_mode': 'HTML'},
+        natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': yozuv, 'parse_mode': 'HTML'},
                            files={'photo': (_chek_fayl_nomi(nom), rasm, 'image/jpeg')}, timeout=60, urinish=2)
     if natija == 'xato':   # rasm emas yoki Telegram rasmni olmadi (o'lchami) — fayl bo'lib
-        natija, j = _kk_tg('sendDocument', {'chat_id': uid, 'caption': izoh, 'parse_mode': 'HTML'},
+        natija, j = _kk_tg('sendDocument', {'chat_id': uid, 'caption': yozuv, 'parse_mode': 'HTML'},
                            files={'document': (_chek_fayl_nomi(nom), rasm, str(mime or 'application/octet-stream')[:100])},
-                           timeout=60, urinish=2)
+                           timeout=180, urinish=2)
     if natija == 'bloklagan':
         return 'bot_yoq'
+    if natija == 'xato' and _chek_tg_katta(j):
+        return 'katta'
     r = (j or {}).get('result') or {}
     if natija != 'yuborildi' or not r.get('message_id'):
         return 'xato'
     fid = (((r.get('photo') or [{}])[-1]).get('file_unique_id') or (r.get('document') or {}).get('file_unique_id') or '')
-    return _chek_topshir(uid, user, order, [r['message_id']], fid)
+    return _chek_topshir(uid, user, order, [dict(r, caption=soz)], fid)   # nusxa izohi — mijoz so'zi (botning yozuvi emas)
 
 
 def _chek_qabul(uid, user, message):
-    """Mijozdan rasm / fayl keldi (fon oqimida). Qaytaradi — natija kodi: qabul · dup · tanla · yoq · davomi · adminga_yetmadi."""
-    mid, mgid, fid = message.get('message_id'), message.get('media_group_id'), _chek_fayl(message)
+    """Mijozdan chek keldi (fon oqimida): rasm / fayl, 3386 dan — har qanday xabar (matn, ovoz, video…; handler faqat «chek
+    kutilmoqda» / qo'shimcha oynasida yuboradi). Qaytaradi — natija kodi:
+    qabul · dup · tanla · yoq · davomi (albom) · qosh (qo'shimcha) · adminga_yetmadi."""
+    mid, mgid, fid = message.get('message_id'), message.get('media_group_id'), (_chek_fayl(message) or '')
     hozir = time.time()
     nishon, ochiq, holat, order, davomi = None, [], '', None, False
     with _CHEK_QULF:
@@ -9917,36 +10009,58 @@ def _chek_qabul(uid, user, message):
             _CHEK_ALBOM.pop(k, None)
         for k in [k for k, v in _CHEK_TANLASH.items() if hozir - v['t'] > 3600]:
             _CHEK_TANLASH.pop(k, None)
+        for k in [k for k, v in _CHEK_OYNA.items() if hozir - v['t'] > _CHEK_OYNA_S]:
+            _CHEK_OYNA.pop(k, None)
         alb = _CHEK_ALBOM.get((uid, mgid)) if mgid else None
         if alb:   # albomning 2-, 3-… rasmi — qaror birinchisiniki
             alb['mid'].append(mid)
+            alb.setdefault('xab', []).append(message)
             order, davomi = alb['order'], True
         else:
+            oy = _CHEK_OYNA.get(uid)
             with _MIJOZ_LOCK:
                 ochiq = [dict(b) for b in _chek_buyurtmalar(uid) if b.get('holat') == 'kutilmoqda']
             takror = next((b for b in ochiq if fid and fid in (b.get('chek_fid') or [])), None)
             kut = next((b for b in ochiq if b.get('chek') == 'kut'), None)
-            nishon = takror or kut or (ochiq[0] if len(ochiq) == 1 else None)
+            # yangi FAYL va bir nechta ochiq buyurtma — boshqa buyurtmaniki bo'lishi mumkin: qo'shimcha emas, so'raladi
+            qosh = (None if kut or (fid and len(ochiq) > 1)
+                    else next((b for b in ochiq if oy and b.get('order') == oy['order']), None))
+            nishon = takror or kut or qosh or (ochiq[0] if len(ochiq) == 1 else None)
             if takror:
                 order, holat = takror.get('order'), 'dup'
+            elif qosh is not None:   # chek qabul qilingach 30 daqiqa — keyingi xabar shu buyurtmaga «➕ qo'shimcha»
+                order, holat = qosh.get('order'), 'qosh'
+                _CHEK_OYNA[uid] = {'order': order, 't': hozir}
             elif nishon:
                 order, holat = nishon.get('order'), 'bor'
             else:
                 holat = 'yoq' if not ochiq else 'tanla'
-            if mgid and holat in ('bor', 'tanla'):
-                _CHEK_ALBOM[(uid, mgid)] = {'t': hozir, 'order': order, 'mid': [mid]}
+            if mgid and holat in ('bor', 'tanla', 'qosh'):
+                _CHEK_ALBOM[(uid, mgid)] = {'t': hozir, 'order': order, 'mid': [mid], 'xab': [message]}
             if holat == 'tanla':
-                _CHEK_TANLASH[(uid, mid)] = {'t': hozir, 'fid': fid, 'mgid': mgid}
+                _CHEK_TANLASH[(uid, mid)] = {'t': hozir, 'fid': fid, 'mgid': mgid, 'xabar': message}
     if davomi:
         if order:   # order yo'q — so'ralmoqda: tanlangach hammasi birga ketadi
             with _MIJOZ_LOCK:
                 b = next((dict(x) for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
             if b:
-                _chek_adminga(uid, b, mid, davomi=True)
+                _chek_adminga(uid, b, message, davomi=True)
                 if fid:
                     _chek_belgi(uid, order, chek_fid=([fid] + list(b.get('chek_fid') or []))[:10])
         return 'davomi'
     til = _chek_tel_til(user, nishon)
+    if holat == 'qosh':
+        o = html_escape(order)
+        if _chek_adminga(uid, nishon, message, davomi=True):
+            if fid:
+                _chek_belgi(uid, order, chek_fid=([fid] + list(nishon.get('chek_fid') or []))[:10])
+            _chek_yubor(uid, _chek_matn(til, f"➕ Qo'shildi — buyurtma №{o}. Admin ko'radi.",
+                                        f"➕ Добавлено — заказ №{o}. Админ увидит."))
+            return 'qosh'
+        _chek_yubor(uid, _chek_matn(
+            til, f"⚠️ Xabarni hozir yetkaza olmadim (buyurtma №{o}). Bir daqiqadan so'ng shu yerga qayta yuboring.",
+            f"⚠️ Не удалось передать сообщение (заказ №{o}). Через минуту отправьте сюда ещё раз."))
+        return 'adminga_yetmadi'
     if holat == 'yoq':
         _chek_yubor(uid, _chek_matn(
             til, "ℹ️ Sizda to'lov kutayotgan buyurtma topilmadi. Savolingiz bo'lsa — adminga yozing.",
@@ -9965,7 +10079,7 @@ def _chek_qabul(uid, user, message):
         _chek_yubor(uid, _chek_matn(til, "🧾 Bu chek qaysi buyurtma uchun?", "🧾 Для какого заказа этот чек?"),
                     {'inline_keyboard': qator})
         return 'tanla'
-    return _chek_topshir(uid, user, order, [mid], fid)
+    return _chek_topshir(uid, user, order, [message], fid)
 
 
 def _chek_tugma(uid, cq_data, user=None):
@@ -9987,10 +10101,11 @@ def _chek_tugma(uid, cq_data, user=None):
             if t is None:   # bot qayta yongan yoki tugma ikki marta bosilgan — chek allaqachon ishlangan yoki xotira yo'q
                 return _chek_boshla(uid, order, user)
             alb = _CHEK_ALBOM.get((uid, t.get('mgid'))) if t.get('mgid') else None
-            mids = list(alb['mid']) if alb else [mid]
+            xabarlar = (list(alb.get('xab') or [{'message_id': m} for m in alb['mid']]) if alb
+                        else [t.get('xabar') or {'message_id': mid}])
             if alb:
                 alb['order'] = order
-        return _chek_topshir(uid, user, order, mids, t.get('fid'))
+        return _chek_topshir(uid, user, order, xabarlar, t.get('fid'))
     return None
 
 
@@ -10841,8 +10956,9 @@ async def mijoz_holat_endpoint(request):
 
 
 async def chek_yukla_endpoint(request):
-    """3259: «Buyurtmalarim» dan chek. multipart: initData, order, fayl (3375: istalgan tur ≤ 10 MB; rasmni sayt JPEG ga
-    siqadi) — eski sayt 'rasm' maydoni bilan ham ishlaydi.
+    """3259: «Buyurtmalarim» dan chek. multipart: initData, order, fayl, izoh. 3386: fayl ham, izoh ham ixtiyoriy (hech narsasiz —
+    adminga «chek yo'q»); fayl turi / o'lchami cheklanmaydi — Telegram olmasa natija 'katta' (forma > 60 MB — 413 'katta');
+    rasmni sayt JPEG ga siqadi; eski sayt 'rasm' maydoni bilan ham ishlaydi.
     Imzo shart (401), uid faqat imzodan — boshqa odamning buyurtmasiga chek bo'lmaydi. Ketma-ket 15 soniyada bir marta (429).
     Javob: {'ok': natija == 'qabul', 'natija': …} (_chek_ilovadan). Holat / to'lovni bu yerda hech kim o'zgartirmaydi."""
     try:
@@ -10860,9 +10976,8 @@ async def chek_yukla_endpoint(request):
         f = form.get('fayl')
         if not hasattr(f, 'file'):
             f = form.get('rasm')
-        rasm = f.file.read(_CHEK_ILOVA_MAX + 1) if hasattr(f, 'file') else b''
-        if not rasm or len(rasm) > _CHEK_ILOVA_MAX:
-            return web.json_response({'error': 'katta' if rasm else 'rasm'}, status=413 if rasm else 400)
+        rasm = f.file.read() if hasattr(f, 'file') else b''
+        izoh = str(form.get('izoh') or '').strip()[:_CHEK_MATN_SIG]
         nom = getattr(f, 'filename', '') or 'chek'
         mime = getattr(f, 'content_type', '') or 'application/octet-stream'
         with _CHEK_ILOVA_QULF:
@@ -10874,7 +10989,7 @@ async def chek_yukla_endpoint(request):
             user = json.loads(dict(urllib.parse.parse_qsl(init)).get('user') or '{}')
         except Exception:
             user = {}
-        natija = await blok(_chek_ilovadan, uid, user if isinstance(user, dict) else {}, order, rasm, nom, mime)
+        natija = await blok(_chek_ilovadan, uid, user if isinstance(user, dict) else {}, order, rasm, nom, mime, izoh)
         if natija != 'qabul':
             with _CHEK_ILOVA_QULF:   # yetmagan chekni darhol qayta yuborsa bo'ladi
                 _CHEK_ILOVA_OXIRGI.pop(uid, None)
@@ -12104,7 +12219,7 @@ async def main():
     _bron_yuklash()   # BUGUN208
     _mijoz_yuklash()  # BUGUN225
     _kk_navbat_yuklash()   # 3322
-    app = web.Application(middlewares=[cors_middleware], client_max_size=12 * 1024 * 1024)   # 3375: chek fayli ≤ 10 MB
+    app = web.Application(middlewares=[cors_middleware], client_max_size=60 * 1024 * 1024)   # 3386: chek fayli — Telegram chegarasi (50 MB) + forma
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/webhook-eski', eski_webhook)   # BUGUN145: eski bot → yangi bot havolasi
     app.router.add_post('/notify', notify_endpoint)
