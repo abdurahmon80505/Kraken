@@ -9760,7 +9760,7 @@ async def yolda_isbot_qabul(chat_id, message, k):
 #  2) «To'landim» (yoki saytdagi tugma → ?start=chek_<raqam>) — bot «chek rasmini yuboring — №…» deydi; «chek kutilmoqda» holati
 #     buyurtma yozuvida (chek = 'kut') — Sheets'dagi «chek» ustuniga ham yoziladi, bot qayta yonsa ham yo'qolmaydi;
 #  3) rasm yoki istalgan fayl (PDF, …) kelsa (3375: matn chek emas): holat bor — o'sha buyurtmaga; yo'q — oxirgi to'lanmagan buyurtmaga; bir nechta bo'lsa — tugma bilan so'raydi;
-#  4) mijozga «🧾 Yuborildi — tekshirilmoqda…» (3375, 3386) + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
+#  4) mijozga «✅ Chek yuborildi, admin tekshiryapti» (3375, 3386, 3397) + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
 # Bir xil rasm (file_unique_id) ikkinchi marta adminga bormaydi. Albom (bir nechta rasm) — bitta javob, hammasi adminga.
 TOLOV_URL = os.environ.get('TOLOV_URL', 'https://nuqta-tech-tolov.netlify.app/').strip()   # sayt SOTIB_TOLOV_JONLI bilan bir xil
 _CHEK_QULF = threading.Lock()
@@ -9818,6 +9818,7 @@ def _chek_tolov_url(b):
         q['y'] = f"{b['yetkazish']:g}"
     if b.get('jonatildi'):
         q['j'] = 1
+    q['c'] = _chek_imzo(b.get('order'))   # 3397: to'lov sahifasidan chek shu buyurtmaga
     return TOLOV_URL.rstrip('/') + '/?' + urllib.parse.urlencode(q)
 
 
@@ -10111,8 +10112,8 @@ def _chek_topshir(uid, user, order, xabarlar, fid):
         with _CHEK_QULF:
             _CHEK_OYNA[uid] = {'order': order, 't': time.time()}
         _chek_yubor(uid, _chek_matn(
-            til, f"🧾 <b>Yuborildi — tekshirilmoqda</b>\nBuyurtma №{o}. Admin to'lovni tekshiradi; tasdiqlangach shu yerga xabar keladi.",
-            f"🧾 <b>Отправлено — проверяется</b>\nЗаказ №{o}. Админ проверит оплату; после подтверждения придёт сообщение сюда."),
+            til, f"✅ <b>Chek yuborildi, admin tekshiryapti</b>\nBuyurtma №{o}. Tasdiqlangach shu yerga xabar keladi.",   # 3397: sayt / to'lov sahifasi bilan bir matn
+            f"✅ <b>Чек отправлен, админ проверяет</b>\nЗаказ №{o}. После подтверждения придёт сообщение сюда."),
             {'inline_keyboard': [[_chek_admin_tugma()]]})
         return 'qabul'
     # 3375: yetmasa — chek shu buyurtmani kutib qoladi (qayta yuborilgan fayl o'sha buyurtmaga bog'lanadi); adminga lichka yo'li yo'q
@@ -10151,7 +10152,7 @@ def _chek_tg_katta(j):
 def _chek_ilovadan(uid, user, order, rasm=b'', nom='chek.jpg', mime='image/jpeg', izoh=''):
     """3259: chek saytdan («Buyurtmalarim»). 3375: rasm (JPEG — sendPhoto) yoki istalgan fayl (PDF… — sendDocument).
     3386: fayl ham, izoh ham ixtiyoriy. Fayl mijozning bot chatiga yuboriladi (o'zida ham qoladi), so'ng bot chatidagi chek
-    bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + izoh + «✅ To'lov keldi», mijozga «Yuborildi — tekshirilmoqda»).
+    bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + izoh + «✅ To'lov keldi», mijozga «✅ Chek yuborildi, admin tekshiryapti» — 3397).
     Faylsiz — adminga izoh matni, hech narsa bo'lmasa «Mijoz to'ladim dedi (chek yo'q)».
     Natija: 'qabul' · 'adminga_yetmadi' · 'topilmadi' · 'tolangan' · 'bekor' · 'bot_yoq' (yangi botda /start yo'q —
     sayt botni ochadi) · 'katta' (Telegram faylni olmadi — boshqasi) · 'xato'. Holat faqat 'kutilmoqda' bo'lsa qabul qilinadi."""
@@ -10769,7 +10770,7 @@ async def buyurtma_endpoint(request):
         joy['kurs'] = kurs   # BUGUN296: mijozga «💳 To'lash» havolasi (so'm = $ × shu kurs) — sayt bilan bir xil summa
         hozir = time.time()
         if (uid, order) in _BUYURTMA_KORILGAN or (uid, order) in _BUYURTMA_JARAYON:
-            return web.json_response({'ok': True, 'takror': True})
+            return web.json_response({'ok': True, 'takror': True, 'ck': _chek_imzo(order)})
         oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
         if len(oxirgilar) >= 5:
             return web.json_response({'error': 'Juda ko\'p'}, status=429)
@@ -10811,7 +10812,7 @@ async def buyurtma_endpoint(request):
                 loop.run_in_executor(None, _bron_ogoh_yubor, bn, ikkinchi, f"buyurtma berdi (№{order})")
         for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
             _BUYURTMA_KORILGAN.pop(k, None)
-        return web.json_response({'ok': True, 'xabar': yetdi})
+        return web.json_response({'ok': True, 'xabar': yetdi, 'ck': _chek_imzo(order)})   # 3397: to'lov sahifasi kaliti
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -11135,6 +11136,7 @@ async def mijoz_holat_endpoint(request):
             tels = _mijoz_tels_javob(m)
             buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
                          'tur': b.get('tur', ''), 'chek': b.get('chek') or '',   # 3259: chek holati (HH:MM · 'kut' · '')
+                         'ck': _chek_imzo(b.get('order')),   # 3397: to'lov sahifasidan chek kaliti
                          'yetkaz': _yetkaz_javob(b),   # 3288: isbot · qabul · sharh
                          'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
                          'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
@@ -11187,6 +11189,133 @@ async def chek_yukla_endpoint(request):
         return web.json_response({'ok': natija == 'qabul', 'natija': natija})
     except Exception as e:
         logger.error(f'chek_yukla_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+# ═══ 3397: chek TO'LOV SAHIFASIDAN (nuqta-tech-tolov — tashqi sahifa, initData yo'q). Kalit — buyurtma raqamining HMAC'i
+# (BOT_TOKEN dan): sayt /buyurtma va /mijoz_holat javobidan oladi, to'lov havolasiga &c= bo'lib qo'shadi. Kalitsiz birovning
+# buyurtmasiga chek yuborib / holatini ko'rib bo'lmaydi. Yo'l — «Buyurtmalarim» dagi bilan AYNAN bir (_chek_ilovadan):
+# mijoz bot chatiga fayl → adminga buyurtma sarlavhasi + «✅ To'lov keldi». Mijoz botni ochmagan bo'lsa (bot_yoq) — fayl
+# to'g'ridan-to'g'ri adminga, xuddi shu sarlavha va tugmalar bilan; holat baribir «chek yuborildi».
+def _chek_imzo(order):
+    k = hashlib.sha256(b'chek-tolov:' + BOT_TOKEN.encode()).digest()
+    return hmac.new(k, str(order or '').strip().upper().encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _chek_kalit_togri(order, c):
+    return bool(c) and hmac.compare_digest(_chek_imzo(order), str(c or '').strip().lower()[:16])
+
+
+def _chek_uid_top(order):
+    """Buyurtma raqami → (uid, yozuv nusxasi) | (None, None)."""
+    with _MIJOZ_LOCK:
+        for k, m in _MIJOZ.items():
+            for b in (m or {}).get('buyurtma') or []:
+                if b.get('order') == order:
+                    try:
+                        return int(k), dict(b)
+                    except Exception:
+                        return None, None
+    return None, None
+
+
+def _chek_tolovdan(uid, order, rasm=b'', nom='chek', mime='application/octet-stream', izoh=''):
+    """To'lov sahifasidan chek. Natija — _chek_ilovadan niki; 'bot_yoq' bo'lsa fayl adminga to'g'ridan-to'g'ri ('qabul')."""
+    natija = _chek_ilovadan(uid, {}, order, rasm, nom, mime, izoh)
+    if natija != 'bot_yoq':
+        return natija
+    with _MIJOZ_LOCK:
+        b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        b = dict(b) if b else None
+    if not b:
+        return 'topilmadi'
+    matn = _chek_admin_matn(b, soz=_chek_qisqa(izoh, _CHEK_IZOH_SIG))
+    tolandi = _HOLAT_ADMIN['tolandi']
+    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}],
+                                 [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f'bh:tolandi:{uid}:{order}'}]]}
+    p = {'chat_id': ADMIN_ID, 'caption': matn, 'parse_mode': 'HTML', 'reply_markup': klava}
+    j, r = None, 'xato'
+    if rasm[:3] == bytes((0xFF, 0xD8, 0xFF)) and len(rasm) <= 5 * 1024 * 1024:
+        r, j = _kk_tg('sendPhoto', p, files={'photo': (_chek_fayl_nomi(nom), rasm, 'image/jpeg')}, timeout=60, urinish=2)
+    if r == 'xato':
+        r, j = _kk_tg('sendDocument', p, files={'document': (_chek_fayl_nomi(nom), rasm,
+                                                              str(mime or 'application/octet-stream')[:100])},
+                      timeout=180, urinish=2)
+    if r == 'xato' and _chek_tg_katta(j):
+        return 'katta'
+    if r not in ('yuborildi', 'noaniq'):
+        return 'xato'
+    x = (j or {}).get('result') or {}
+    if r == 'yuborildi':
+        _admin_xb_yoz(uid, order, x.get('message_id'), True, *_html_b_ents(matn))
+    fid = (((x.get('photo') or [{}])[-1]).get('file_unique_id') or (x.get('document') or {}).get('file_unique_id') or '')
+    _chek_belgi(uid, order, chek=_kk_vaqt(time.time())[-5:],
+                chek_fid=(([fid] if fid else []) + list(b.get('chek_fid') or []))[:10])
+    return 'qabul'
+
+
+def _chek_tolov_holat(b):
+    """To'lov sahifasiga: '' (chek yo'q) · 'yuborildi' · 'tolandi' (admin tasdiqladi / yo'lda…) · 'bekor'."""
+    h = b.get('holat')
+    if h == 'bekor':
+        return 'bekor'
+    if h != 'kutilmoqda':
+        return 'tolandi'
+    return 'yuborildi' if b.get('chek') and b.get('chek') != 'kut' else ''
+
+
+async def chek_tolov_endpoint(request):
+    """3397: to'lov sahifasidan chek. multipart: order, c (kalit), fayl, izoh — fayl ham, izoh ham ixtiyoriy (3386 kabi).
+    Kalit noto'g'ri — 403; raqam topilmasa — 404; bir buyurtmaga 15 soniyada bir marta (429).
+    Javob: {'ok': natija == 'qabul', 'natija': …, 'holat': …}."""
+    try:
+        try:
+            form = await request.post()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({'error': 'katta'}, status=413)
+        order = str(form.get('order') or '').strip().upper()
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
+            return web.json_response({'error': 'order'}, status=400)
+        if not _chek_kalit_togri(order, form.get('c')):
+            return web.json_response({'error': 'kalit'}, status=403)
+        uid, _ = _chek_uid_top(order)
+        if not uid:
+            return web.json_response({'ok': False, 'natija': 'topilmadi'}, status=404)
+        f = form.get('fayl')
+        rasm = f.file.read() if hasattr(f, 'file') else b''
+        izoh = str(form.get('izoh') or '').strip()[:_CHEK_MATN_SIG]
+        nom = getattr(f, 'filename', '') or 'chek'
+        mime = getattr(f, 'content_type', '') or 'application/octet-stream'
+        kalit = ('tolov', order)
+        with _CHEK_ILOVA_QULF:
+            hozir = time.time()
+            if hozir - _CHEK_ILOVA_OXIRGI.get(kalit, 0) < 15:
+                return web.json_response({'error': 'band'}, status=429)
+            _CHEK_ILOVA_OXIRGI[kalit] = hozir
+        natija = await blok(_chek_tolovdan, uid, order, rasm, nom, mime, izoh)
+        if natija != 'qabul':
+            with _CHEK_ILOVA_QULF:
+                _CHEK_ILOVA_OXIRGI.pop(kalit, None)
+        _, b = _chek_uid_top(order)
+        return web.json_response({'ok': natija == 'qabul', 'natija': natija, 'holat': _chek_tolov_holat(b or {})})
+    except Exception as e:
+        logger.error(f'chek_tolov_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def chek_holat_endpoint(request):
+    """3397: to'lov sahifasi qayta ochilsa — chek holati. {order, c} → {'ok', 'holat'} (_chek_tolov_holat)."""
+    try:
+        data = await request.json()
+        order = str(data.get('order') or '').strip().upper()
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order) or not _chek_kalit_togri(order, data.get('c')):
+            return web.json_response({'error': 'kalit'}, status=403)
+        _, b = _chek_uid_top(order)
+        if not b:
+            return web.json_response({'ok': False, 'holat': ''}, status=404)
+        return web.json_response({'ok': True, 'holat': _chek_tolov_holat(b)})
+    except Exception as e:
+        logger.error(f'chek_holat_endpoint: {type(e).__name__}')
         return web.json_response({'error': 'xato'}, status=500)
 
 
@@ -12450,6 +12579,8 @@ async def main():
     app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
     app.router.add_post('/buyurtma', buyurtma_endpoint)
     app.router.add_post('/mijoz_holat', mijoz_holat_endpoint)   # BUGUN225: profil — raqamlar (BUGUN271: to'liq, faqat egasiga) + Buyurtmalarim
+    app.router.add_post('/chek_tolov', chek_tolov_endpoint)   # 3397: to'lov sahifasidan chek (kalit — buyurtma HMAC)
+    app.router.add_post('/chek_holat', chek_holat_endpoint)   # 3397: to'lov sahifasi — chek holati
     app.router.add_post('/chek_yukla', chek_yukla_endpoint)   # 3259: «Buyurtmalarim» dan chek rasmi → bot chati → adminga (bot yo'li bilan bir xil)
     app.router.add_post('/mijoz_tel', mijoz_tel_endpoint)       # BUGUN271: profil — yetkazish raqamini o'zgartirish
     app.router.add_post('/buyurtma_bekor', buyurtma_bekor_endpoint)   # BUGUN225: mijoz buyurtmani bekor qildi
