@@ -3559,9 +3559,12 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
         if elon_status(e) == 'sold':
             qatorlar.append(f'• <s>{nom}</s> — qolmadi / нет')
             continue
-        url = havolalar.get(num) or f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}'
+        # 3413 (Owner 2026-11-07): rang guruhida har rangga havola YO'Q — mijoz «🛒 Sotib olish» bilan saytda guruhni ochib,
+        #     rangni o'zi tanlaydi. Havola faqat juft guruhda (telefon + g'ilof) va «Ranglarni alohida» yoqilganda (rang posti)
+        url = havolalar.get(num) or (f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}' if aralash else '')
         p = _narx_son(e)
-        qatorlar.append(f'• <a href="{html_escape(url)}">{nom}</a>' + (f' — {fmt(p)}$' if (farqli or aralash) and p else '')
+        qatorlar.append((f'• <a href="{html_escape(url)}">{nom}</a>' if url else f'• {nom}')
+                        + (f' — {fmt(p)}$' if (farqli or aralash) and p else '')
                         + (f' · {html_escape(hol(e)[0])} / {html_escape(hol(e)[1])}' if len(hollar) > 1 else ''))
     ranglar = ('<p><b>Tanlang / Выберите:</b><br/>' if aralash else '<p><b>Ranglari / Цвета:</b><br/>') + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
 
@@ -3575,7 +3578,8 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
     mosligi = '<p>' + '<br/>'.join(mos) + '</p>' if mos else ''
 
     birinchi = _gnum(faol[0] if faol else (azolar[0] if azolar else {}))
-    sahifa = f'elon_{birinchi}' if birinchi else 'home'
+    # 3413: rang guruhi — «Sotib olish» saytda guruhni rang TANLANMAGAN holda ochadi (startapp=guruh_<num>, 13-boshlash.js)
+    sahifa = (f'elon_{birinchi}' if aralash else f'guruh_{birinchi}') if birinchi else 'home'
     aloqa, tugmalar = post_oxiri(sahifa, post_yonalish(azolar[0], models) if azolar else 'mobile', shablon)
     return (
         media
