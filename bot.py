@@ -471,8 +471,9 @@ def guruh_namunalar(hozir=None):
         ('olx', "saytda «Menga yuborish» bosilganda: OLX matni, keyin kanal e'loni va rasmlar albomi",
          html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
-        ('mijoz', "kimdir tech kanalga kirganda; 1 daqiqadan keyin Mobile a'zoligi",
-         f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'da avvaldan bor\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>", None),
+        ('mijoz', "kimdir tech yoki Mobile kanalga kirganda; 1 daqiqadan keyin ikkinchi kanal a'zoligi",
+         f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'da bor\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>\n"
+         f"✅ {mijoz} Mobile kanalga kirdi\n💡 {mijoz} tech kanalda bor\n🔴 <b>{mijoz} tech kanalga o'tmadi</b>", None),
         ('kollaj', "e'lon kanalga chiqqanda — postning kollaj ko'rinishi (kanalda oddiy qoladi); tugma bosilsa kanaldagi post shunga almashadi",
          f"🖼 №{n} kollaj ko'rinishi — haqiqiysida rasmlar kollaji + e'lon matni", _NAMUNA_KOLLAJ) if KOLLAJ_YOQIQ else
         ('kollaj', "hozircha o'chiq (3244) — bot yubormaydi", None, None),
@@ -1050,10 +1051,11 @@ def xush_yubor(chat_id, uid, hub=False, yon=''):
 
 
 # 3110 (Owner, 2026-10-21): tech kanalga kirgan odam — adminga darhol «✅ … tech kanalga kirdi»; 1 daqiqadan keyin Mobile
-# kanal a'zoligi tekshiriladi: a'zo — «📱 … Mobile'da avvaldan bor», a'zo emas — «🔴 … Mobile'ga kirmadi» (Owner mijozga Mobile
+# kanal a'zoligi tekshiriladi: a'zo — «📱 … Mobile'da bor», a'zo emas — «🔴 … Mobile'ga kirmadi» (Owner mijozga Mobile
 # havolasini o'zi yuboradi — ism bosilsa lichka ochiladi). Mijozga avtomatik xabar YO'Q. Taymer xotirada: 1 daqiqa ichida
 # bot qayta ishga tushsa — shu odamning tekshiruvi tushib qoladi. Mobile kanalda bot admin bo'lishi shart (getChatMember).
-# 3271 (Owner, 2026-10-29): «Mobile'ga kirdi» o'rniga «Mobile'da avvaldan bor» — u odamlar Mobile'da oldindan bor edi.
+# Mobile kanalga kirgan odam — darhol «✅ … Mobile kanalga kirdi»; 1 daqiqadan keyin tech a'zoligi: «💡 … tech kanalda bor» yoki
+# «🔴 … tech kanalga o'tmadi». Ikki kanal bir xil kuzatiladi, Mobile'ga birinchi kirganlar ham ko'rinadi.
 MOBILE_KUTISH_S = 60
 
 
@@ -1071,7 +1073,7 @@ def _mobile_tekshir(user):
     if azo is None:
         msg = f"⚠️ {nom} — Mobile a'zoligini tekshirib bo'lmadi (bot Mobile kanalda admin bo'lishi kerak)"
     else:
-        msg = f"📱 {nom} Mobile'da avvaldan bor" if azo else f"🔴 <b>{nom} Mobile'ga kirmadi</b>"
+        msg = f"📱 {nom} Mobile'da bor" if azo else f"🔴 <b>{nom} Mobile'ga kirmadi</b>"
     send_msg(admin_joy('mijoz'), msg)
 
 
@@ -1084,6 +1086,27 @@ def _mobile_rejalash(user):
 def tech_kirdi(user):
     send_msg(admin_joy('mijoz'), f"✅ {_kirgan_nom(user)} tech kanalga kirdi")
     _mobile_rejalash(user)
+
+
+def _tech_tekshir(user):
+    azo = _kanal_azomi(TECH_KANAL or TECH_SUKUT, user['id'], 'tech kanal')
+    nom = _kirgan_nom(user)
+    if azo is None:
+        msg = f"⚠️ {nom} — tech kanal a'zoligini tekshirib bo'lmadi (bot tech kanalda admin bo'lishi kerak)"
+    else:
+        msg = f"💡 {nom} tech kanalda bor" if azo else f"🔴 <b>{nom} tech kanalga o'tmadi</b>"
+    send_msg(admin_joy('mijoz'), msg)
+
+
+def _tech_rejalash(user):
+    t = threading.Timer(MOBILE_KUTISH_S, _tech_tekshir, args=(user,))
+    t.daemon = True
+    t.start()
+
+
+def mobile_kirdi(user):
+    send_msg(admin_joy('mijoz'), f"✅ {_kirgan_nom(user)} Mobile kanalga kirdi")
+    _tech_rejalash(user)
 
 
 def kanal_xush_kelibsiz(cm):
@@ -1105,12 +1128,15 @@ def kanal_xush_kelibsiz(cm):
         tech_kirdi((cm.get('new_chat_member') or {}).get('user') or {'id': uid})   # 3110: «ishladi» xabari o'rniga
         if not TECH_KANAL:
             return ''   # hub o'chiq (env bo'sh) — xush kelibsiz yuborilmaydi, faqat kuzatuv
+    mobile = not tech and yon_kanal_kaliti(chat) == 'mobile'
+    if mobile:
+        mobile_kirdi((cm.get('new_chat_member') or {}).get('user') or {'id': uid})
     yon = '' if _kanal_mos(chat, TECH_KANAL) else yon_kanal_kaliti(chat)   # BUGUN213: yo'nalish kanali — o'z yo'nalishi posti
     ok, xato = xush_yubor(chat.get('id'), uid, hub=_kanal_mos(chat, TECH_KANAL), yon=yon)   # B38: tech kanal — hub
     kanal = html_escape('@' + chat['username'] if chat.get('username') else str(chat.get('id', '')))
     if ok:
         logger.info(f'xush kelibsiz: {uid} -> {kanal}')
-        if not _xush['ishladi'] and not tech:
+        if not _xush['ishladi'] and not tech and not mobile:
             _xush['ishladi'] = True
             ism = html_escape(((cm.get('new_chat_member') or {}).get('user') or {}).get('first_name', '') or str(uid))
             send_msg(admin_joy('mijoz'), f"✅ Kanal xush kelibsiz ishladi: <b>{ism}</b> {kanal} ga qo'shildi — unga "
