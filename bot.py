@@ -109,6 +109,12 @@ SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash
 # markazidan ±11 px — strelka qutisi doira markazida (chap / o'ng bo'sh joy 40 / 39 px). Strelka shaffof emas: ikki kapsula
 # burilishda ustma-ust tushadi, shaffof bo'lsa o'sha joy dog' bo'lib ko'rinadi.
 KEYINGI_BELGI = os.environ.get('KEYINGI_BELGI', '1') != '0'
+# 3421 (Owner 2026-11-08: «kanalda rasmga «sotildi» pechati tushmadi»): donalik tovar sotilganda kanal postining HAMMA rasmiga
+# «SOTILDI» muhri — ImageKit matn layer'i (logo / «suring» kabi, resize'dan keyin `:` bilan): qizil yumaloq to'rtburchak,
+# oq qalin yozuv, −15° qiya, markazda. O'lcham — w-1600 rasm uchun (fs-200 ≈ rasm eni 12%; ifoda — `fs-bw_mul_…` — 400 beradi,
+# sinaldi). Ko'p donali tovar tugasa — muhr YO'Q (yana keladi, «QOLMADI»). SOTILDI_MUHR=0 (env) — o'chadi.
+SOTILDI_MUHR = os.environ.get('SOTILDI_MUHR', '1') != '0'
+SOTILDI_MUHR_LAYER = 'l-text,i-SOTILDI,fs-200,tg-b,co-FFFFFF,bg-DC2626E6,pa-40_100,r-30,rt-345,lfo-center,l-end'
 KEYINGI_BELGI_LAYER = ('l-image,i-ik_canvas,bg-134E4A,w-112,h-112,r-max,o-50,lxc-bw_mul_0.89,lyc-bh_mul_0.88,l-end'
                        ':l-image,i-ik_canvas,bg-FFFFFF,w-43,h-12,r-max,rt-45,lxc-bw_mul_0.89,lyc-bh_mul_0.88_sub_11,l-end'
                        ':l-image,i-ik_canvas,bg-FFFFFF,w-43,h-12,r-max,rt-315,lxc-bw_mul_0.89,lyc-bh_mul_0.88_add_11,l-end')
@@ -1805,15 +1811,16 @@ def build_elon(item, models_by_id):
     # B5: sotilganini `status` ustuni aytadi. Sayt endi narxni 0 QILMAYDI —
     # sotilgan e'londa ham asl narx turadi, shuning uchun uni chizib ko'rsatamiz.
     sold = is_sold(item)
+    tugadi = tugadi_matni(item)   # 3421: active + soni 0 — ham «QOLMADI»
 
     add_prem('money'); add(" Цена/Narxi: ")
-    if sold:
+    if tugadi:
         # ~~400$~~ ❗️SOTILDI❗️
         narx = price if price and price != '0' else old
         if narx:
             add_fmt(f"{narx}$", 'strikethrough')
             add(" ")
-        add_fmt("❗️QOLMADI❗️" if kop_donali(item) else "❗️SOTILDI❗️", 'bold')   # B13: ko'p donali tugasa
+        add_fmt(f"❗️{tugadi}❗️", 'bold')   # 3421: ko'p donali tugasa — QOLMADI, donalik — SOTILDI   # B13: ko'p donali tugasa
         add("\n\n")
     elif old and old != price:
         add_fmt(f"{old}$", 'strikethrough')
@@ -1987,6 +1994,8 @@ def belgi_src(elon):
     src = {t: belgili(t, j) for t, j in joylar}
     if len(joylar) >= 2:
         src[joylar[0][0]] = keyingi_belgi(src[joylar[0][0]])
+    if muhr_kerak(elon):   # 3421: sotilgan (donalik) — hamma rasmda «SOTILDI» muhri; manzil o'zgaradi → eski file_id ishlatilmaydi
+        src = {t: sotildi_muhr(u) for t, u in src.items()}
     return src
 
 
@@ -2068,9 +2077,10 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     media = rich_media(images_of(elon), kollaj, rasm_src)
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
-    if elon_status(elon) == 'sold':
-        # B13 soni: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi)
-        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + ('❗️QOLMADI❗️' if kop_donali(elon) else '❗️SOTILDI❗️')
+    tugadi = tugadi_matni(elon)
+    if tugadi:
+        # B13 soni / 3421: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi), donalik — «SOTILDI»
+        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + f'❗️{tugadi}❗️'
     elif old and old != price:
         narx = f'<s>{html_escape(old)}$</s> {html_escape(price)}$'
     else:
@@ -2408,6 +2418,37 @@ def oxirgi_mi(elon):
         return soni_val(elon) == 1 and int(float(str(elon.get('sotilgan') or 0).strip())) > 0
     except Exception:
         return False
+
+
+def _sotilgan_n(elon):
+    try:
+        return int(float(str((elon or {}).get('sotilgan') or 0).strip()))
+    except Exception:
+        return 0
+
+
+def tugadi_matni(elon):
+    """3421 (3351 qoidasi): post narx o'rnidagi yozuv — None (sotuvda), 'SOTILDI' (donalik sotildi), 'QOLMADI' (ko'p donali tugadi).
+    Store endi ko'p donali tovarning oxirgi donasida 'sold' QO'YMAYDI — status active, soni 0 («Hozircha qolmadi», sayt isQolmagan).
+    'sold' + soni ustuni to'la: jami 1 ta sotilgan (`sotilgan` = 1) — aslida 1 talik tovar (admin formasi soni=1 qo'yadi) → SOTILDI
+    (ilgari «QOLMADI» chiqardi); qolgani — ko'p donali edi → QOLMADI (eski xulq)."""
+    if elon_status(elon) == 'sold':
+        return 'QOLMADI' if kop_donali(elon) and _sotilgan_n(elon) != 1 else 'SOTILDI'
+    if elon_status(elon) == 'active' and soni_val(elon) == 0:
+        return 'QOLMADI'
+    return None
+
+
+def muhr_kerak(elon):
+    """3421: kanal rasmlariga «SOTILDI» muhri — faqat donalik sotilganda."""
+    return SOTILDI_MUHR and tugadi_matni(elon) == 'SOTILDI'
+
+
+def sotildi_muhr(url):
+    """Tayyor ImageKit manzilga (`…?tr=…`) «SOTILDI» muhri layer'i. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi."""
+    if 'ik.imagekit.io' not in url or ('?tr=' not in url and '&tr=' not in url):
+        return url
+    return url + ':' + SOTILDI_MUHR_LAYER
 
 
 def soni_qatori(elon):
@@ -8513,7 +8554,7 @@ def send_elon_card(chat_id, num):
                 '']
     qatorlar.append(f"{cond_emoji} {cond_uz} / {cond_ru}")
     if holat == 'sold':
-        qatorlar.append("❗️ <b>QOLMADI / НЕТ В НАЛИЧИИ</b>" if kop_donali(elon) else "❗️ <b>SOTILDI / ПРОДАНО</b>")
+        qatorlar.append("❗️ <b>QOLMADI / НЕТ В НАЛИЧИИ</b>" if tugadi_matni(elon) == 'QOLMADI' else "❗️ <b>SOTILDI / ПРОДАНО</b>")
     else:
         qatorlar.append(f"💰 <b>{narx}$</b>")
         if soni_qatori(elon):
@@ -9574,6 +9615,32 @@ async def _buyurtma_xabar_yangila(chat_id, message_id, xabar, uid, order, b, jor
             await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
 
 
+def sotuv_kanal_yangila(nums):
+    """3421 (Owner 2026-11-08, №199): to'lov tasdig'idan keyin Store e'lonni «sotildi» qildi / sonini kamaytirdi — kanal posti
+    ham o'shanga (matn + donalikda rasm muhri). Ilgari post faqat sayt saqlaganda tahrirlanardi (kanal_sinxron) — №199 sotilgan,
+    kanalda «aktual» turgan. E'lon Store'dan QAYTA olinadi (xotirada eski holat). Post yo'q — hech narsa. Tahrir bo'lmasa —
+    adminga bitta qator; yangi post YUBORILMAYDI (sotuv paytida kanalga yangi xabar chiqmasin). Fonda (_fonda) — sekin."""
+    for num in dict.fromkeys(str(n).strip() for n in nums or [] if str(n or '').strip().isdigit()):
+        try:
+            yangi, _ = fetch_elon_by_num(num)
+            if not yangi:
+                logger.warning(f'sotuv_kanal_yangila №{num}: Store javob bermadi')
+                continue
+            with _elon_cache_lock:
+                eski = _ELON_CACHE['by_num'].get(num)
+            yangi['num'] = num
+            elon_cache_put(yangi)
+            for g in {guruh_idsi(eski), guruh_idsi(yangi)} - {''}:
+                guruh_yangila_keyin(g)
+            if not kanal_msg_id(yangi):
+                continue
+            ok, xato = kanal_tahrir(int(num))
+            if not ok:
+                send_msg(admin_joy('post'), f"⚠️ №{num} sotildi, lekin kanal posti yangilanmadi: <code>{html_escape(str(xato))}</code>")
+        except Exception as e:
+            logger.error(f'sotuv_kanal_yangila №{num}: {type(e).__name__}')
+
+
 async def _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija):
     """Holat surilgach: mijozga yetmagan bo'lsa ⚠️ adminga; BUGUN275: tasdiqlangan (to'langan / yo'lda / yetkazilgan) buyurtma → Store'ga
     sotuv yozuvi, e'lonlar «sotildi». 'eski' ham — bir xil tugma qayta bosilsa Store'ga yozish qayta uriniladi (Store takror yozmaydi)."""
@@ -9584,6 +9651,8 @@ async def _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija):
         if not await blok(_sotuv_sheet_yoz, uid, b):
             await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: Store'ga sotuv yozuvi tushmadi — "
                                           f"tugmani qayta bosing (takror yozilmaydi).")
+        else:   # 3421: kanal posti ham «sotildi» / soni kamaydi (fonda)
+            _fonda(sotuv_kanal_yangila, [x.get('num') for x in (b.get('tovar') or [])])
 
 
 async def buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar=None):
@@ -12254,6 +12323,8 @@ async def admin_buyurtma_tahrir_endpoint(request):
             await blok(_tahrir_bron, mid, order, nusxa, b)
             xabar = await _tahrir_xabarlar(mid, order, b)
         store = await blok(_tahrir_store, mid, nusxa, b)
+        if store and (b or {}).get('holat') in _HOLAT_TASDIQ:   # 3421: to'langan buyurtma tarkibi o'zgardi — kanal ham
+            _fonda(sotuv_kanal_yangila, [x.get('num') for x in (nusxa or []) + ((b or {}).get('tovar') or [])])
         return web.json_response({'ok': True, 'store': store, 'xabar': xabar, 'buyurtma': _admin_buyurtma_dict(mid, b)})
     except Exception as e:
         logger.error(f'admin_buyurtma_tahrir_endpoint: {type(e).__name__}')
