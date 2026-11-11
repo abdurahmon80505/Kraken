@@ -3641,6 +3641,9 @@ def _guruh_nomi(g, azolar, models, lang='uz'):
 GURUH_RANG_RASM = os.environ.get('GURUH_RANG_RASM', '1') != '0'
 # 3435 (Owner 2026-11-11 23:10, yakuniy tartib): nomi → ranglar (blok ichida faqat rangga oid: rasmlari) → holati (bitta,
 #     ranglardan pastda) → «Narxi / Цена» → aloqa va tugmalar
+# 3435 (Owner 2026-11-11 23:15): boshi e'lon postidagidek — emoji + nom, «#tur #raqam», «📋 Texnik xarakteristika».
+#     A — «Ranglari / Цвета» sarlavhasi yo'q; B — bor, xarakteristikadan keyin. Owner tanlaydi
+GURUH_RANG_SARLAVHA = (os.environ.get('GURUH_RANG_SARLAVHA', 'A').strip().upper() or 'A')[:1]
 
 
 def guruh_rasm_bormi(g, azolar):
@@ -3665,7 +3668,7 @@ def _guruh_rasmlar(g):
     return [str(u).strip() for u in v if str(u or '').strip()] if isinstance(v, list) else []
 
 
-def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=None):
+def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=None, sarlavha_rang=None):
     """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>).
     rang_rasm — 3435 ko'rinishi (har rang blokida o'z rasmi); None — GURUH_RANG_RASM. Juft guruhda doim o'chiq."""
     havolalar = havolalar or {}
@@ -3750,7 +3753,8 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=No
                         + (f' · {html_escape(hol(e)[0])} / {html_escape(hol(e)[1])}' if len(hollar) > 1 else ''))
     ranglar = ('<p><b>Tanlang / Выберите:</b><br/>' if aralash else '<p><b>Ranglari / Цвета:</b><br/>') + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
     if rang_rasm and bloklar:
-        ranglar = '<p><b>Ranglari / Цвета:</b></p>' + ''.join(bloklar)   # 3435: tushuntirish yo'q (Owner)
+        # 3435: tushuntirish yo'q (Owner); A — sarlavhasiz, B — sarlavha bilan (xarakteristikadan ajratadi)
+        ranglar = ('<p><b>Ranglari / Цвета:</b></p>' if (sarlavha_rang or GURUH_RANG_SARLAVHA).upper() == 'B' else '') + ''.join(bloklar)
 
     izoh = html_escape(str(g.get('izoh') or '').strip()).replace('\n', '<br/>')
     izoh_ru = html_escape(str(g.get('izohRu') or '').strip()).replace('\n', '<br/>')
@@ -3765,9 +3769,19 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=No
     # 3413: rang guruhi — «Sotib olish» saytda guruhni rang TANLANMAGAN holda ochadi (startapp=guruh_<num>, 13-boshlash.js)
     sahifa = (f'elon_{birinchi}' if aralash else f'guruh_{birinchi}') if birinchi else 'home'
     aloqa, tugmalar = post_oxiri(sahifa, post_yonalish(azolar[0], models) if azolar else 'mobile', shablon)
+    bosh = f'<p><b>{sarlavha}</b></p>'
+    if rang_rasm and azolar:
+        # 3435 (Owner 23:15): e'lon postidagi umumiy shakl — emoji + nom, «#tur #raqam», ochiladigan xarakteristika
+        e0 = (faol or azolar)[0]
+        tur = elon_turi(e0, models)
+        tur_emoji = _rich_emoji('google') if tur == 'phone' else TUR_NOMI.get(tur, TUR_NOMI['phone'])[0]
+        m0 = models.get(str(e0.get('specId', '') or ''), {})
+        jadval = _rich_table(m0.get('specUz'), m0.get('specRu'))
+        bosh = (f'<p><b>{tur_emoji} {sarlavha}</b><br/>#{tur} #{birinchi}</p>'
+                + (f'<details><summary>📋 Texnik xarakteristika / Характеристики</summary>{jadval}</details>' if jadval else ''))
     return (
         media
-        + f'<p><b>{sarlavha}</b></p>'
+        + bosh
         + (ranglar + holat + narx if rang_rasm else holat + narx + ranglar)   # 3435: ranglar → holati → narxi
         + mosligi
         + ('' if rang_rasm else '<p> </p>')   # 3435: ranglar va aloqa orasida bo'sh joy yo'q
