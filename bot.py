@@ -3541,6 +3541,25 @@ def _guruh_nomi(g, azolar, models, lang='uz'):
     return elon_nomi(azolar[0], models.get(str(azolar[0].get('specId', '') or ''), {}), lang)
 
 
+# 3435 (Owner 2026-11-10): rang guruhi posti — tepada guruh rasmi (katta, doim ko'rinadi) + har rang o'z <details> blokida
+#   (bosilganda ochiladi): ichida shu rangning rasmlari, holati va narxi. Guruh rasmi yo'q — birinchi sotuvdagi rangning
+#   1-rasmi tepaga; umuman rasm yo'q — post chiqmaydi, adminga xabar. Juft guruh (telefon + g'ilof) va bitta rangli post
+#   o'zgarmaydi. GURUH_RANG_RASM=0 (env) — 3413 ko'rinishi (ranglar oddiy ro'yxat, rasmsiz).
+GURUH_RANG_RASM = os.environ.get('GURUH_RANG_RASM', '1') != '0'
+
+
+def guruh_rasm_bormi(g, azolar):
+    """Guruh postiga qo'yadigan biror rasm bormi — guruh rasmi yoki biror rangning rasmi (3435: rasmsiz post chiqmaydi)."""
+    return bool(_guruh_rasmlar(g)) or any(images_of(e) for e in azolar)
+
+
+def _guruh_rasmsiz_xabar(g, azolar, models):
+    """3435: rasmsiz guruh posti yuborilmadi — adminga sababi. Qaytaradi: xato matni (sayt / buyruq javobi uchun)."""
+    xato = "Rasm yo'q — guruhga yoki ranglarga rasm qo'shing, keyin qayta yuboring"
+    send_msg(admin_joy('post'), f"🖼 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}» posti kanalga chiqmadi: {xato}.")
+    return xato
+
+
 def _guruh_rasmlar(g):
     v = (g or {}).get('rasmlar') or []
     if isinstance(v, str):
@@ -3551,10 +3570,20 @@ def _guruh_rasmlar(g):
     return [str(u).strip() for u in v if str(u or '').strip()] if isinstance(v, list) else []
 
 
-def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
-    """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>)."""
+def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=None):
+    """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>).
+    rang_rasm — 3435 ko'rinishi (har rang blokida o'z rasmi); None — GURUH_RANG_RASM. Juft guruhda doim o'chiq."""
     havolalar = havolalar or {}
-    juft = [belgi_ajrat(u) for u in _guruh_rasmlar(g)] or [rasm_joylari(e)[0] for e in azolar if rasm_joylari(e)]
+    # 3189 (A55): juft guruh — telefon + g'ilof / aksessuar (rang emas): «…$ dan» yo'q, har qatorda o'z nomi va narxi
+    aralash = len({elon_turi(e, models) == 'phone' for e in azolar}) > 1
+    rang_rasm = (GURUH_RANG_RASM if rang_rasm is None else bool(rang_rasm)) and not aralash
+    juft = [belgi_ajrat(u) for u in _guruh_rasmlar(g)]
+    if not juft and rang_rasm:
+        # 3435: guruh rasmi yo'q — tepaga birinchi (sotuvdagi) rangning 1-rasmi; qolgani rang bloklarida
+        bor = [e for e in azolar if rasm_joylari(e)]
+        sotuv = [e for e in bor if elon_status(e) != 'sold']
+        juft = [rasm_joylari((sotuv or bor)[0])[0]] if bor else []
+    juft = juft or [rasm_joylari(e)[0] for e in azolar if rasm_joylari(e)]
     rasmlar, src = [], {}
     for u, joy in juft:
         if u and u not in rasmlar:
@@ -3568,8 +3597,6 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
     faol = [e for e in azolar if elon_status(e) != 'sold']
     narxlar = [n for n in (_narx_son(e) for e in faol) if n]
     farqli = len(set(narxlar)) > 1
-    # 3189 (A55): juft guruh — telefon + g'ilof / aksessuar (rang emas): «…$ dan» yo'q, har qatorda o'z nomi va narxi
-    aralash = len({elon_turi(e, models) == 'phone' for e in azolar}) > 1
     if not faol:
         narx = '<p>Qolmadi / Нет в наличии</p>'
     elif not narxlar or aralash:
@@ -3589,7 +3616,7 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
         holat = (f'<p>{html_escape(cem)} Holati: <b>{html_escape(cuz)}</b><br/>'
                  f'{html_escape(cem)} Состояние: <b>{html_escape(cru)}</b></p>')
 
-    qatorlar = []
+    qatorlar, bloklar = [], []   # bloklar — 3435 (rang_rasm): har rang <details> (sotilgani — oddiy qator)
     for e in azolar:
         num = _gnum(e)
         cuz = clean_color(e.get('color') or '').strip() or elon_nomi(e, models.get(str(e.get('specId', '') or ''), {}), 'uz')
@@ -3599,6 +3626,20 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
             nom = html_escape(elon_nomi(e, models.get(str(e.get('specId', '') or ''), {}), 'uz'))
         if elon_status(e) == 'sold':
             qatorlar.append(f'• <s>{nom}</s> — qolmadi / нет')
+            bloklar.append(f'<p>• <s>{nom}</s> — qolmadi / нет</p>')
+            continue
+        if rang_rasm:
+            # 3435: rang bloki — yopiq holatda nomi va narxi; ochilganda rasmlari (suv belgisi bilan), holati, narxi
+            p = _narx_son(e)
+            cuz2, cru2, cem2 = hol(e)
+            url = havolalar.get(num) or ''   # «Ranglarni alohida» — rang postiga havola blok ichida
+            bloklar.append(
+                f'<details><summary>🎨 {nom}' + (f' — {fmt(p)}$' if p else '') + '</summary>'
+                + rich_media(images_of(e)[:10], False, belgi_src(e))
+                + f'<p>{html_escape(cem2)} Holati: <b>{html_escape(cuz2)}</b> / Состояние: <b>{html_escape(cru2)}</b>'
+                + (f'<br/>💰 Narxi / Цена: <b>{fmt(p)}$</b>' if p else '') + '</p>'
+                + (f'<p><a href="{html_escape(url)}">📌 Alohida post / Отдельный пост</a></p>' if url else '')
+                + '</details>')
             continue
         # 3413 (Owner 2026-11-07): rang guruhida har rangga havola YO'Q — mijoz «🛒 Sotib olish» bilan saytda guruhni ochib,
         #     rangni o'zi tanlaydi. Havola faqat juft guruhda (telefon + g'ilof) va «Ranglarni alohida» yoqilganda (rang posti)
@@ -3608,6 +3649,8 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
                         + (f' — {fmt(p)}$' if (farqli or aralash) and p else '')
                         + (f' · {html_escape(hol(e)[0])} / {html_escape(hol(e)[1])}' if len(hollar) > 1 else ''))
     ranglar = ('<p><b>Tanlang / Выберите:</b><br/>' if aralash else '<p><b>Ranglari / Цвета:</b><br/>') + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
+    if rang_rasm and bloklar:
+        ranglar = '<p><b>Ranglari / Цвета</b> (bosing — rasmi ochiladi / нажмите — фото):</p>' + ''.join(bloklar)
 
     izoh = html_escape(str(g.get('izoh') or '').strip()).replace('\n', '<br/>')
     izoh_ru = html_escape(str(g.get('izohRu') or '').strip()).replace('\n', '<br/>')
@@ -3724,6 +3767,8 @@ def _guruh_yubor(gid, alohida):
         return None, 'Guruh topilmadi', ''
     if not [e for e in azolar if elon_status(e) != 'sold']:
         return None, "Guruhda sotuvdagi rang yo'q", ''
+    if GURUH_RANG_RASM and not guruh_rasm_bormi(g, azolar):
+        return None, _guruh_rasmsiz_xabar(g, azolar, models), ''
     eski = guruh_kanal_oqi(g)
     chat = guruh_kanali(azolar, models)
     kd = {'k': chat, 'm': None, 't': int(time.time()), 'r': dict(eski.get('r') or {}) if eski.get('k') == chat else {}}
@@ -3881,6 +3926,8 @@ def guruh_sinov_yubor(gid, alohida=False):
         return None, 'Guruh topilmadi', ''
     if not [e for e in azolar if elon_status(e) != 'sold']:
         return None, "Guruhda sotuvdagi rang yo'q", ''
+    if GURUH_RANG_RASM and not guruh_rasm_bormi(g, azolar):
+        return None, _guruh_rasmsiz_xabar(g, azolar, models), ''
     chat = kanal_tanla('sinov')
     mid, xato = _429_bilan(send_rich, chat, guruh_post_qur(g, azolar, models, {}))
     if not mid:
