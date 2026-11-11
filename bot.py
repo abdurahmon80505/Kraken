@@ -1778,18 +1778,22 @@ def build_elon(item, models_by_id):
 
     # ── Sarlavha: G logo + BOLD nom (xotira, xususiyat) + rang ──
     # BUGUN260-7: qavs ichi bo'sh bo'lsa — qavs yo'q (ilgari «Nom ()» chiqardi)
-    add_prem('google'); add(" ")
+    # 3422: telefon — G logo; boshqasi — o'z turi emojisi (⌨️, 🎧, 🔌 …)
+    tur, tur_emoji, tur_teg = tur_belgisi(item, models_by_id)
+    if tur == 'phone':
+        add_prem('google')
+    else:
+        add(tur_emoji)
+    add(" ")
     qavs = elon_qavs(item)
     title = name_uz + (f" ({qavs})" if qavs else '')
     add_fmt(title, 'bold')
     if color_clean:
         add(f" {color_clean}")
     add("\n")
-    add(f"#{elon_turi(item, models_by_id)} #{num}\n")   # 3184.5: tur bo'yicha (ilgari hammasi #phone)
+    add(f"#{tur_teg} #{num}\n")   # 3184.5: tur bo'yicha (ilgari hammasi #phone); 3422: aksessuar — o'z turi
     if mos_txt:
         add(f"🔗 {mos_txt}\n")
-    if izoh_txt:
-        add(f"📝 {izoh_txt}\n")
     add("\n")
 
     # ── Texnik xarakteristika (collapsed blockquote) ──
@@ -1802,6 +1806,15 @@ def build_elon(item, models_by_id):
     q_end = _utf16len(''.join(parts))
     quote = (q_start, q_end - q_start)
     add("\n\n")
+
+    # 3422: izoh — xarakteristika ostida, alohida yig'ilgan blok (nom tagida emas, xarakteristikaga aralashmaydi)
+    izoh_q = None
+    if izoh_txt:
+        izoh_ru = izoh_matni(item, 'ru')
+        i_start = _utf16len(''.join(parts))
+        add("📝 Izoh / Примечание:\n" + izoh_txt + (f"\n\n{izoh_ru}" if izoh_ru and izoh_ru != izoh_txt else ''))
+        izoh_q = (i_start, _utf16len(''.join(parts)) - i_start)
+        add("\n\n")
 
     # ── Holati ──
     add(f"{cond_emoji} • Holati: {cond_uz}\n")
@@ -1848,12 +1861,13 @@ def build_elon(item, models_by_id):
     for ftype, off, length in fmt:
         entities.append({'type': ftype, 'offset': off, 'length': length})
     # Collapsed blockquote (yopilgan quote)
-    if quote and quote[1] > 0:
-        entities.append({
-            'type': 'expandable_blockquote',
-            'offset': quote[0],
-            'length': quote[1],
-        })
+    for q in (quote, izoh_q):   # 3422: izoh ham — o'z yig'ilgan bloki
+        if q and q[1] > 0:
+            entities.append({
+                'type': 'expandable_blockquote',
+                'offset': q[0],
+                'length': q[1],
+            })
     return num, text, entities
 
 
@@ -2060,7 +2074,6 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), yozilganidek (BUGUN17)
     mos_txt = html_escape(mos_line(model, models_by_id, 'uz', elon_nomi(elon, model, 'uz')))
-    izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
     storage = html_escape(elon_qavs(elon))   # BUGUN260-7: xotira + xususiyat («MagSafe, Stand»)
     color = html_escape(clean_color(elon.get('color') or ''))
     price = str(elon.get('price', '') or '').replace('.0', '')
@@ -2070,8 +2083,10 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
     # 3184.5: sarlavha emojisi va tegi — e'lon turidan (ilgari hammasi 📱 #phone: g'ilof ham, zaryadlovchi ham).
     #     Telefon (premium) — G logo, avvalgidek
-    tur = elon_turi(elon, models_by_id)
-    tur_emoji = e("google") if tur == 'phone' else TUR_NOMI.get(tur, TUR_NOMI['phone'])[0]
+    #     3422: aksessuar — o'z turi (⌨️ #keyboard, 🎧 #headset, 🔌 #cable …), hammasi 🔌 #accessory emas
+    tur, tur_emoji, tur_teg = tur_belgisi(elon, models_by_id)
+    if tur == 'phone':
+        tur_emoji = e("google")
 
     # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     media = rich_media(images_of(elon), kollaj, rasm_src)
@@ -2132,8 +2147,9 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     #     oralig'i («yarim qatorcha»); BOSH u bilan qo'shilib 2 baravar katta bo'shliq berardi
     return (
         media
-        + f'<p><b>{tur_emoji} {title}</b><br/>#{tur} #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
+        + f'<p><b>{tur_emoji} {title}</b><br/>#{tur_teg} #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + '</p>'
         + spec
+        + izoh_html(elon)   # 3422: izoh nom tagida emas — xarakteristika ostida, yig'ilgan blok
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
         + narx_blok
@@ -2303,6 +2319,83 @@ def elon_turi(elon, models_by_id):
     ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
     return ser_type(ser) if ser else 'phone'
 
+
+# 3422 (Owner 2026-11-08): aksessuar postida hammasiga bir xil «🔌 #accessory» edi — endi tovar turidan:
+#     avval e'lon turkumi (Turkumlar varag'i kaliti), bo'lmasa nomdagi so'z (turkumsiz tovar — eng yaqin tur).
+#     Telefon / kamera / g'ilof / ehtiyot qism — avvalgidek (TUR_NOMI).
+AKS_BELGI = {   # kalit → (emoji, heshteg)
+    'keyboard': ('⌨️', 'keyboard'), 'headphones': ('🎧', 'headset'), 'mouse': ('🖱', 'mouse'),
+    'mousepad': ('🖱', 'mousepad'), 'cable': ('🔌', 'cable'), 'charger': ('🔌', 'charger'),
+    'powerbank': ('🔋', 'powerbank'), 'hub': ('🔀', 'hub'), 'camera-acc': ('🎥', 'camera_gear'),
+    'flash': ('💾', 'memorycard'), 'laptop': ('💻', 'laptop'), 'storage': ('💽', 'storage'),
+    'watch': ('⌚', 'watch'), 'strap': ('⌚', 'strap'), 'holder': ('📲', 'holder'), 'scooter': ('🛴', 'scooter'),
+    'helmet': ('🪖', 'helmet'), 'lamp': ('💡', 'lamp'), 'model': ('🏎', 'model'),
+}
+AKS_BELGI_SUKUT = ('🧩', 'accessory')
+AKS_SOZLAR = (   # (nomdagi so'zlar, kalit) — tartib muhim: aniqrog'i oldin (gilamcha → sichqonchadan oldin)
+    (('tungi chiroq', 'lamp', 'светильник', 'ночник'), 'lamp'),   # «tungi chiroq — quloqchin» — chiroq, quloqchin emas
+    (('noutbuk', 'laptop', 'ноутбук', 'macbook', 'surface book', 'notebook'), 'laptop'),   # «… 128GB SSD» — noutbuk, disk emas
+    (('gilamcha', 'mousepad', 'mouse pad', 'коврик', 'qck'), 'mousepad'),
+    (('klaviatura', 'keyboard', 'клавиатур'), 'keyboard'),
+    (('quloqchin', 'naushnik', 'headset', 'headphone', 'наушник', 'гарнитур', 'arctis', 'airpods', 'earbuds'), 'headphones'),
+    (('sichqoncha', 'mouse', 'мышь', 'мышка'), 'mouse'),
+    (('powerbank', 'power bank', 'павербанк'), 'powerbank'),
+    (('zaryadlovchi', 'charger', 'зарядн', 'adapter', 'адаптер'), 'charger'),
+    (('kabel', 'cable', 'кабель', 'шнур'), 'cable'),
+    (('hub', 'хаб', 'dock'), 'hub'),
+    (('xotira karta', 'microsd', 'sd karta', 'карта памяти'), 'flash'),
+    (('hdd', 'ssd', 'qattiq disk', 'жёсткий диск', 'жесткий диск'), 'storage'),
+    (('bilaguzuk', 'tasma', 'strap', 'ремеш', 'браслет'), 'strap'),
+    (('soat', 'watch', 'mi band', 'fitbit', 'часы'), 'watch'),
+    (('tutqich', 'holder', 'держател'), 'holder'),
+    (('samokat', 'scooter', 'самокат', 'ninebot'), 'scooter'),
+    (('shlem', 'helmet', 'шлем'), 'helmet'),
+    (('maket', 'tamiya', 'model kit'), 'model'),
+    (('kamera', 'gopro', 'action cam', 'камер'), 'camera-acc'),
+)
+
+
+def _elon_turkum(elon, models_by_id):
+    """E'lon turkumi kaliti (model → lineyka → `turkum`), yo'q bo'lsa ''."""
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    sk = str((model or {}).get('series', '') or '')
+    ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None) or {}
+    return str(ser.get('turkum', '') or '').strip().lower()
+
+
+def aks_kalit(elon, models_by_id):
+    """3422: aksessuar turi kaliti (AKS_BELGI dagi) — turkum, bo'lmasa nom / turkum nomidagi so'z; topilmasa ''."""
+    tk = _elon_turkum(elon, models_by_id)
+    if tk in AKS_BELGI:
+        return tk
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    t = next((x for x in (_ELON_CACHE.get('turkumlar') or []) if str(x.get('key', '')).strip().lower() == tk), None) if tk else None
+    matn = ' '.join(str(v or '') for v in (
+        (elon or {}).get('nameUz'), (elon or {}).get('nameRu'), (elon or {}).get('name'),
+        (model or {}).get('name'), (model or {}).get('nameUz'), (t or {}).get('labelUz'), (t or {}).get('labelRu'))).lower()
+    for sozlar, kalit in AKS_SOZLAR:
+        if any(s in matn for s in sozlar):
+            return kalit
+    return ''
+
+
+def tur_belgisi(elon, models_by_id):
+    """3422: post sarlavhasi uchun (tur, emoji, heshteg) — aksessuar o'z turi bilan, qolgani TUR_NOMI dan."""
+    tur = elon_turi(elon, models_by_id)
+    if tur == 'accessory':
+        emoji, teg = AKS_BELGI.get(aks_kalit(elon, models_by_id), AKS_BELGI_SUKUT)
+        return tur, emoji, teg
+    return tur, TUR_NOMI.get(tur, TUR_NOMI['phone'])[0], tur
+
+
+def izoh_html(elon):
+    """3422: izoh — xarakteristika tagida yig'ilgan blok (nom tagida emas). uz va ru (ru farq qilsa)."""
+    uz = izoh_matni(elon, 'uz')
+    ru = izoh_matni(elon, 'ru')
+    if not uz:
+        return ''
+    matn = html_escape(uz) + (f'<br/><br/>{html_escape(ru)}' if ru and ru != uz else '')
+    return f'<blockquote expandable>📝 Izoh / Примечание<br/>{matn}</blockquote>'
 
 def elon_yonalishlar(elon, models_by_id):
     """E'lon yo'nalishlari (mobile / pc / camera) — e'lonning o'z `yonalish`i → model `yonalish` → seriya `yonalish` → mobile
@@ -3009,7 +3102,7 @@ def build_toplam_html(items, models_by_id, kollaj=False):
             else:
                 narx = f'<b>{price}$</b>' if price else ''
             qold = soni_qatori(e)
-            emoji = TUR_NOMI.get(elon_turi(e, models_by_id), ('▫️',))[0]
+            emoji = tur_belgisi(e, models_by_id)[1]   # 3422: aksessuar — o'z turi emojisi
             qatorlar.append(f'{emoji} №{num} {nom} — {narx}' + (f' · {qold.split(" / ")[0]}' if qold else ''))
         royxat = '<p>' + '<br/>'.join(qatorlar) + '</p>'
     else:
