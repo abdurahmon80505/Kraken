@@ -3635,13 +3635,12 @@ def _guruh_nomi(g, azolar, models, lang='uz'):
 
 
 # 3435 (Owner 2026-11-10): rang guruhi posti — tepada guruh rasmi (katta, doim ko'rinadi) + har rang o'z <details> blokida
-#   (bosilganda ochiladi): ichida shu rangning rasmlari, holati va narxi. Guruh rasmi yo'q — birinchi sotuvdagi rangning
+#   (bosilganda ochiladi): ichida shu rangning rasmlari. Guruh rasmi yo'q — birinchi sotuvdagi rangning
 #   1-rasmi tepaga; umuman rasm yo'q — post chiqmaydi, adminga xabar. Juft guruh (telefon + g'ilof) va bitta rangli post
 #   o'zgarmaydi. GURUH_RANG_RASM=0 (env) — 3413 ko'rinishi (ranglar oddiy ro'yxat, rasmsiz).
 GURUH_RANG_RASM = os.environ.get('GURUH_RANG_RASM', '1') != '0'
-# 3435 (Owner 2026-11-11): 1 — narx har rang yonida, holati tepada; 2 — 1 kabi, holati ranglardan PASTDA;
-#     3 — rang yonida narx yo'q, «Narxi / Цена» bitta qator (eski ko'rinish). Owner tanlaydi
-GURUH_RANG_KORINISH = os.environ.get('GURUH_RANG_KORINISH', '1').strip() or '1'
+# 3435 (Owner 2026-11-11 23:10, yakuniy tartib): nomi → ranglar (blok ichida faqat rangga oid: rasmlari) → holati (bitta,
+#     ranglardan pastda) → «Narxi / Цена» → aloqa va tugmalar
 
 
 def guruh_rasm_bormi(g, azolar):
@@ -3666,14 +3665,13 @@ def _guruh_rasmlar(g):
     return [str(u).strip() for u in v if str(u or '').strip()] if isinstance(v, list) else []
 
 
-def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=None, korinish=None):
+def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=None):
     """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>).
     rang_rasm — 3435 ko'rinishi (har rang blokida o'z rasmi); None — GURUH_RANG_RASM. Juft guruhda doim o'chiq."""
     havolalar = havolalar or {}
     # 3189 (A55): juft guruh — telefon + g'ilof / aksessuar (rang emas): «…$ dan» yo'q, har qatorda o'z nomi va narxi
     aralash = len({elon_turi(e, models) == 'phone' for e in azolar}) > 1
     rang_rasm = (GURUH_RANG_RASM if rang_rasm is None else bool(rang_rasm)) and not aralash
-    korinish = str(korinish or GURUH_RANG_KORINISH)
     juft = [belgi_ajrat(u) for u in _guruh_rasmlar(g)]
     if not juft and rang_rasm:
         # 3435: guruh rasmi yo'q — tepaga birinchi (sotuvdagi) rangning 1-rasmi; qolgani rang bloklarida
@@ -3703,9 +3701,9 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=No
     else:
         narx = f'<p><b>{fmt(narxlar[0])}$</b></p>'
     if rang_rasm and faol:
-        # 3435: 1/2 — umumiy narx yo'q (har rangda o'zi); 3 — «Narxi / Цена: …» bitta qator
+        # 3435 (yakuniy): «Narxi / Цена: …» bitta qator, ranglar va holatdan keyin
         narx = ''
-        if korinish == '3' and narxlar:
+        if narxlar:
             n = (f'{fmt(min(narxlar))}$ dan / от {fmt(min(narxlar))}$' if farqli else f'{fmt(narxlar[0])}$')
             narx = f'<p>💰 Narxi / Цена: <b>{n}</b></p>'
 
@@ -3732,16 +3730,14 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=No
             bloklar.append(f'<p>• <s>{nom}</s> — qolmadi / нет</p>')
             continue
         if rang_rasm:
-            # 3435: rang bloki — yopiq holatda nomi va narxi; ochilganda rasmlari (suv belgisi bilan), holati, narxi
+            # 3435 (yakuniy): blok ichida faqat rangga oid — rasmlari (suv belgisi bilan), «Alohida» bo'lsa havola. Yopiq
+            #     holatda nomi; narx farqli bo'lsa — o'z narxi, holat farqli bo'lsa — o'z holati («Holati» so'zisiz)
             p = _narx_son(e)
-            yon = p if (korinish != '3' or farqli) else None   # 3 — narx faqat farqli bo'lsa
-            cuz2, cru2, cem2 = hol(e)
             url = havolalar.get(num) or ''   # «Ranglarni alohida» — rang postiga havola blok ichida
             bloklar.append(
-                f'<details><summary>🎨 {nom}' + (f' — {fmt(yon)}$' if yon else '') + '</summary>'
+                f'<details><summary>🎨 {nom}' + (f' — {fmt(p)}$' if farqli and p else '')
+                + (f' · {html_escape(hol(e)[0])} / {html_escape(hol(e)[1])}' if len(hollar) > 1 else '') + '</summary>'
                 + rich_media(images_of(e)[:10], False, belgi_src(e))
-                + f'<p>{html_escape(cem2)} Holati: <b>{html_escape(cuz2)}</b> / Состояние: <b>{html_escape(cru2)}</b>'
-                + (f'<br/>💰 Narxi / Цена: <b>{fmt(yon)}$</b>' if yon else '') + '</p>'
                 + (f'<p><a href="{html_escape(url)}">📌 Alohida post / Отдельный пост</a></p>' if url else '')
                 + '</details>')
             continue
@@ -3772,10 +3768,7 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=No
     return (
         media
         + f'<p><b>{sarlavha}</b></p>'
-        + ('' if rang_rasm and korinish == '2' else holat)
-        + narx
-        + ranglar
-        + (holat if rang_rasm and korinish == '2' else '')
+        + (ranglar + holat + narx if rang_rasm else holat + narx + ranglar)   # 3435: ranglar → holati → narxi
         + mosligi
         + ('' if rang_rasm else '<p> </p>')   # 3435: ranglar va aloqa orasida bo'sh joy yo'q
         + aloqa
