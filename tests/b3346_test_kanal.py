@@ -82,10 +82,11 @@ bot.kollaj_nusxa_fonda = lambda *a, **kw: None
 bot._uxla = lambda s: None
 bot._fonda = lambda fn, *a: fn(*a)   # fon ishi darhol — natijani tekshirish uchun
 bot.check_init_data = lambda s: bot.ADMIN_ID
-bot.guruh_ol = lambda gid, yangila=False: (({'id': 'g1', 'nomi': 'Anker'}, [ELONLAR['105']], MODELS) if gid == 'g1'
+bot.guruh_ol = lambda gid, yangila=False: (({'id': 'g1', 'nomi': 'Anker', 'rasmlar': ['https://i.ibb.co/x/g1.jpg']}, [ELONLAR['105']], MODELS) if gid == 'g1'
                                            else (None, [], {}))
 bot.guruh_post_qur = lambda g, azolar, models, havolalar=None, shablon=None: f'guruh {len(havolalar or {})}'
 bot._guruh_nomi = lambda g, azolar, models, lang='uz': 'Anker'
+# 3435: rasmsiz guruh posti chiqmaydi — shuning uchun g1 da guruh rasmi bor
 
 
 def tozala():
