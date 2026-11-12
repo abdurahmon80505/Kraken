@@ -10539,6 +10539,9 @@ def _sovga_holat(elonlar, sonlar, ranglar, kel, ogoh):
     return sovga, sovga and not ogoh and not kop
 
 
+_SINOV_BOSH = "🧪 <b>SINOV</b> — admin sinov xaridi (Sheets / Store / Ombor'ga yozilmaydi)\n"   # 3394
+
+
 def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonlar=None, ranglar=None, kel=None, kel_ogoh=False,
                    ogoh=(), tel_ogoh=False):
     """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi).
@@ -10869,7 +10872,10 @@ def _buyurtma_mijozga(uid, b, yangi, havola=''):
 def _sotuv_sheet_yoz(uid, b):
     """BUGUN275: tasdiqlangan buyurtma → Store (Sotuvlar varag'i + e'lon «sotildi»). Store'da (order, num) bo'yicha bir marta
     yoziladi — qayta chaqirish xavfsiz (admin tugmani qayta bossa shu qayta urinish). nik — buyurtma paytidagi username,
-    yo'q bo'lsa Telegram getChat. Raqam/nik logga YOZILMAYDI. True — Store qabul qildi."""
+    yo'q bo'lsa Telegram getChat. Raqam/nik logga YOZILMAYDI. True — Store qabul qildi.
+    3394: sinov (admin) buyurtmasi — Store'ga / Ombor'ga sotuv YOZILMAYDI (True — qayta urinish so'ralmasin)."""
+    if (b or {}).get('sinov'):
+        return True
     try:
         tovar = [{'num': x.get('num'), 'soni': x.get('soni') or 1, 'narx': x.get('narx'), 'chegirma': x.get('chegirma') or 0}
                  for x in (b.get('tovar') or []) if x.get('num')]   # BUGUN287: narx — haqiqiy (kelishilgan), chegirma — 1 donaga
@@ -11426,10 +11432,11 @@ def _chek_admin_matn(b, davomi=False, soz='', yoq=False):
     davomi — 3386: birinchi chekdan keyingi xabar «➕ Qo'shimcha» (tugmasiz). yoq — saytdan hech narsasiz «Yuborish»."""
     o = html_escape(b.get('order', ''))
     izoh = f"\n💬 {html_escape(soz)}" if soz else ''
+    sb = _SINOV_BOSH if b.get('sinov') else ''   # 3394: admin sinov xaridi
     if davomi:
-        return f"➕ <b>Qo'shimcha</b> — №{o}{izoh}"
+        return f"{sb}➕ <b>Qo'shimcha</b> — №{o}{izoh}"
     nom = "Mijoz to'ladim dedi (chek yo'q)" if yoq else 'Chek keldi'
-    return (f"🧾 <b>{nom}</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
+    return (f"{sb}🧾 <b>{nom}</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
             f"👤 {html_escape(b.get('ism') or '—')}{izoh}\n\n"
             f"⏳ To'lov kutilmoqda\n🕒 {_kk_vaqt(time.time())}")
 
@@ -12054,6 +12061,9 @@ async def buyurtma_endpoint(request):
         uid = check_init_data(data.get('initData', ''))
         if not uid:
             return web.json_response({'error': 'Imzo notogri'}, status=401)
+        # 3394: ADMIN sinov xaridi — imzodan olingan ID bo'yicha (brauzer belgisi emas). Butun oqim ishlaydi (adminga xabar «🧪 SINOV»,
+        # mijoz xabari, chek), lekin Sheets / Store'ga hech narsa yozilmaydi (_mijoz_sync_yubor, _sotuv_sheet_yoz), bron qo'yilmaydi
+        sinov = uid == ADMIN_ID
         num = str(data.get('num', '') or '').strip()
         order = str(data.get('order', '') or '').strip().upper()
         ism = re.sub(r'\s+', ' ', str(data.get('name', '') or '')).strip()
@@ -12182,10 +12192,12 @@ async def buyurtma_endpoint(request):
         try:
             tayyor = await loop.run_in_executor(None, _buyurtma_tayyorla, uid, num, order, ism, tel, joy, kurs, qolgan_nums,
                                                 sonlar, ranglar, kel, kel_ogoh, tel_ogoh)
+            if sinov:
+                tayyor['matn'] = _SINOV_BOSH + tayyor['matn']
             # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
             nik = ((_init_data_user(data.get('initData', '')) or {}).get('username') or '')   # BUGUN275: sotuv yozuvi uchun
             await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
-                                       _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor)
+                                       _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor, sinov)
             await loop.run_in_executor(None, _buyurtma_sovga_qoy, uid, order, tayyor)
             _BUYURTMA_KORILGAN[(uid, order)] = hozir
             yetdi, _ = await loop.run_in_executor(
@@ -12198,7 +12210,7 @@ async def buyurtma_endpoint(request):
         loop.run_in_executor(None, _chek_mijozga_xabar, uid, order)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
-        for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
+        for bn in ([] if sinov else [num] + qolgan_nums):   # BUGUN224: savatdagi har tovarga · 3394: sinovda bron yo'q
             b = _bron_olish(bn)
             if not b or b['uid'] == uid:
                 _bron_qoy(bn, uid, order)
@@ -12208,7 +12220,7 @@ async def buyurtma_endpoint(request):
                 loop.run_in_executor(None, _bron_ogoh_yubor, bn, ikkinchi, f"buyurtma berdi (№{order})")
         for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
             _BUYURTMA_KORILGAN.pop(k, None)
-        return web.json_response({'ok': True, 'xabar': yetdi, 'ck': _chek_imzo(order)})   # 3397: to'lov sahifasi kaliti
+        return web.json_response({'ok': True, 'xabar': yetdi, 'ck': _chek_imzo(order), **({'sinov': True} if sinov else {})})   # 3397: to'lov sahifasi kaliti
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -12299,6 +12311,8 @@ def _mijoz_sync_yubor():
                 data = None
             else:
                 b = next((x for x in (m or {}).get('buyurtma', []) if x.get('order') == k[2]), None)
+                if b and b.get('sinov'):
+                    b = None   # 3394: admin sinov xaridi — Sheets'ga (Buyurtmalar / Sharhlar) yozilmaydi, navbatdan o'chadi
                 d = (_sharh_sheet_dict if k[0] == 's' else _buyurtma_sheet_dict)(k[1], b) if b else None   # 3262: 's' — «Sharhlar»
                 data = json.dumps(d, ensure_ascii=False) if d else None
                 par = None
@@ -12489,18 +12503,23 @@ def _mijoz_tovarlar(num, qolgan_nums, sonlar=None, ranglar=None, kel=None):
     return res
 
 
-def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None, nik='', kel=None, xabar=None):
+def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None, nik='', kel=None, xabar=None,
+                        sinov=False):
     """/buyurtma (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi. BUGUN295: adminga xabar yuborilishidan OLDIN —
     admin_xabar 'kutilmoqda', _xabar — tayyor matn (yetmasa fon sikli shuni qayta yuboradi), joy — qayta yasash uchun.
     Sayt zaxirasidan (fon sikli) allaqachon qo'shilgan bo'lsa — matn qo'shiladi, xolos."""
     try:
-        _mijoz_tel_qosh(uid, tel, 'sotib')
+        if not sinov:   # 3394: sinov (admin) — raqam profilga qo'shilmaydi
+            _mijoz_tel_qosh(uid, tel, 'sotib')
         tovar = _mijoz_tovarlar(num, qolgan_nums, sonlar, ranglar, kel)
         narxlar = [None if x['narx'] is None else x['narx'] * x['soni'] for x in tovar]
         with _MIJOZ_LOCK:
             m = _mijoz_ochiq(uid)
             bor = next((b for b in m['buyurtma'] if b.get('order') == order), None)
             if bor:
+                if sinov and not bor.get('sinov'):   # 3394: zaxiradan oldin kelgan bo'lsa ham — sinov belgisi
+                    bor['sinov'] = True
+                    _mijoz_saqlash()
                 if xabar and bor.get('admin_xabar') == 'kutilmoqda':
                     bor['_xabar'] = xabar
                     _mijoz_saqlash()
@@ -12513,7 +12532,7 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                 'order': order, 'ts': time.time(), 'holat': 'kutilmoqda', 'tovar': tovar,
                 'jami': None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
                 'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else '',
-                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}), 'admin_xabar': 'kutilmoqda',
+                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}), 'admin_xabar': 'kutilmoqda', **({'sinov': True} if sinov else {}),
                 '_xabar': xabar, 'tolov': 'naqd' if (joy or {}).get('tolov') == 'naqd' else ''})   # 3420
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _mijoz_saqlash()
@@ -13378,6 +13397,7 @@ def _admin_buyurtma_dict(u, b):
             'nik': b.get('nik', ''), 'chek': b.get('chek') or '', 'yetkaz': _yetkaz_javob(b), 'tahrir_ts': b.get('tahrir_ts'),
             'tolov': 'naqd' if _naqdmi(b) else '',   # 3420
             'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
+            'sinov': bool(b.get('sinov')),   # 3394: 🧪 SINOV — saytda belgi, sanoqqa kirmaydi
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
                        'chegirma': x.get('chegirma') or 0} for x in (b.get('tovar') or [])]}
 
@@ -13607,6 +13627,8 @@ async def _tahrir_xabarlar(uid, order, b):
 
 def _tahrir_store(uid, eski, b):
     """Apps Script buyurtmaTahrir: Buyurtmalar qatori, to'langan bo'lsa Sotuvlar + qoldiq, AdminJurnal. True — Store qabul qildi."""
+    if (b or {}).get('sinov'):
+        return True   # 3394: admin sinov xaridi — Store'ga (Buyurtmalar / Sotuvlar / qoldiq) yozilmaydi
     d = {'order': b.get('order'), 'user_id': str(uid), 'holat': b.get('holat'), 'jami': b.get('jami'), 'kim': 'admin',
          'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
          'eski': [{'num': x.get('num'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in eski or []],
