@@ -3,9 +3,9 @@
 
 Ishga tushirish:  python tests/b3466-bot.py <bot papkasi>   (sukut — BOT_PAPKA yoki Kraken_bot)
   Internetsiz — soxta Telegram / Sheets, soxta mijoz 42 va admin 777.
-Tekshiriladi: admin sinov xaridi /admin_buyurtmalar ro'yxatida YO'Q (mijozniki bor); 3394 dan oldin yozilgan admin yozuvi
-(Sheets / fayl / sayt zaxirasidan) — sinov bo'ladi, Sheets'ga qayta yozilmaydi, admin nomidagi bron ochiladi; mijoz yozuvi va
-broni — o'zgarishsiz.
+Tekshiriladi: admin sinov xaridi /admin_buyurtmalar ro'yxatida YO'Q (mijozniki bor); 3490: eski admin yozuvi (Sheets / fayl /
+sayt zaxirasidan) — botga OLINMAYDI / o'chadi, Sheets'ga qayta yozilmaydi, admin nomidagi bron ochiladi, profil raqami qoladi;
+mijoz yozuvi va broni — o'zgarishsiz.
 """
 import os
 import sys
@@ -38,8 +38,8 @@ for _k in ('ADMIN_GURUH', 'RENDER_INSTANCE_ID', 'ESKI_BOT_TOKEN'):
 
 import bot  # noqa: E402
 
-if not hasattr(bot, '_admin_sinov_belgila'):
-    print("  · 3466: o'tkazildi — bu bot.py da 3466 tuzatishi yo'q (GitHub Kraken bot bilan: BOT_PAPKA=<klon> yoki argument)")
+if not hasattr(bot, '_admin_buyurtma_tozala'):
+    print("  · 3466: o'tkazildi — bu bot.py da 3490 tuzatishi yo'q (GitHub Kraken bot bilan: BOT_PAPKA=<klon> yoki argument)")
     sys.exit(0)
 
 logging.disable(logging.CRITICAL)
@@ -93,6 +93,11 @@ def _yubor(uid, num, order, *a, tayyor=None, **k):
 
 
 bot._buyurtma_yubor = _yubor
+bot._admin_sinov_xabar = lambda matn, *a, **k: (admin_xabar.append(matn), True)[1]
+
+
+def _yoq(uid, order):
+    return not any(x.get('order') == order for x in bot._mijoz_ol(uid)['buyurtma'])
 
 
 def _imzo(uid, til='uz'):
@@ -142,7 +147,7 @@ def t_royxat():
     assert kod == 200 and j.get('ok'), (kod, j)
     orders = [x['order'] for x in j['buyurtma']]
     assert orders == ['MIJ010'], orders            # admin sinovi ro'yxatda yo'q
-    assert _b(ADMIN, 'SIN010').get('sinov') is True   # yozuv botda qoladi (chek / to'lov sahifasi ishlaydi)
+    assert _yoq(ADMIN, 'SIN010')                  # 3490: botda ham yozuv yo'q
     kod, _ = asyncio.run(bot.admin_buyurtmalar_endpoint(_So({'initData': _imzo(MIJOZ)}))).status, None
     assert kod == 401, kod
 
@@ -153,11 +158,14 @@ def t_sheets_eski():
     bot._BRON.clear()
     bot._BRON['153'] = {'uid': ADMIN, 'order': 'SJ8N8H', 'ts': time.time()}
     bot._BRON['261'] = {'uid': MIJOZ, 'order': 'MIJ020', 'ts': time.time()}
+    bot._MIJOZ[str(ADMIN)] = {'tels': {'akkaunt': '+998901112233'}, 'buyurtma': [{'order': 'FAYL01', 'ts': 2, 'holat': 'kutilmoqda'}]}
     bot._mijoz_sheet_birlash({'tels': [], 'buyurtma': [
         {'user_id': str(ADMIN), 'order': 'SJ8N8H', 'ts': 1794486463, 'holat': 'kutilmoqda', 'tovar': [{'num': '153'}], 'jami': 350},
         {'user_id': str(MIJOZ), 'order': 'MIJ020', 'ts': 1794486000, 'holat': 'kutilmoqda', 'tovar': [{'num': '261'}], 'jami': 25}]})
-    assert _b(ADMIN, 'SJ8N8H').get('sinov') is True
+    assert _yoq(ADMIN, 'SJ8N8H') and _yoq(ADMIN, 'FAYL01'), bot._mijoz_ol(ADMIN)
+    assert bot._mijoz_ol(ADMIN)['tels'].get('akkaunt') == '+998901112233'   # profil raqami — buyurtma emas, qoladi
     assert 'sinov' not in _b(MIJOZ, 'MIJ020')
+    assert not [k for k in bot._MIJOZ_SYNC if k[0] != 't' and k[1] == str(ADMIN)], bot._MIJOZ_SYNC
     assert '153' not in bot._BRON and bot._BRON.get('261', {}).get('uid') == MIJOZ, bot._BRON
     assert [x['order'] for x in _royxat()[1]['buyurtma']] == ['MIJ020']
     bot._mijoz_sync_belgila('b', str(ADMIN), 'SJ8N8H')   # masalan, admin bekor qildi — navbatga tushdi
@@ -172,7 +180,9 @@ def t_fayl_zaxira():
     with open(bot.MIJOZ_FAYL, 'w', encoding='utf-8') as f:
         json.dump({str(ADMIN): {'tels': {}, 'buyurtma': [{'order': 'ESKI01', 'ts': 1, 'holat': 'kutilmoqda'}]}}, f)
     bot._mijoz_yuklash()
-    assert _b(ADMIN, 'ESKI01').get('sinov') is True
+    assert _yoq(ADMIN, 'ESKI01')                  # 3490: fayldagi eski admin buyurtmasi o'chadi
+    with open(bot.MIJOZ_FAYL, encoding='utf-8') as f:
+        assert 'ESKI01' not in f.read()
     asl = bot._bron_olish
     bot._bron_olish = lambda num: bot._BRON.get(str(num))
     bot._bron_qoy = lambda num, uid, order: bot._BRON.__setitem__(str(num), {'uid': uid, 'order': order, 'ts': 0})
@@ -180,13 +190,13 @@ def t_fayl_zaxira():
         {'user_id': str(ADMIN), 'order': 'ZAX001', 'ts': 5, 'tovar': [{'num': '300'}]},
         {'user_id': str(MIJOZ), 'order': 'ZAX002', 'ts': 6, 'tovar': [{'num': '301'}]}]})
     bot._bron_olish = asl
-    assert n == 2, n
-    assert _b(ADMIN, 'ZAX001').get('sinov') is True and 'sinov' not in _b(MIJOZ, 'ZAX002')
+    assert n == 1, n
+    assert _yoq(ADMIN, 'ZAX001') and 'sinov' not in _b(MIJOZ, 'ZAX002')
     assert '300' not in bot._BRON and bot._BRON.get('301', {}).get('uid') == MIJOZ, bot._BRON
 
 
-sinov("admin sinov xaridi /admin_buyurtmalar ro'yxatida yo'q, mijozniki bor; yozuv botda qoladi", t_royxat)
-sinov("Sheets'dagi eski admin qatori (SJ8N8H) — sinov, ro'yxatda yo'q, Sheets'ga qayta yozilmaydi, bron ochiladi", t_sheets_eski)
-sinov("fayl / sayt zaxirasidan kelgan admin buyurtmasi — sinov, bron yo'q; mijozniki o'zgarishsiz", t_fayl_zaxira)
+sinov("admin sinov xaridi /admin_buyurtmalar ro'yxatida yo'q, botda ham yo'q; mijozniki bor", t_royxat)
+sinov("Sheets'dagi eski admin qatori (SJ8N8H) — botga olinmaydi, Sheets'ga qayta yozilmaydi, bron ochiladi, raqam qoladi", t_sheets_eski)
+sinov("fayl / sayt zaxirasidan kelgan admin buyurtmasi — o'chadi, bron yo'q; mijozniki o'zgarishsiz", t_fayl_zaxira)
 print('  %s 3466 bot: %s' % ('✓' if not xato else '✗', '0 xato' if not xato else '%d xato' % xato))
 sys.exit(1 if xato else 0)

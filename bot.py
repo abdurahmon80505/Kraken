@@ -144,6 +144,12 @@ _elon_navbat = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_
 # ── ELON YUBORISH ─────────────────────────────────────────
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
 
+
+def _admin_mi(uid):
+    """3490: Owner (ADMIN_ID — yagona sozlama) buyurtmasi HECH QAYERGA yozilmaydi: «Buyurtmalarim», Sheets, bron, Store / Ombor,
+    mijoz xabari — yo'q; faqat adminga «🧪 SINOV» xabari. Har yozish nuqtasi shu tekshiruvdan o'tadi."""
+    return str(uid or '').strip() == str(ADMIN_ID)
+
 # ── B33 (BUGUN42): admin xabarlari — alohida yopiq guruhda, mavzular (Topics) bo'yicha ──
 # Render env ADMIN_GURUH = "-1001234567890 post=12 olx=13 stat=14 mijoz=15 kollaj=16" — guruhda /guruh buyrug'i
 # mavzularni o'zi ochadi va shu qatorni yozib beradi. Env bo'sh — hammasi eskicha admin lichkasiga (ADMIN_ID).
@@ -11045,6 +11051,8 @@ def _bron_olish(num):
 
 
 def _bron_qoy(num, uid, order):
+    if _admin_mi(uid):   # 3490: admin sinovi — tovar band qilinmaydi
+        return
     _BRON[str(num)] = {'uid': uid, 'order': order, 'ts': time.time()}
     _bron_saqlash()
 
@@ -11695,7 +11703,7 @@ def _sotuv_sheet_yoz(uid, b):
     yoziladi — qayta chaqirish xavfsiz (admin tugmani qayta bossa shu qayta urinish). nik — buyurtma paytidagi username,
     yo'q bo'lsa Telegram getChat. Raqam/nik logga YOZILMAYDI. True — Store qabul qildi.
     3394: sinov (admin) buyurtmasi — Store'ga / Ombor'ga sotuv YOZILMAYDI (True — qayta urinish so'ralmasin)."""
-    if (b or {}).get('sinov'):
+    if (b or {}).get('sinov') or _admin_mi(uid):   # 3490: admin — hech qachon
         return True
     try:
         tovar = [{'num': x.get('num'), 'soni': x.get('soni') or 1, 'narx': x.get('narx'), 'chegirma': x.get('chegirma') or 0}
@@ -12130,6 +12138,8 @@ def _chek_mijozga_xabar(uid, order):
     """Buyurtma tushganda mijozga bitta xabar (har buyurtmaga bir marta: mijoz_xabar). /start bosmagan bo'lsa Telegram yubormaydi —
     qayta urinilmaydi (saytdagi «To'landim» tugmasi botni ochadi va o'sha paytda xabar o'zi chiqadi).
     3295: sovg'a — to'lov tugmalarisiz xabar; tasdiqlangan bo'lsa shu yerda Store'ga $0 sotuv (mijoz xabari yetmasa ham)."""
+    if _admin_mi(uid):   # 3490: admin sinovi — «buyurtma qabul qilindi / 💳 To'lash» xabari yo'q
+        return
     with _MIJOZ_LOCK:
         b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
         sovga = bool(b and b.get('sovga'))
@@ -12750,6 +12760,22 @@ def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
     return False
 
 
+def _admin_sinov_xabar(matn, kutish=(0, 2, 5)):
+    """3490: admin sinov xaridi — adminga oddiy xabar (tugmasiz: yozuv yo'q, bosadigan narsa yo'q). 3 urinish. True/False."""
+    for k in kutish:
+        if k:
+            time.sleep(k)
+        natija, _ = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML',
+                                           'link_preview_options': {'is_disabled': True}}, timeout=15, urinish=2)
+        if natija == 'xato':
+            natija, _ = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': _html.unescape(re.sub(r'<[^>]+>', '', matn))},
+                               timeout=15, urinish=2)
+        if natija == 'yuborildi':
+            return True
+    logger.error('admin sinov xabari yetmadi')
+    return False
+
+
 def _buyurtma_tayyor_yozuvdan(uid, b):
     """Xabar matni saqlanmagan (bot qayta ishga tushgan / faqat sayt zaxirasi) — yozuvning o'zidan yasaladi."""
     joy = dict(b.get('joy') or {})
@@ -12797,7 +12823,7 @@ def _buyurtma_zaxira_birlash(j):
     with _MIJOZ_LOCK:
         for z in (j.get('buyurtma') or []):
             uid, order = str(z.get('user_id') or ''), str(z.get('order') or '').upper()
-            if not uid.isdigit() or not re.fullmatch(r'[A-Z0-9]{4,12}', order):
+            if not uid.isdigit() or not re.fullmatch(r'[A-Z0-9]{4,12}', order) or _admin_mi(uid):   # 3490: admin — olinmaydi
                 continue
             m = _mijoz_ochiq(uid)
             if any(x.get('order') == order for x in m['buyurtma']):
@@ -12815,12 +12841,11 @@ def _buyurtma_zaxira_birlash(j):
             m['buyurtma'].sort(key=lambda x: x.get('ts') or 0, reverse=True)
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _BUYURTMA_KORILGAN[(int(uid), order)] = time.time()
-            for x in ([] if uid == str(ADMIN_ID) else z.get('tovar') or []):   # bron — /buyurtma dagi kabi · 3466: admin — yo'q
+            for x in (z.get('tovar') or []):   # bron — /buyurtma dagi kabi (admin — yuqorida o'tkazib yuborilgan)
                 if isinstance(x, dict) and x.get('num') and not _bron_olish(x['num']):
                     _bron_qoy(str(x['num']), int(uid), order)
             yangi += 1
         if yangi:
-            _admin_sinov_belgila()   # 3466
             _mijoz_saqlash()
     return yangi
 
@@ -12906,9 +12931,9 @@ async def buyurtma_endpoint(request):
         uid = check_init_data(data.get('initData', ''))
         if not uid:
             return web.json_response({'error': 'Imzo notogri'}, status=401)
-        # 3394: ADMIN sinov xaridi — imzodan olingan ID bo'yicha (brauzer belgisi emas). Butun oqim ishlaydi (adminga xabar «🧪 SINOV»,
-        # mijoz xabari, chek), lekin Sheets / Store'ga hech narsa yozilmaydi (_mijoz_sync_yubor, _sotuv_sheet_yoz), bron qo'yilmaydi
-        sinov = uid == ADMIN_ID
+        # 3394 / 3490: ADMIN sinov xaridi — imzodan olingan ID bo'yicha (brauzer belgisi emas). Faqat adminga «🧪 SINOV» xabari;
+        # «Buyurtmalarim», Sheets, bron, Store / Ombor, mijoz xabari — hech biri yo'q
+        sinov = _admin_mi(uid)
         num = str(data.get('num', '') or '').strip()
         order = str(data.get('order', '') or '').strip().upper()
         ism = re.sub(r'\s+', ' ', str(data.get('name', '') or '')).strip()
@@ -13029,8 +13054,10 @@ async def buyurtma_endpoint(request):
         try:
             tayyor = await loop.run_in_executor(None, _buyurtma_tayyorla, uid, num, order, ism, tel, joy, kurs, qolgan_nums,
                                                 sonlar, ranglar, kel, kel_ogoh, tel_ogoh)
-            if sinov:
-                tayyor['matn'] = _SINOV_BOSH + tayyor['matn']
+            if sinov:   # 3490: admin — faqat «🧪 SINOV» xabari (tugmasiz); yozuv / bron / mijoz xabari / Sheets — YO'Q
+                _BUYURTMA_KORILGAN[(uid, order)] = hozir
+                yetdi = await loop.run_in_executor(None, _admin_sinov_xabar, _SINOV_BOSH + tayyor['matn'])
+                return web.json_response({'ok': True, 'sinov': True, 'xabar': yetdi})
             # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
             nik = ((_init_data_user(data.get('initData', '')) or {}).get('username') or '')   # BUGUN275: sotuv yozuvi uchun
             await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
@@ -13088,20 +13115,23 @@ def _mijoz_yuklash():
         pass
     except Exception as e:
         logger.error(f'mijoz yuklash: {e}')
-    _admin_sinov_belgila()
+    if _admin_buyurtma_tozala():
+        _mijoz_saqlash()
 
 
-def _admin_sinov_belgila():
-    """3466: ADMIN_ID ning HAR buyurtmasi — sinov (3394 dan OLDIN yozilganlari ham: fayl / Sheets / sayt zaxirasidan kelgani).
-    Sinov yozuvi Sheets'ga qayta yozilmaydi (_mijoz_sync_yubor), Store'ga sotuv tushmaydi, admin ro'yxatida ko'rinmaydi; admin
-    nomidagi bronlar ochiladi (tovar yana sotuvda). NEGA: Owner 2026-11-13 03:33 — «admin buyurtmasi jadvalga / ro'yxatga /
-    bandlikka / Ombor'ga yozilmasin, faqat 🧪 sinov xabari». _MIJOZ_LOCK ostida yoki ishga tushishda chaqiriladi."""
-    n = 0
-    for b in (_MIJOZ.get(str(ADMIN_ID)) or {}).get('buyurtma') or []:
-        if not b.get('sinov'):
-            b['sinov'] = True
-            n += 1
-    bo = [k for k, v in _BRON.items() if str(v.get('uid')) == str(ADMIN_ID)]
+def _admin_buyurtma_tozala():
+    """3490: ADMIN_ID ning HAMMA buyurtmasi xotiradan / fayldan O'CHADI (3466 da faqat «sinov» belgisi qo'yilardi — Owner
+    «Buyurtmalarim»da baribir ko'rardi, 2026-11-13 04:05 sinovi oddiy buyurtma bo'lib tushdi). Profil raqamlari (tels) qoladi.
+    Admin nomidagi bronlar ochiladi (tovar yana sotuvda), Sheets navbatidagi admin buyurtmalari tashlanadi. Qaytaradi — o'chgan soni.
+    _MIJOZ_LOCK ostida yoki ishga tushishda chaqiriladi."""
+    m = _MIJOZ.get(str(ADMIN_ID))
+    n = len((m or {}).get('buyurtma') or [])
+    if n:
+        m['buyurtma'] = []
+    with _MIJOZ_SYNC_QULF:
+        for k in [k for k in _MIJOZ_SYNC if k[0] != 't' and _admin_mi(k[1])]:
+            _MIJOZ_SYNC.discard(k)
+    bo = [k for k, v in _BRON.items() if _admin_mi(v.get('uid'))]
     for k in bo:
         _BRON.pop(k, None)
     if bo:
@@ -13166,7 +13196,7 @@ def _mijoz_sync_yubor():
                        'dostavka': (m or {}).get('tels', {}).get('dostavka', '')}
                 data = None
             else:
-                b = next((x for x in (m or {}).get('buyurtma', []) if x.get('order') == k[2]), None)
+                b = None if _admin_mi(k[1]) else next((x for x in (m or {}).get('buyurtma', []) if x.get('order') == k[2]), None)
                 if b and b.get('sinov'):
                     b = None   # 3394: admin sinov xaridi — Sheets'ga (Buyurtmalar / Sharhlar) yozilmaydi, navbatdan o'chadi
                 d = (_sharh_sheet_dict if k[0] == 's' else _buyurtma_sheet_dict)(k[1], b) if b else None   # 3262: 's' — «Sharhlar»
@@ -13207,7 +13237,7 @@ def _mijoz_sheet_birlash(j):
                     m['tels'].pop(tur, None)
         for b in (j.get('buyurtma') or []):
             uid, order = str(b.get('user_id') or ''), str(b.get('order') or '')
-            if not uid or not order:
+            if not uid or not order or _admin_mi(uid):   # 3490: Sheets'da qolgan admin qatori — xotiraga olinmaydi
                 continue
             sheet_buy.add((uid, order))
             m = _mijoz_ochiq(uid)
@@ -13240,6 +13270,7 @@ def _mijoz_sheet_birlash(j):
                 m['buyurtma'][i] = dict(m['buyurtma'][i], **yozuv)   # BUGUN295: faqat botdagi (nik, joy, _xabar) saqlanadi
             else:
                 m['buyurtma'].append(yozuv)
+        _admin_buyurtma_tozala()   # 3490: fayldan kelgan eski admin buyurtmalari ham — Sheets'ga qayta yozilmasin
         for uid, m in _MIJOZ.items():
             m['buyurtma'].sort(key=lambda x: x.get('ts') or 0, reverse=True)
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
@@ -13248,7 +13279,6 @@ def _mijoz_sheet_birlash(j):
             for x in m['buyurtma']:
                 if (uid, x.get('order')) not in sheet_buy:
                     _mijoz_sync_belgila('b', uid, x.get('order'))
-        _admin_sinov_belgila()   # 3466: Sheets'da qolgan eski admin qatori — sinov (ro'yxatda yo'q, bron yo'q)
         _mijoz_saqlash()
         return len(_MIJOZ), sum(len(m['buyurtma']) for m in _MIJOZ.values())
 
@@ -13365,9 +13395,10 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
     """/buyurtma (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi. BUGUN295: adminga xabar yuborilishidan OLDIN —
     admin_xabar 'kutilmoqda', _xabar — tayyor matn (yetmasa fon sikli shuni qayta yuboradi), joy — qayta yasash uchun.
     Sayt zaxirasidan (fon sikli) allaqachon qo'shilgan bo'lsa — matn qo'shiladi, xolos."""
+    if sinov or _admin_mi(uid):   # 3490: admin — «Buyurtmalarim»ga ham, raqam profilga ham yozilmaydi
+        return
     try:
-        if not sinov:   # 3394: sinov (admin) — raqam profilga qo'shilmaydi
-            _mijoz_tel_qosh(uid, tel, 'sotib')
+        _mijoz_tel_qosh(uid, tel, 'sotib')
         tovar = _mijoz_tovarlar(num, qolgan_nums, sonlar, ranglar, kel)
         narxlar = [None if x['narx'] is None else x['narx'] * x['soni'] for x in tovar]
         with _MIJOZ_LOCK:
