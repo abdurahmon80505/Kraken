@@ -68,7 +68,7 @@ assert [bot._tc_soat(x) for x in bot._tc_slotlar(h2)] == ['10:12', '12:36', '15:
 
 # tozalash: noto'g'ri holat — sukut / chegarada
 t = bot._tc_tozala({'kun': 99, 'bosh': 22, 'oxir': 5, 'b': {'telefon': {'on': 0, 'n': 50, 'u': 'b'}, 'yoq_bolim': {}}})
-assert t['kun'] == 20 and (t['bosh'], t['oxir']) == (9, 21) and t['b']['telefon'] == {'on': 0, 'n': 20, 'u': 'b'}
+assert t['kun'] == 5 and (t['bosh'], t['oxir']) == (9, 21) and t['b']['telefon'] == {'on': 0, 'n': 5, 'u': 'b'}
 assert 'yoq_bolim' not in t['b']
 
 # TashkentComp'dan kelgan xabar — bot jim (username katta-kichik harf farqsiz)
@@ -108,33 +108,113 @@ n = len(so_rov)
 assert bot.tashco_yubor('12')[0] is None and len(so_rov) == n, 'sotilgan — yuborilmaydi'
 assert bot.tashco_link(77) == 'https://t.me/TashkentComp/77'
 
-# 1 ta sinovdan keyin — Owner «Ko'rdim» demaguncha ikkinchisi yo'q, avtomat yoqilmaydi
+# Jasur modeli: bot TashkentComp'ga o'zi yozmaydi — Jasurga ish beradi; 1 ta sinovdan keyin Owner «Ko'rdim» demaguncha to'xtaydi
 bot.tashco_saqla = lambda: True
 bot.tashco_panel = lambda yangi=False: True
 bot._TC_JOY['yuklandi'] = True
-bot.tashco_tugma(0, 'tc:yoq')
-assert not bot._TC_JOY['h']['yoq'], 'sinovsiz yoqilmasin'
-bot.tashco_tugma(0, 'tc:kor')
-assert not bot._TC_JOY['h']['korildi'], "sinov yuborilmasdan «Ko'rdim» ishlamasin"
+bot.tashco_yukla = lambda: True
+bot.kanal_manbalari = lambda elon: ['https://x/1.jpg']
+bot.build_rich_html = lambda *a, **k: ('<p><b>Apex</b> 10$<br>Holati a\'lo</p><tg-slideshow><img src="x"></tg-slideshow>'
+                                       '<tg-button-row><tg-button url="https://t.me/b?startapp=e15">🛒 Saytda</tg-button>'
+                                       '</tg-button-row><a href="tel:+998">+998</a>')
+assert bot._tc_amal('yoq') == (False, '') and not bot._TC_JOY['h']['yoq'], 'sinovsiz yoqilmasin'
+assert bot._tc_amal('kor') == (False, '') and not bot._TC_JOY['h']['korildi'], "sinovsiz «Ko'rdim» ishlamasin"
 bot._ELON_CACHE['by_num'] = {'15': by['15']}
-bot.tashco_bir()
-assert bot._TC_JOY['h']['sinov'].get('mid') == 77, bot._TC_JOY['izoh']
 n = len(so_rov)
 bot.tashco_bir()
-assert len(so_rov) == n and 'allaqachon' in bot._TC_JOY['izoh'], 'ikkinchisi ketmasin'
+ish = bot._TC_JOY['h']['ish']
+assert ish['num'] == 15 and ish['holat'] == 'kut' and len(so_rov) == n, (ish, bot._TC_JOY['izoh'])
+bot.tashco_bir()
+assert 'navbatida' in bot._TC_JOY['izoh'], 'navbatda ish bor — ikkinchisi qo\'yilmasin'
+v = bot.tashco_ish_ber()['ish']
+assert v['num'] == 15 and v['nishon'] == '@TashkentComp' and v['thread'] == 917420 and v['usul'] == 'b', v
+assert v['rasmlar'] == ['https://x/1.jpg'] and '<b>Apex</b>' in v['matn'] and 'tg-' not in v['matn'], v['matn']
+assert 'tel:' not in v['matn'] and '🔗 <a href="https://t.me/b?startapp=e15">' in v['matn'], v['matn']
+assert bot.tashco_ish_ber()['ish'] is None, 'bitta ish ikki marta berilmasin'
+assert not bot.tashco_natija('99', 5, 'b')['ok'], 'boshqa raqam natijasi qabul qilinmasin'
+bot.tashco_natija('15', 501, 'b')
+h = bot._TC_JOY['h']
+assert h['sinov']['mid'] == 501 and not h['ish'] and bot._tc_bugun(h)['s'] == 1 and h['log'].get('15')
+assert so_rov[-1][0] == 'sendMessage' and 'TashkentComp/501' in so_rov[-1][1]['text'], 'Owner lichkasiga havola'
+bot.tashco_bir()
+assert 'allaqachon' in bot._TC_JOY['izoh'] and not h['ish'], 'Ko\'rdim\'siz ikkinchisi yo\'q'
 bot.tashco_tick()
-assert len(so_rov) == n, "Ko'rdim'siz avtomat ketmasin"
-bot.tashco_tugma(0, 'tc:kor')
-bot.tashco_tugma(0, 'tc:yoq')
-assert bot._TC_JOY['h']['korildi'] and bot._TC_JOY['h']['yoq']
-# avtomat: oxirgi yuborilgandan 30 daqiqa o'tmagan — kutadi
+assert not h['ish'], "Ko'rdim'siz avtomat yo'q"
+# 3452: avto navbat o'chiq — «Ko'rdim» dan keyin ham yoqilmaydi, tick hech narsa qo'ymaydi
+assert bot.TASHCO_AVTO is False
+assert bot._tc_amal('kor')[0] and h['korildi'] and bot._tc_amal('yoq') == (False, '') and not h['yoq']
+assert 'faqat «1 ta yuborish»' in bot._TC_JOY['izoh']
+h['yoq'] = True   # eski holatda yoqilgan qolgan bo'lsa ham
 bot._ELON_CACHE['by_num'] = {'15': by['15'], '10': by['10']}
-bot._TC_JOY['h']['bosh'], bot._TC_JOY['h']['oxir'] = 0, 24
-bot._tc_soniya = lambda: 86000   # 23:53 — barcha slot o'tgan (sinov soatga bog'liq bo'lmasin)
+h['bosh'], h['oxir'] = 0, 24
+bot._tc_soniya = lambda: 86000
+h['oxirgi'][-1][0] -= 3600
 bot.tashco_tick()
-assert len(so_rov) == n, '30 daqiqa ichida ikkinchisi ketmasin'
-bot._TC_JOY['h']['oxirgi'][-1][0] -= 3600
+assert not h['ish'], "3452: avto o'chiq — Jasurga ish qo'yilmasin"
+h['oxirgi'][-1][0] += 3600
+# quyidagi avtomat kodi turibdi (TASHCO_AVTO=True qilinsa qaytadi) — shuni tekshiradi
+bot.TASHCO_AVTO = True
+h['yoq'] = False
+assert bot._tc_amal('yoq')[0] and h['korildi'] and h['yoq']
+# avtomat: 30 daqiqa oraliq, keyin Jasurga ish
+bot._ELON_CACHE['by_num'] = {'15': by['15'], '10': by['10']}
+h['bosh'], h['oxir'] = 0, 24
+bot._tc_soniya = lambda: 86000
 bot.tashco_tick()
-assert len(so_rov) == n + 1 and so_rov[-1][1]['message_thread_id'] == 908147, so_rov[-1]
-assert bot._TC_JOY['h']['log'].get('10')
-print('OK')
+assert not h['ish'], '30 daqiqa ichida ikkinchisi yo\'q'
+h['oxirgi'][-1][0] -= 3600
+bot.tashco_tick()
+assert h['ish']['num'] == 10 and h['ish']['k'] == 'telefon', h['ish']
+# xato natija — bugun qayta urinilmaydi; eskirgan ish bekor
+bot.tashco_ish_ber()
+bot.tashco_natija('10', None, 'b', 'CHAT_WRITE_FORBIDDEN')
+assert not h['ish'] and h['log']['10'] > time.time() - bot.TASHCO_HAFTA and 'yuborilmadi' in bot._TC_JOY['izoh']
+bot._tc_ish_qoy(h, 10, 'telefon', 'avto')
+h['ish']['ts'] -= bot.TASHCO_ISH_KUT + 1
+assert bot._tc_ish_eskir(h) and not h['ish']
+bot._tc_ish_qoy(h, 10, 'telefon', 'avto')
+h['ish'].update(holat='berildi', bt=time.time() - bot.TASHCO_ISH_BERILDI - 1)
+assert bot._tc_ish_eskir(h) and not h['ish']
+# kunlik chegara — 5 dan oshmaydi
+assert bot._tc_tozala({'kun': 9})['kun'] == 5
+for _ in range(9):
+    bot._tc_amal('kun+')
+assert h['kun'] <= 5
+kb = bot._tc_bugun(h)
+kb['s'] = h['kun']
+h['oxirgi'][-1][0] -= 7200
+bot.tashco_bir()
+assert 'chegara' in bot._TC_JOY['izoh'] and not h['ish']
+
+# Jasur endpoint — kalitsiz 401
+import json as _j  # noqa: E402
+
+
+class Rq:
+    def __init__(self, d):
+        self.d = d
+
+    async def json(self):
+        return self.d
+
+
+bot.BOT_TOKEN = bot.BOT_TOKEN or 'sinov-token'
+r = asyncio.run(bot.tashco_jasur_endpoint(Rq({'kalit': 'xato', 'amal': 'ol'})))
+assert r.status == 401
+r = asyncio.run(bot.tashco_jasur_endpoint(Rq({'kalit': bot.tashco_jasur_kalit(), 'amal': 'ol'})))
+assert r.status == 200 and _j.loads(r.body)['ok']
+assert len(bot.tashco_jasur_kalit()) == 32
+
+# vidjet: holat ≤1024 B, HTML ≤32768 B va zlib ≤4096 B; widget_query — ALLOWED_UPDATES da
+import zlib  # noqa: E402
+h['oxirgi'] = [[int(time.time()), 10000 + i, 'telefon', 1234567, 'f'] for i in range(10)]
+bot._TC_JOY['izoh'] = 'x' * 900
+d = bot._tc_holat_json(h)
+assert len(d.encode()) <= 1024 and _j.loads(d)['n'] == h['kun'], len(d.encode())
+assert len(bot.TASHCO_VIDJET.encode()) <= 32768 and len(zlib.compress(bot.TASHCO_VIDJET.encode(), 9)) <= 4096
+assert 'widget_query' in bot.ALLOWED_UPDATES
+# widget_query: admin emas — javob bo'sh, amal yo'q
+so_rov.clear()
+asyncio.run(bot.tashco_vidjet_sorov({'id': 'q1', 'from': {'id': 5}, 'chat': {'id': 5}, 'message_id': 9, 'data': 'yoq'}))
+assert so_rov[-1][0] == 'answerWidgetQuery' and 'data' not in so_rov[-1][1]
+print('OK', len(zlib.compress(bot.TASHCO_VIDJET.encode(), 9)), 'B')
