@@ -2394,7 +2394,9 @@ def izoh_html(elon):
     ru = izoh_matni(elon, 'ru')
     if not uz:
         return ''
-    matn = html_escape(uz) + (f'<br/><br/>{html_escape(ru)}' if ru and ru != uz else '')
+    # 3421 (Owner 2026-11-12): uz va ru orasida BITTA bo'sh qator. `<br/><br/>` (matnda «\n\n») Telegram rich'da paragraf
+    #     bo'linishi + bo'sh qator bo'lib ikki qatordek ko'rinardi; \u00a0 li qator — paragraf bo'linmaydi, bitta qator joy
+    matn = html_escape(uz) + (f'<br/>\u00a0<br/>{html_escape(ru)}' if ru and ru != uz else '')
     return f'<blockquote expandable>📝 Izoh / Примечание<br/>{matn}</blockquote>'
 
 def elon_yonalishlar(elon, models_by_id):
