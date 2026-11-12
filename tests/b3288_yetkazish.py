@@ -256,13 +256,13 @@ k, j = chaqir(bot.buyurtma_sharh_endpoint, {'initData': str(MIJOZ), 'order': 'TE
 sinov('ikkinchi sharh — takror, eskisi qoladi', k == 200 and j.get('takror') and yozuv('TEST01')['yetkaz']['sharh']['baho'] == 4,
       (k, j))
 
-# ── 7. admin «🔒 Yopish», keyin mijoz sharhi baribir yoziladi ──
+# ── 7. admin yopadi (3420: «🔕 Baho so'ramay yopish»), keyin mijoz sharhi baribir yoziladi ──
 SOROV.clear()
 k, j = chaqir(bot.admin_buyurtma_endpoint, {'initData': str(ADMIN), 'uid': str(MIJOZ), 'order': 'TEST02', 'amal': 'yop'})
 sinov("admin yopish — 200, yopildi, yop_kim 'admin'", k == 200 and j.get('holat') == 'yopildi' and j['yetkaz'].get('yop_kim') == 'admin',
       (k, j))
 s = oxirgi('sendMessage', MIJOZ)
-sinov('mijozga «🔒 … закрыт»', s and 'закрыт' in s[1]['text'], repr(s))
+sinov("mijozga «✅ … завершён» (3420: «🔒 закрыт» o'rniga)", s and 'завершён' in s[1]['text'] and '🔒' not in s[1]['text'], repr(s))
 k, j = chaqir(bot.buyurtma_sharh_endpoint, {'initData': str(MIJOZ), 'order': 'TEST02', 'baho': 5})
 sinov('yopilgandan keyin sharh — 200 (holat yopildi qoladi)', k == 200 and j.get('holat') == 'yopildi'
       and yozuv('TEST02')['yetkaz']['sharh']['baho'] == 5, (k, j))
@@ -274,9 +274,11 @@ yangi('TEST07', holat='yolda')
 kod, b = bot._buyurtma_holat_qoy(MIJOZ, 'TEST07', 'yetkazildi')
 sinov("bot tugmasi «Yetkazildi» — qabul_kim 'admin'", kod == 'ok' and b['yetkaz'].get('qabul_kim') == 'admin', repr(b))
 kod, b = bot._buyurtma_holat_qoy(MIJOZ, 'TEST07', 'yopildi')
-sinov("bot tugmasi «🔒 Yopish» — yopildi, yop_kim 'admin'", kod == 'ok' and b['holat'] == 'yopildi' and b['yetkaz'].get('yop_kim') == 'admin')
+sinov("bot tugmasi «🔕 Baho so'ramay yopish» — yopildi, yop_kim 'admin'", kod == 'ok' and b['holat'] == 'yopildi' and b['yetkaz'].get('yop_kim') == 'admin')
 kl = bot._buyurtma_klava(MIJOZ, 'TEST07', 'yetkazildi', [])
-sinov('admin klaviaturasida «🔒 Yopish» (3301: yetkazilgach)', '🔒' in json.dumps(kl, ensure_ascii=False), repr(kl))
+sinov("admin klaviaturasida «🔕 Baho so'ramay yopish» (3301: yetkazilgach; 3420)",
+      {'text': "🔕 Baho so'ramay yopish", 'callback_data': f'bh:yopildi:{MIJOZ}:TEST07'} in [t for q in kl['inline_keyboard'] for t in q],
+      repr(kl))
 sinov("_HOLAT_TASDIQ da 'yopildi' (sotuv yozuvi)", 'yopildi' in bot._HOLAT_TASDIQ)
 
 # ── 9. admin ro'yxati ──

@@ -117,6 +117,10 @@ bot._narx_son = lambda e: e.get('_narx')
 bot._buyurtma_sarlavha = lambda e, m, r=None: f"Tovar {e['num']}"
 bot.check_init_data = lambda s, max_age=86400: {'admin': ADMIN, 'mijoz': MIJOZ}.get(s)
 bot.time.sleep = lambda s: None
+# 3421: to'langan buyurtma tahriridan keyin kanal posti FONDA (ip) yangilanadi — ip SOROV'ga kech yozib, keyingi bo'limni
+# buzardi. Ip o'rniga chaqiruv yozib olinadi va alohida tekshiriladi.
+FON = []
+bot.sotuv_kanal_yangila = lambda nums: FON.append(sorted({str(n) for n in nums}))
 
 
 def _fonsiz(self, ex, f, *a):
@@ -145,6 +149,7 @@ def tahrir(order, tovar, init='admin'):
     """Sayt «Saqlash» bosdi → (status, javob)."""
     SOROV.clear()
     SHEET.clear()
+    FON.clear()
     r = asyncio.run(bot.admin_buyurtma_tahrir_endpoint(Sorov({'initData': init, 'uid': str(MIJOZ), 'order': order, 'tovar': tovar})))
     return r.status, json.loads(r.body)
 
@@ -242,6 +247,7 @@ sinov("mijozga HECH NARSA ketmadi (sendMessage / copyMessage yo'q)",
 sh = [p for a, p in SHEET if a == 'buyurtmaTahrir']
 d = json.loads(sh[0]['data']) if sh else {}
 sinov('Store: buyurtmaTahrir bir marta', len(SHEET) == 1 and len(sh) == 1, repr(SHEET)[:300])
+sinov("3421: to'langan — kanal posti yangilanadi (o'chirilgan 21 ham, 22, 55)", FON == [['21', '22', '55']], repr(FON))
 sinov('Store ma\'lumoti: order, user_id, holat, jami, kim',
       (d.get('order'), d.get('user_id'), d.get('holat'), d.get('jami'), d.get('kim')) == ('TT01', str(MIJOZ), 'tolandi', 184, 'admin'),
       repr(d)[:300])
@@ -254,6 +260,7 @@ print('— shu tarkib qayta saqlandi (oldingi Store javob bermagan bo\'lsa) — 
 st, j = tahrir('TT01', [{'num': '22', 'soni': 3, 'narx': 28}, {'num': '55', 'soni': 1, 'narx': 100}])
 sinov("200, xabar='-', Telegram'ga hech narsa yo'q", st == 200 and j.get('xabar') == '-' and not SOROV, repr(j)[:200] + repr(SOROV)[:200])
 sinov('Store yana chaqirildi', [a for a, _ in SHEET] == ['buyurtmaTahrir'])
+sinov("3421: Store qabul qildi — kanal ham qayta (oldingi saqlash o'tmagan bo'lishi mumkin)", FON == [['22', '55']], repr(FON))
 sinov('tahrir_ts surilmadi, jami o\'sha', yozuv('TT01')['jami'] == 184)
 
 print("— Store javob bermadi — yozuv baribir yangilanadi, store=false (sayt «qayta saqlang» deydi)")
@@ -261,6 +268,7 @@ STORE_OK[0] = False
 st, j = tahrir('TT01', [{'num': '22', 'soni': 1, 'narx': 35}])
 STORE_OK[0] = True
 sinov('200, store=false', st == 200 and j.get('store') is False, repr(j)[:200])
+sinov('3421: Store yozmadi — kanalga tegilmaydi', not FON, repr(FON))
 sinov("yozuv: 22 × 1 = 35$, chegirma yo'q (Store narxi)", yozuv('TT01')['tovar'] == [{'num': '22', 'nom': 'Tovar 22', 'narx': 35, 'soni': 1}]
       and yozuv('TT01')['jami'] == 35, repr(yozuv('TT01')['tovar']))
 t = sorov('editMessageText')[0]['text'] if sorov('editMessageText') else ''
