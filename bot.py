@@ -8795,7 +8795,8 @@ TASHCO_ORALIQ = 30 * 60         # ikki jonli yuborish orasi kamida (guruh qoidas
 TASHCO_YON = {'foto': 'camera', 'telefon': 'mobile', 'aksessuar': 'mobile'}   # bo'lim → kanal yo'nalishi (boshqasi — pc)
 # 3428 (Owner 2026-11-11 23:10): bot TashkentComp'ga qo'shilmaydi — e'lonni Jasur (foydalanuvchi akkaunti) yuboradi.
 #   Bot — «miya»: navbatdan bitta ISH qo'yadi (h['ish']); Jasur kompyuterdagi skript (BOSHQARUV/claude_userbot/tashco.mjs)
-#   har 2 daqiqada /tashco/jasur dan oladi, yuboradi, natijani qaytaradi. Kuniga ko'pi bilan 5 ta (spam xavfi).
+#   /tashco/jasur dan oladi, yuboradi, natijani qaytaradi. Kuniga ko'pi bilan 5 ta (spam xavfi).
+#   3465: Jasur so'rab turmaydi — bitta ochiq ulanishda ('kut') kutadi, ish qo'yilishi bilan bot uni uyg'otadi.
 TASHCO_KUN_MAX = 5
 TASHCO_ISH_KUT = 60 * 60          # Jasur 1 soatda olmasa — ish bekor (kompyuter o'chiq)
 TASHCO_ISH_BERILDI = 2 * 3600     # oldi-yu natija qaytarmadi — yuborilgan deb hisoblanadi (qayta yubormaslik — spam emas)
@@ -9399,7 +9400,7 @@ def _tc_holat_json(h):
     q = ''
     if ish.get('num'):
         q = (f"№{ish['num']} ({TASHCO_NOM.get(ish.get('k'), '')}) — Jasur " +
-             ('yuboryapti' if ish.get('holat') == 'berildi' else 'olishini kutyapti (≤2 daq)'))
+             ('yuboryapti' if ish.get('holat') == 'berildi' else 'olishini kutyapti'))
     izoh = _TC_JOY['izoh'] + ('\n⚠️ Sozlama jadvalga saqlanmadi — bot qayta urinadi' if _TC_JOY['iflos'] else '')
     d = {'y': int(h['yoq']), 'k': int(h['korildi']), 't': int(bool(h['sinov'].get('mid'))),
          's': _tc_bugun(h)['s'], 'n': h['kun'], 'bo': h['bosh'], 'ox': h['oxir'], 'ky': _tc_keyingi_vaqt(h),
@@ -9634,7 +9635,7 @@ def tashco_bir():
             return
         num, kalit = tanlov
         _tc_ish_qoy(h, num, kalit, 'bir')
-        _TC_JOY['izoh'] = f'⏳ №{num} ({TASHCO_NOM[kalit]}) — Jasur 2 daqiqa ichida yuboradi.'
+        _TC_JOY['izoh'] = f'⏳ №{num} ({TASHCO_NOM[kalit]}) — Jasur hozir yuboradi.'
     logger.info(f'tashco: 1 ta — №{num} → Jasur navbatiga ({TASHCO_NOM[kalit]})')
     tashco_saqla()
 
@@ -9738,8 +9739,48 @@ def tashco_natija(num, mid, usul, xato=''):
     return {'ok': True}
 
 
+# 3465 (Owner 2026-11-12): Jasur har 2 daqiqada «ish bormi?» deb so'ramaydi. Bitta ochiq ulanish (amal 'kut'):
+#   bot ish qo'yilishi bilan «ish» deydi — Jasur shu zahoti oladi. Har 25 s bitta «.» (oradagi proksi ~100 s jim
+#   ulanishni uzadi), 50 daqiqada «tamom» — Jasur qayta ulanadi. Telegram'ga ham, jadvalga ham so'rov yo'q — faqat xotira.
+TASHCO_KUT_MAX = 50 * 60
+TASHCO_KUT_PING = 25
+
+
+def _tc_ish_kutyapti():
+    ish = (_TC_JOY.get('h') or {}).get('ish') or {}
+    return bool(ish.get('num')) and ish.get('holat') == 'kut'
+
+
+async def _tc_jasur_kut(request):
+    if not _TC_JOY['yuklandi'] and not await blok(tashco_yukla):
+        return web.json_response({'ok': False, 'xato': 'holat'}, status=503)
+    javob = web.StreamResponse(headers={'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache',
+                                        'X-Accel-Buffering': 'no', 'Access-Control-Allow-Origin': '*'})
+    await javob.prepare(request)
+    boshi = oxirgi = time.monotonic()
+    _TC_JOY['jasur_ts'] = time.time()
+    try:
+        await javob.write(b'ulandi\n')
+        while True:
+            if _tc_ish_kutyapti():
+                await javob.write(b'ish\n')
+                break
+            if time.monotonic() - boshi >= TASHCO_KUT_MAX:
+                await javob.write(b'tamom\n')
+                break
+            if time.monotonic() - oxirgi >= TASHCO_KUT_PING:
+                oxirgi = time.monotonic()
+                _TC_JOY['jasur_ts'] = time.time()
+                await javob.write(b'.\n')
+            await asyncio.sleep(1)
+        await javob.write_eof()
+    except (ConnectionError, RuntimeError):
+        pass   # Jasur uzildi (kompyuter uxladi, internet) — o'zi qayta ulanadi
+    return javob
+
+
 async def tashco_jasur_endpoint(request):
-    """POST {kalit, amal: 'ol' | 'natija' | 'sinov', …} — faqat Jasur skripti (kalit — tashco_jasur_kalit)."""
+    """POST {kalit, amal: 'ol' | 'natija' | 'sinov' | 'kut', …} — faqat Jasur skripti (kalit — tashco_jasur_kalit)."""
     try:
         data = await request.json()
         kalit = tashco_jasur_kalit()
@@ -9748,6 +9789,8 @@ async def tashco_jasur_endpoint(request):
         amal = data.get('amal')
         if amal == 'ol':
             return web.json_response(await blok(tashco_ish_ber))
+        if amal == 'kut':   # 3465: ochiq ulanish — ish qo'yilganda «ish» (yuqorida)
+            return await _tc_jasur_kut(request)
         if amal == 'natija':
             mid = data.get('mid')
             mid = int(mid) if str(mid or '').isdigit() else None
