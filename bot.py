@@ -2611,6 +2611,22 @@ def _sheets_update(payload):
         return False
 
 
+def _kollaj_meros(eski, yangi):
+    """3242: «k» (kollaj) belgili e'lon boshqa postga ko'chdi yoki id'si tozalandi — eski postda qolgan e'lonlarda belgi bo'lmasa,
+    ularga qo'yiladi: Owner «↩ Qaytarish» bosmaguncha post kollaj bo'lib qoladi. Shu post id'si yangi qiymatda ham bo'lsa
+    (belgini «↩ Qaytarish» olgan, rejim almashgan) — tegilmaydi."""
+    try:
+        eski_mid = kanal_msg_id({'channel_message_id': eski})
+        if not eski_mid or not _id_kollaj(eski, eski_mid)[0]:
+            return
+        if eski_mid in [m for _, _, m in kanal_postlar({'channel_message_id': yangi})]:
+            return
+        if _mid_elonlar(eski_mid, hammasi=True)[0] and not _kollaj_belgi(eski_mid):
+            kollaj_belgila(eski_mid, True)
+    except Exception as ex:
+        logger.error(f'kollaj meros: {ex}')
+
+
 def kanal_id_yoz(num, mid):
     """Post id'sini Sheets'ga (channel_message_id) va xotiraga yozadi. mid=None — tozalash.
     mid — son yoki «mobile:123 pc:45» matni (MS3.1)."""
@@ -2623,10 +2639,12 @@ def kanal_id_yoz(num, mid):
     ok = _sheets_update({'num': int(num), 'channel_message_id': qiymat})
     with _elon_cache_lock:
         e = _ELON_CACHE['by_num'].get(str(num))
+        eski = e.get('channel_message_id') if e is not None else None
         if e is not None:
             e['channel_message_id'] = qiymat
     if not ok:
         logger.error(f'kanal_id_yoz: №{num} id {mid} Sheets ga yozilmadi')
+    _kollaj_meros(eski, qiymat)
     gid = guruh_idsi(e)
     if gid:
         guruh_yangila_keyin(gid)   # BUGUN251: rang posti paydo bo'ldi / o'chdi — guruh postidagi havola ham
@@ -2980,7 +2998,9 @@ def kanal_yana_keldi(num, yonalish=None):
 TUR_TARTIB = ('phone', 'camera', 'accessory', 'case', 'part')
 # B28: admin kollajga o'tkazgan postlar. 3238 (Owner 2026-10-29): xotirada emas — e'lonning channel_message_id sida post id
 # oxirida «k» («a123k», «mobile:a123k»): bot qayta yonsa ham keyingi tahrirda kollaj qoladi. Sayt id'ni faqat bor-yo'qligiga
-# qaraydi; to'plam postida belgi bitta e'londa (birinchisida) — kollajmi hammasiga qaraydi.
+# qaraydi; kollajmi postning hamma e'loniga qaraydi. 3242 (Owner): to'plam postida belgi bitta e'londa edi — u e'lon boshqa postga
+# ko'chsa («Yana keldi» / id tozalandi) qolganlar posti keyingi tahrirda slaydga qaytardi. Endi belgi HAMMA e'longa qo'yiladi, eski
+# (bitta «k» li) post uchun — «k» li e'lon ko'chganda belgi qolganlarga o'tadi (kanal_id_yoz). Olinishi — faqat «↩ Qaytarish» bilan.
 # 3244 (Owner 2026-10-29): kollaj HOZIRCHA O'CHIQ — kollajda logo / «keyingisi» tugmasi chetga kirib qoladi, faqat 4 rasm.
 # Kod o'chirilmagan: False — Kollajlar mavzusiga nusxa, «🖼 Kollajga o'tkazish» / «✅ Kanalda shunga o'tkazish» tugmasi yo'q,
 # eski tugma bosilsa «Kollaj hozircha o'chiq»; kanal posti doim slayd (eski «k» belgisi ham slayd). Qaytarish — True qilish.
@@ -3015,10 +3035,10 @@ def kollajmi(mid):
 
 
 def kollaj_belgila(mid, kollaj):
-    """Belgini qo'yadi (birinchi e'longa) / oladi (hammasidan). True — jadvalga yozildi (xotiraga — har holda)."""
+    """Belgini qo'yadi / oladi — postning HAMMA e'lonida (3242). True — jadvalga yozildi (xotiraga — har holda)."""
     items, _ = _mid_elonlar(mid, hammasi=True)
     ok = True
-    for e in (items[:1] if kollaj else items):
+    for e in items:
         bor, yangi = _id_kollaj(e.get('channel_message_id'), mid, kollaj)
         if bor != kollaj and yangi:
             ok = kanal_id_yoz(int(float(e.get('num', 0) or 0)), yangi) and ok
