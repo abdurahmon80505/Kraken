@@ -4830,6 +4830,10 @@ def get_konkurs():
 #  • 429 — retry_after kutiladi; 403 (bloklagan) — yozib qo'yiladi, keyingisiga o'tiladi.
 #  • Tugash vaqtidan 6 soatdan ko'p o'tgan (bot uzoq o'chiq edi) — o'zi tugatmaydi, adminga xabar.
 # ═══════════════════════════════════════════════════════════════
+# 3452 (Owner 2026-11-12 15:40): g'olib tugashdan 1 SOAT OLDIN tanlanadi, natija posti TEST kanalga (oldindan
+# ko'rish); Owner tekshiradi (tanish bo'lsa — saytda «🎲 Qayta»). G'olib / qatnashchilarga xabar — tanlovdan 1 soat
+# keyin (ended_at + 1 soat, jadvaldan — restartda ham). ASOSIY kanalga natija — faqat Owner tugmasi bilan.
+KONKURS_KORISH_S = 3600
 KONKURS_KECHIKISH_S = 6 * 3600   # shundan ko'p kechikkan konkursni bot o'zi tugatmaydi
 KONKURS_PARTIYA = 10             # navbatdan bir olishda nechta odam
 KONKURS_ORALIQ_S = 0.1           # xabarlar orasida (Telegram chegarasi ~30/soniya — ancha past)
@@ -5371,8 +5375,11 @@ def _kk_yangibot_xabari(k, til):
     return "\n\n".join(q), {"inline_keyboard": [[{"text": tugma, "callback_data": "kk_qatnash"}]]}
 
 
-async def _kk_admin(matn, joy=None):
-    await blok(send_msg, joy or ADMIN_ID, matn)
+async def _kk_admin(matn, joy=None, markup=None):
+    if markup:
+        await blok(send_msg, joy or ADMIN_ID, matn, markup)
+    else:
+        await blok(send_msg, joy or ADMIN_ID, matn)
 
 
 # ═══ BUGUN147: g'oliblar obunasi, kanaldan chiqish ogohlantirishi, yashirin oyna, /start bloki ═══
@@ -5664,7 +5671,7 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
         if not tugat:
             return 'aktiv'   # /notify, tiklash — aktiv konkursni TUGATMAYDI
         end = _parse_end_time(h.get('end_time'))
-        if manba == 'taymer' and end and end > time.time() + 5:   # vaqt surilgan — taymer qayta
+        if manba == 'taymer' and end and end - KONKURS_KORISH_S > time.time() + 5:   # vaqt surilgan — taymer qayta
             konkurs_taymer_qoy({'id': kid, 'status': 'active', 'end_time': h.get('end_time')})
             return 'erta'
     elif st == 'ended':
@@ -5697,17 +5704,34 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
             await _kk_admin(f"🔎 <b>Konkurs {ek} — g'oliblar obunasi</b> ({html_escape(_kk_kanal(e))})\n"
                             + "\n".join(obuna_izoh), joy)
     win_text = _kk_goliblar_matni(winners)
-    if not e.get('already'):
+    fids, urls = _kk_rasmlar(e)
+    xv = _kk_xabar_vaqti(e)
+    xabar_kutadi = manba not in ('buyruq', 'xabar_tugma') and bool(xv) and xv > time.time() + 5
+    # 3452: natija hali e'lon qilinmagan, xabar hali boshlanmagan — oldindan ko'rish (bir marta shu jarayonda)
+    korish = (kid not in _kk_korildi and str(e.get('kanal_post') or '').split('|')[0] == 'navbatda'
+              and str(e.get('yetkazish') or '').split('|')[0] == 'navbatda')
+    if korish:
+        _kk_korildi.add(kid)
+        # natija posti — TEST kanalga (asosiy kanalga o'zidan chiqmaydi), Owner g'olibni ko'radi
+        await blok(_kk_korish_post, kid, prize, win_text, fids, urls)
+    if korish or not e.get('already'):
         # BUGUN125: g'olib bir qurilmadan boshqa akkaunt bilan kirgan bo'lsa — faqat adminga ⚠️ (kanalga emas)
         ogoh = [f"⚠️ {_kk_medal(int(w.get('place') or 1))} {html_escape(str(w.get('ogohlantirish')))}"
                 for w in winners if w.get('ogohlantirish')]
         ogoh_t = ("\n\n" + "\n".join(ogoh) + "\n(qayta tanlash — saytda «🎲 Qayta»)") if ogoh else ''
-        await _kk_admin(f"🏁 <b>Konkurs tugadi</b> ({html_escape(sabab or manba)})\n🎁 {html_escape(prize)}\n"
-                        f"👥 Qatnashchi: {e.get('total', 0)}\n🏆 G'oliblar:\n{win_text}{ogoh_t}\n\n📨 Xabarlar yuborilmoqda…",
-                        joy)
+        xq = (f"📨 G'olib va qatnashchilarga xabar: {_kk_vaqt(xv)} da (Toshkent)." if xabar_kutadi
+              else "📨 Xabarlar yuborilmoqda…")
+        await _kk_admin(f"🏁 <b>G'oliblar tanlandi</b> ({html_escape(sabab or manba)})\n🎁 {html_escape(prize)}\n"
+                        f"👥 Qatnashchi: {e.get('total', 0)}\n🏆 G'oliblar:\n{win_text}{ogoh_t}\n\n"
+                        f"🧪 Natija posti — TEST kanalda. G'olib tanishingiz bo'lsa — saytda «🎲 Qayta».\n{xq}\n"
+                        f"📢 Asosiy kanalga o'zidan chiqmaydi — pastdagi tugma bilan.",
+                        joy, _kk_natija_tugmalar(kid, xabar=xabar_kutadi))
 
     # 3) Shaxsiy xabarlar — navbatdan (har odamga bir marta)
-    fids, urls = _kk_rasmlar(e)
+    # 3452: tanlovdan 1 soat o'tmaguncha kutadi (Owner ko'rib, qayta tanlashi mumkin). Owner buyrug'i — darhol.
+    if xabar_kutadi:
+        _kk_xabar_taymer_qoy(kid, xv)
+        return 'kutadi'
     bir_rasm = fids[:1] + urls[:1]
 
     def yubor(x):
@@ -5728,17 +5752,8 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
         lambda natija: _kk_sheet('konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija=json.dumps(natija)),
         yubor)
 
-    # 4) Kanal posti — bir marta (kanal_post: navbatda → olindi → natija)
+    # 4) Kanal posti — 3452: o'zidan YO'Q. Faqat Owner «📢 Asosiy kanalga e'lon qilish» tugmasi (konkurs_kanal_elon).
     kanal = None
-    ko = await _kk_sorov('konkursKanalOl', id=kid, worker=KONKURS_WORKER)
-    if ko and ko.get('ok') and ko.get('ol'):
-        matn, mk = _kk_kanal_xabari(prize, win_text)
-        kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk, kanal_tanla('konkurs_sinov' if _kk_sinovmi(prize) else 'konkurs'))
-        for n in range(3):
-            if await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]',
-                          kanal=kanal) is not None:
-                break
-            await asyncio.sleep(3)
 
     # 5) Hisobot — jadvaldagi sanoq bo'yicha
     if sum(sanoq.values()) or kanal or manba == 'buyruq' or holat != 'tugadi':
@@ -5760,8 +5775,103 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
             q.append(f"Xatolarni qayta: /konkursdavom {ek}")
         if (x.get('noaniq') or 0) + (x.get('olindi') or 0):
             q.append(f"Noaniqlarni ham (ba'zilariga 2-marta borishi mumkin): /konkursdavom {ek} noaniq")
-        await _kk_admin("\n".join(q), joy)
+        kn = str(hh.get('kanal_post') or '').split('|')[0] == 'navbatda'
+        await _kk_admin("\n".join(q), joy, _kk_natija_tugmalar(kid, xabar=False) if kn else None)
     return holat
+
+
+# ── 3452: natija — TEST kanalda oldindan ko'rish, xabar vaqti, asosiy kanalga faqat tugma bilan ──
+_kk_korildi = set()          # oldindan ko'rish posti shu jarayonda yuborilgan konkurslar
+_kk_xabar_taymerlar = {}     # kid → {'task', 'vaqt'}: g'olib / qatnashchilarga xabar vaqti (tanlov + 1 soat)
+
+
+def _kk_xabar_vaqti(k):
+    """Xabarlar qachon ketadi (UTC soniya): g'olib tanlangan vaqt (ended_at, Toshkent) + 1 soat. Bilinmasa — None."""
+    t = _parse_end_time((k or {}).get('ended_at'))
+    return t + KONKURS_KORISH_S if t else None
+
+
+def _kk_xabar_taymer_qoy(kid, vaqt):
+    x = _kk_xabar_taymerlar.get(kid)
+    if x and x['vaqt'] == vaqt and not x['task'].done():
+        return 'bor'
+    if x and not x['task'].done():
+        x['task'].cancel()
+
+    async def kut():
+        try:
+            await asyncio.sleep(max(0, vaqt - time.time()))
+        except asyncio.CancelledError:
+            return
+        _kk_xabar_taymerlar.pop(kid, None)
+        await konkurs_tugat_va_yetkaz(kid, False, 'xabar vaqti keldi', 'xabar_taymer')
+    _kk_xabar_taymerlar[kid] = {'task': asyncio.create_task(kut()), 'vaqt': vaqt}
+    logger.info(f'Konkurs {kid} xabar taymeri: {int(vaqt - time.time())}s')
+    return 'qoyildi'
+
+
+def _kk_natija_tugmalar(kid, xabar=True):
+    q = [[{"text": "📢 Asosiy kanalga e'lon qilish", "callback_data": f"kkk:{kid}"[:64]}]]
+    if xabar:
+        q.append([{"text": "📨 Xabarlarni hozir yuborish", "callback_data": f"kkx:{kid}"[:64]}])
+    return {"inline_keyboard": q}
+
+
+def _kk_korish_post(kid, prize, win_text, fids, urls):
+    """3452: konkurs natija posti — faqat TEST kanalga + tagida izoh. Asosiy kanalga hech qachon (kanal tekshiriladi)."""
+    kanal = kanal_tanla('konkurs_sinov')
+    if not kanal or str(kanal) == str(CHANNEL):
+        return ''
+    matn, mk = _kk_kanal_xabari(prize, win_text)
+    h = _kk_kanal_post(matn, [fids, urls], mk, kanal)
+    _kk_tg('sendMessage', {'chat_id': kanal, 'parse_mode': 'HTML', 'text':
+           f"🧪 <b>Oldindan ko'rish</b> — ish 3452, konkurs {html_escape(kid)}\n"
+           f"Nima uchun: g'oliblar tanlandi, asosiy kanalga hali CHIQMADI.\n"
+           f"Tekshiring: g'olib tanishingiz emasmi? Tanish bo'lsa — saytda «🎲 Qayta». "
+           f"Asosiy kanalga — botdagi «📢 Asosiy kanalga e'lon qilish» tugmasi."})
+    return h
+
+
+async def konkurs_kanal_elon(kid, joy=None):
+    """3452: Owner «📢 Asosiy kanalga e'lon qilish» bosdi — natija posti kanalga, bir marta (kanal_post:
+    navbatda → olindi → natija). G'oliblar — jadvaldagi HOZIRGI (qayta tanlanganlari bilan)."""
+    kid = str(kid or '').strip()
+    ek = html_escape(kid)
+    if not kid:
+        return 'id'
+    if kid in _kk_qulflar:
+        await _kk_admin(f"⏳ Konkurs {ek} hozir ishlanmoqda — birozdan keyin qayta bosing.", joy)
+        return 'band'
+    _kk_qulflar.add(kid)
+    try:
+        ko = await _kk_sorov('konkursKanalOl', id=kid, worker=KONKURS_WORKER)
+        if not ko or not ko.get('ok'):
+            m = (ko or {}).get('msg') or 'Apps Script javob bermadi'
+            await _kk_admin(f"❌ Kanalga chiqmadi: "
+                            f"{'g‘oliblar obunasi hali tekshirilmoqda' if m == 'obuna' else html_escape(m)}", joy)
+            return 'xato'
+        if not ko.get('ol'):
+            await _kk_admin(f"ℹ️ Konkurs {ek} natijasi kanalga allaqachon chiqqan — qayta yuborilmadi.", joy)
+            return 'bor'
+        e = await _kk_sorov('endKonkurs', timeout=60, id=kid, obuna='1')   # tugagan — saqlangan g'oliblar (already)
+        if not e or not e.get('ok'):
+            await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]', kanal='xato')
+            await _kk_admin(f"❌ Konkurs {ek}: g'oliblar o'qilmadi — kanalga chiqmadi.", joy)
+            return 'xato'
+        prize = str(e.get('prize') or '')
+        fids, urls = _kk_rasmlar(e)
+        matn, mk = _kk_kanal_xabari(prize, _kk_goliblar_matni(e.get('winners') or []))
+        kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk,
+                           kanal_tanla('konkurs_sinov' if _kk_sinovmi(prize) else 'konkurs'))
+        for n in range(3):
+            if await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]',
+                          kanal=kanal) is not None:
+                break
+            await asyncio.sleep(3)
+        await _kk_admin(f"📢 Konkurs {ek} natijasi kanalga: {html_escape(kanal)}", joy)
+        return kanal
+    finally:
+        _kk_qulflar.discard(kid)
 
 
 # ── Taymer — faqat «vaqt keldi» signali. Tugatishda baribir jadvaldagi holat tekshiriladi.
@@ -5795,8 +5905,11 @@ def konkurs_taymer_qoy(k):
         return 'bor'
     if t['task'] and not t['task'].done():
         t['task'].cancel()
-    t.update(task=asyncio.create_task(_kk_taymer(kid, max(0, end - now))), id=kid, end=end)
-    logger.info(f'Konkurs {kid} taymeri: {int(end - now)}s')
+    # 3452: g'olib tugashdan 1 soat oldin tanlanadi; 1 soatdan kam qolganda qo'yilsa (bot qayta yondi / qisqa
+    # konkurs) — tugash vaqtida (darhol tanlansa — oxirgi daqiqadagilar qolib ketadi)
+    tanlov = end - KONKURS_KORISH_S if end - KONKURS_KORISH_S > now else end
+    t.update(task=asyncio.create_task(_kk_taymer(kid, max(0, tanlov - now))), id=kid, end=end, tanlov=tanlov)
+    logger.info(f'Konkurs {kid} taymeri: {int(tanlov - now)}s')
     return 'qoyildi'
 
 
@@ -6006,8 +6119,11 @@ async def konkurs_buyruq(chat_id, text):
             x = h.get('xabar') or {}
             end = _parse_end_time(h.get('end_time'))
             t = _kk_taymer_holat
-            taymer = (f"qo'yilgan — {_kk_vaqt(t['end'])}" if t['id'] == kid and t['task'] and not t['task'].done()
-                      else "yo'q")
+            taymer = (f"g'olib tanlash — {_kk_vaqt(t.get('tanlov') or t['end'])}"
+                      if t['id'] == kid and t['task'] and not t['task'].done() else "yo'q")
+            xt = _kk_xabar_taymerlar.get(kid)
+            if xt and not xt['task'].done():
+                taymer += f" · xabarlar — {_kk_vaqt(xt['vaqt'])}"
             await _kk_admin("\n".join([
                 f"📊 <b>Konkurs {ek}</b>",
                 f"Holat: <b>{html_escape(h.get('status') or '—')}</b>",
@@ -6034,7 +6150,7 @@ async def konkurs_buyruq(chat_id, text):
                 end = _parse_end_time(h.get('end_time'))
                 if end and end > time.time() and (len(q) < 3 or q[2] != 'hozir'):
                     await _kk_admin(f"Konkurs {ek} hali tugamagan (tugash: {_kk_vaqt(end)}).\n"
-                                    f"Hozir tugatish (g'olib tanlanadi, hammaga xabar ketadi): /konkurstugat {ek} hozir",
+                                    f"Hozir tugatish (g'olib + xabarlar; kanalga — tugma bilan): /konkurstugat {ek} hozir",
                                     chat_id)
                     return
             r = await konkurs_tugat_va_yetkaz(kid, True, "admin buyrug'i", 'buyruq', chat_id)
@@ -9257,6 +9373,12 @@ async def handle_update(data):
                         {"inline_keyboard": azo_kanal_tugmalari(yet) + [
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
+            # 3452: konkurs natijasi — «📢 Asosiy kanalga e'lon» / «📨 Xabarlarni hozir» (faqat admin)
+            if cq_data.startswith('kkk:') and cq_adm:
+                asyncio.create_task(konkurs_kanal_elon(cq_data[4:], cq_chat))
+            if cq_data.startswith('kkx:') and cq_adm:
+                asyncio.create_task(konkurs_tugat_va_yetkaz(cq_data[4:], False, 'Owner: xabarlar hozir', 'xabar_tugma',
+                                                            cq_chat))
             # 3452: yangi telefon / kamera — «📣 Kanalga yuborish» taklifi (faqat admin)
             if cq_data.startswith(('apost:', 'apost_no:')) and cq_adm:
                 asyncio.create_task(blok(avto_post_tugma, cq_chat, cq_msg.get('message_id'), cq_data))
@@ -9483,7 +9605,8 @@ async def handle_update(data):
                     f"✅ Aktiv konkurs: {kid}\n"
                     f"🎁 {html_escape(k.get('prize', ''))}\n"
                     f"⏰ Tugash: {_kk_vaqt(end)} (Toshkent)\n"
-                    f"⏳ Taymer {taymer} — vaqti kelganda avtomatik tugaydi.\n"
+                    f"⏳ Taymer {taymer} — tugashdan 1 soat oldin g'olib tanlanadi, natija TEST kanalga "
+                    f"(asosiy kanalga — faqat tugma bilan).\n"
                     f"Holat: /konkursholat")
             elif r == 'kechikdi':
                 await blok(send_msg, chat_id,
@@ -9766,6 +9889,14 @@ def send_reroll_notify(data):
     sinov = _kk_sinovmi(nomi_xom) or _kk_sinovmi(data.get('sovga'))
     ishonchsiz = sinov or not nomi_xom
     admin_uid = str(ADMIN_ID)
+    # 3452: xabarlar hali ketmagan — eski / yangi g'olibga alohida xabar YO'Q (navbat to'g'ri g'olibga o'zi yuboradi);
+    # natija asosiy kanalga hali chiqmagan — «o'zgardi» posti TEST kanalga. Holat o'qilmasa — kanalga emas, adminga.
+    kid_r = str(data.get('konkurs_id') or '').strip()
+    kh = _kk_sheet('konkursHolat', id=kid_r) if kid_r else None
+    kh_ok = bool(kh and kh.get('ok'))
+    if kh_ok and str(kh.get('yetkazish') or '').split('|')[0] == 'navbatda':
+        ishonchsiz = True
+    korish_kanal = not kh_ok or str(kh.get('kanal_post') or '').split('|')[0] == 'navbatda'
 
     # ── (A) ESKI g'olibga — endi g'olib emas (kanal button) ──
     old_uid = str(old.get('user_id', '') or '')
@@ -9833,7 +9964,9 @@ def send_reroll_notify(data):
             f"🏆 Новый победитель: {new_disp}"
         )
         # sinov — TEST kanal; haqiqiy (tasdiqlangan) — asosiy kanal; tasdiqlanmagan — faqat admin lichkasi
-        if sinov:
+        if korish_kanal and not sinov:   # 3452
+            c_chat = (kanal_tanla('konkurs_sinov') or ADMIN_ID) if kh_ok else ADMIN_ID
+        elif sinov:
             c_chat = kanal_tanla('konkurs_sinov') or ADMIN_ID     # TEST kanal sozlanmagan bo'lsa — jimgina yo'qolmasin, adminga
         elif nomi_xom:
             c_chat = kanal_tanla('konkurs')
@@ -9845,6 +9978,11 @@ def send_reroll_notify(data):
                 "text": "🛍 Do'kon / Магазин",
                 "url": f"https://t.me/{BOT_USERNAME}?startapp"}]]}
         }, timeout=8)
+        if korish_kanal and not sinov and str(c_chat) != str(ADMIN_ID):
+            req.post(f'{TG_API}/sendMessage', json={'chat_id': c_chat, 'parse_mode': 'HTML', 'text':
+                "🧪 <b>Oldindan ko'rish</b> — ish 3452: g'olib qayta tanlandi, asosiy kanalga hali chiqmagan.\n"
+                "Tekshiring: yangi g'olib to'g'rimi. Asosiy kanalga — botdagi «📢 Asosiy kanalga e'lon qilish» "
+                "tugmasi (hozirgi g'oliblar bilan)."}, timeout=8)
     except Exception as e:
         logger.error(f'reroll channel: {e}')
 
