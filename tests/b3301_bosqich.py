@@ -218,15 +218,20 @@ sinov("to'landi: faqat 🚚 Yo'lda, bron tugmasi yo'q (3304)", holat_cb(kl) == [
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'yolda', b2)
 sinov("yo'lda: faqat 📦 Yetkazildi, bron tugmasi yo'q (3304)", holat_cb(kl) == [f'bh:yetkazildi:{MIJOZ}:TB00'] and 'bron_och' not in json.dumps(kl), repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'yetkazildi', b2)
-sinov('yetkazildi: «🔒 Yopish (baho kutmasdan)», bron yo\'q', [t['text'] for t in tugma(kl) if 'callback_data' in t] == ['🔒 Yopish (baho kutmasdan)'], repr(kl))
+sinov("yetkazildi (3420): «✅ Yakunlandi — baho ixtiyoriy» (holat) + «🔕 Baho so'ramay yopish», bron yo'q",
+      [(t['text'], t['callback_data']) for t in tugma(kl) if 'callback_data' in t]
+      == [('✅ Yakunlandi — baho ixtiyoriy', 'bh:-'), ("🔕 Baho so'ramay yopish", f'bh:yopildi:{MIJOZ}:TB00')], repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'yopildi', b2)
-sinov('yopildi: faqat «Mijozga yozish»', len(tugma(kl)) == 1 and 'url' in tugma(kl)[0], repr(kl))
+sinov("yopildi (3420): «Mijozga yozish» + «✅ Yakunlandi» (holat, bosqich yo'q), bron yo'q",
+      len(tugma(kl)) == 2 and 'url' in tugma(kl)[0] and tugma(kl)[1] == {'text': '✅ Yakunlandi', 'callback_data': 'bh:-'}, repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'bekor', b2)
 sinov('bekor: holat 📍 (bosqich tugmasi yo\'q)', not holat_cb(kl) or holat_cb(kl) == ['bh:-'], repr(kl))
 sinov('✔️ tugma yo\'q (bajarilgani — matnda)', not any('✔️' in t['text'] for h in bot._HOLAT_TARTIB for t in tugma(bot._buyurtma_klava(MIJOZ, 'TB00', h, b2))))
 uzun = f'bhy:skip:{10**12}:ABCDEFGHIJKL'
 sinov('callback_data ≤ 64 bayt', len(uzun.encode()) <= 64 and len(f'bh:yetkazildi:{10**12}:ABCDEFGHIJKL'.encode()) <= 64)
-sinov('holat qatori: Yopildi nomi o\'zgarmagan', bot._HOLAT_QATOR['yopildi'][1] == 'Yopildi' if 'yopildi' in bot._HOLAT_QATOR else True)
+sinov("holat qatori (3420): «✅ Yakunlandi»; eski xabardagi «🔒 Yopildi» ham taniladi",
+      bot._HOLAT_QATOR.get('yopildi') == ('✅', 'Yakunlandi') and bool(bot._HOLAT_QATOR_RE.search('x\n\n🔒 Yopildi · 08:00'))
+      and bool(bot._HOLAT_QATOR_RE.search('x\n\n✅ Yakunlandi · 08:00')), repr(bot._HOLAT_QATOR.get('yopildi')))
 
 print('— havola tarkibi: _savat_kel_narxlar')
 k, o = bot._savat_kel_narxlar(['bonuskod1'])
