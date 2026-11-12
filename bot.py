@@ -109,6 +109,12 @@ SUV_BELGI_TR = 'w-1600,q-85'   # kanal / OLX rasmi o'lchami (inline rasm yuklash
 # markazidan ±11 px — strelka qutisi doira markazida (chap / o'ng bo'sh joy 40 / 39 px). Strelka shaffof emas: ikki kapsula
 # burilishda ustma-ust tushadi, shaffof bo'lsa o'sha joy dog' bo'lib ko'rinadi.
 KEYINGI_BELGI = os.environ.get('KEYINGI_BELGI', '1') != '0'
+# 3421 (Owner 2026-11-08: «kanalda rasmga «sotildi» pechati tushmadi»): donalik tovar sotilganda kanal postining HAMMA rasmiga
+# «SOTILDI» muhri — ImageKit matn layer'i (logo / «suring» kabi, resize'dan keyin `:` bilan): qizil yumaloq to'rtburchak,
+# oq qalin yozuv, −15° qiya, markazda. O'lcham — w-1600 rasm uchun (fs-200 ≈ rasm eni 12%; ifoda — `fs-bw_mul_…` — 400 beradi,
+# sinaldi). Ko'p donali tovar tugasa — muhr YO'Q (yana keladi, «QOLMADI»). SOTILDI_MUHR=0 (env) — o'chadi.
+SOTILDI_MUHR = os.environ.get('SOTILDI_MUHR', '1') != '0'
+SOTILDI_MUHR_LAYER = 'l-text,i-SOTILDI,fs-200,tg-b,co-FFFFFF,bg-DC2626E6,pa-40_100,r-30,rt-345,lfo-center,l-end'
 KEYINGI_BELGI_LAYER = ('l-image,i-ik_canvas,bg-134E4A,w-112,h-112,r-max,o-50,lxc-bw_mul_0.89,lyc-bh_mul_0.88,l-end'
                        ':l-image,i-ik_canvas,bg-FFFFFF,w-43,h-12,r-max,rt-45,lxc-bw_mul_0.89,lyc-bh_mul_0.88_sub_11,l-end'
                        ':l-image,i-ik_canvas,bg-FFFFFF,w-43,h-12,r-max,rt-315,lxc-bw_mul_0.89,lyc-bh_mul_0.88_add_11,l-end')
@@ -961,7 +967,7 @@ XUSH_KB = {"inline_keyboard": [[{
 }]]}
 # `chat_member` sukut bo'yicha KELMAYDI — setWebhook'da aniq aytilishi shart. Qolganlari — ilgari sukut bo'yicha
 # kelayotgan asosiy turlar (bot hozir faqat message, callback_query va chat_member'ni o'qiydi).
-ALLOWED_UPDATES = ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query',
+ALLOWED_UPDATES = ['widget_query', 'message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query',
                    'inline_query', 'chosen_inline_result', 'my_chat_member', 'chat_member', 'chat_join_request']
 _xush = {'file_id': '', 'yuborilgan': {}, 'xato_vaqt': {}, 'ishladi': False, 'toxtatildi': False}
 _xush_lock = threading.Lock()
@@ -1772,18 +1778,22 @@ def build_elon(item, models_by_id):
 
     # ── Sarlavha: G logo + BOLD nom (xotira, xususiyat) + rang ──
     # BUGUN260-7: qavs ichi bo'sh bo'lsa — qavs yo'q (ilgari «Nom ()» chiqardi)
-    add_prem('google'); add(" ")
+    # 3422: telefon — G logo; boshqasi — o'z turi emojisi (⌨️, 🎧, 🔌 …)
+    tur, tur_emoji, tur_teg = tur_belgisi(item, models_by_id)
+    if tur == 'phone':
+        add_prem('google')
+    else:
+        add(tur_emoji)
+    add(" ")
     qavs = elon_qavs(item)
     title = name_uz + (f" ({qavs})" if qavs else '')
     add_fmt(title, 'bold')
     if color_clean:
         add(f" {color_clean}")
     add("\n")
-    add(f"#{elon_turi(item, models_by_id)} #{num}\n")   # 3184.5: tur bo'yicha (ilgari hammasi #phone)
+    add(f"#{tur_teg} #{num}\n")   # 3184.5: tur bo'yicha (ilgari hammasi #phone); 3422: aksessuar — o'z turi
     if mos_txt:
         add(f"🔗 {mos_txt}\n")
-    if izoh_txt:
-        add(f"📝 {izoh_txt}\n")
     add("\n")
 
     # ── Texnik xarakteristika (collapsed blockquote) ──
@@ -1797,6 +1807,15 @@ def build_elon(item, models_by_id):
     quote = (q_start, q_end - q_start)
     add("\n\n")
 
+    # 3422: izoh — xarakteristika ostida, alohida yig'ilgan blok (nom tagida emas, xarakteristikaga aralashmaydi)
+    izoh_q = None
+    if izoh_txt:
+        izoh_ru = izoh_matni(item, 'ru')
+        i_start = _utf16len(''.join(parts))
+        add("📝 Izoh / Примечание:\n" + izoh_txt + (f"\n\n{izoh_ru}" if izoh_ru and izoh_ru != izoh_txt else ''))
+        izoh_q = (i_start, _utf16len(''.join(parts)) - i_start)
+        add("\n\n")
+
     # ── Holati ──
     add(f"{cond_emoji} • Holati: {cond_uz}\n")
     add(f"{cond_emoji} • Состояние: {cond_ru}\n\n")
@@ -1805,15 +1824,16 @@ def build_elon(item, models_by_id):
     # B5: sotilganini `status` ustuni aytadi. Sayt endi narxni 0 QILMAYDI —
     # sotilgan e'londa ham asl narx turadi, shuning uchun uni chizib ko'rsatamiz.
     sold = is_sold(item)
+    tugadi = tugadi_matni(item)   # 3421: active + soni 0 — ham «QOLMADI»
 
     add_prem('money'); add(" Цена/Narxi: ")
-    if sold:
+    if tugadi:
         # ~~400$~~ ❗️SOTILDI❗️
         narx = price if price and price != '0' else old
         if narx:
             add_fmt(f"{narx}$", 'strikethrough')
             add(" ")
-        add_fmt("❗️QOLMADI❗️" if kop_donali(item) else "❗️SOTILDI❗️", 'bold')   # B13: ko'p donali tugasa
+        add_fmt(f"❗️{tugadi}❗️", 'bold')   # 3421: ko'p donali tugasa — QOLMADI, donalik — SOTILDI   # B13: ko'p donali tugasa
         add("\n\n")
     elif old and old != price:
         add_fmt(f"{old}$", 'strikethrough')
@@ -1841,12 +1861,13 @@ def build_elon(item, models_by_id):
     for ftype, off, length in fmt:
         entities.append({'type': ftype, 'offset': off, 'length': length})
     # Collapsed blockquote (yopilgan quote)
-    if quote and quote[1] > 0:
-        entities.append({
-            'type': 'expandable_blockquote',
-            'offset': quote[0],
-            'length': quote[1],
-        })
+    for q in (quote, izoh_q):   # 3422: izoh ham — o'z yig'ilgan bloki
+        if q and q[1] > 0:
+            entities.append({
+                'type': 'expandable_blockquote',
+                'offset': q[0],
+                'length': q[1],
+            })
     return num, text, entities
 
 
@@ -1987,6 +2008,8 @@ def belgi_src(elon):
     src = {t: belgili(t, j) for t, j in joylar}
     if len(joylar) >= 2:
         src[joylar[0][0]] = keyingi_belgi(src[joylar[0][0]])
+    if muhr_kerak(elon):   # 3421: sotilgan (donalik) — hamma rasmda «SOTILDI» muhri; manzil o'zgaradi → eski file_id ishlatilmaydi
+        src = {t: sotildi_muhr(u) for t, u in src.items()}
     return src
 
 
@@ -2051,7 +2074,6 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     model = models_by_id.get(str(elon.get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
     name = html_escape(elon_nomi(elon, model, 'uz'))   # G12: e'lonning o'z nomi (bo'lmasa model), yozilganidek (BUGUN17)
     mos_txt = html_escape(mos_line(model, models_by_id, 'uz', elon_nomi(elon, model, 'uz')))
-    izoh_txt = html_escape(izoh_matni(elon, 'uz'))   # G12 K2
     storage = html_escape(elon_qavs(elon))   # BUGUN260-7: xotira + xususiyat («MagSafe, Stand»)
     color = html_escape(clean_color(elon.get('color') or ''))
     price = str(elon.get('price', '') or '').replace('.0', '')
@@ -2061,16 +2083,19 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     e = (lambda k: _rich_emoji(k)) if premium else (lambda k: PREMIUM[k][0])
     # 3184.5: sarlavha emojisi va tegi — e'lon turidan (ilgari hammasi 📱 #phone: g'ilof ham, zaryadlovchi ham).
     #     Telefon (premium) — G logo, avvalgidek
-    tur = elon_turi(elon, models_by_id)
-    tur_emoji = e("google") if tur == 'phone' else TUR_NOMI.get(tur, TUR_NOMI['phone'])[0]
+    #     3422: aksessuar — o'z turi (⌨️ #keyboard, 🎧 #headset, 🔌 #cable …), hammasi 🔌 #accessory emas
+    tur, tur_emoji, tur_teg = tur_belgisi(elon, models_by_id)
+    if tur == 'phone':
+        tur_emoji = e("google")
 
     # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     media = rich_media(images_of(elon), kollaj, rasm_src)
 
     title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
-    if elon_status(elon) == 'sold':
-        # B13 soni: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi)
-        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + ('❗️QOLMADI❗️' if kop_donali(elon) else '❗️SOTILDI❗️')
+    tugadi = tugadi_matni(elon)
+    if tugadi:
+        # B13 soni / 3421: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi), donalik — «SOTILDI»
+        narx = (f'<s>{html_escape(price or old)}$</s> ' if (price or old) else '') + f'❗️{tugadi}❗️'
     elif old and old != price:
         narx = f'<s>{html_escape(old)}$</s> {html_escape(price)}$'
     else:
@@ -2122,8 +2147,9 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     #     oralig'i («yarim qatorcha»); BOSH u bilan qo'shilib 2 baravar katta bo'shliq berardi
     return (
         media
-        + f'<p><b>{tur_emoji} {title}</b><br/>#{tur} #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + (f'<br/>📝 {izoh_txt}' if izoh_txt else '') + '</p>'
+        + f'<p><b>{tur_emoji} {title}</b><br/>#{tur_teg} #{num}' + (f'<br/>🔗 {mos_txt}' if mos_txt else '') + '</p>'
         + spec
+        + izoh_html(elon)   # 3422: izoh nom tagida emas — xarakteristika ostida, yig'ilgan blok
         + f'<p>{html_escape(cond_emoji)} Holati: <b>{html_escape(cond_uz)}</b><br/>'
           f'{html_escape(cond_emoji)} Состояние: <b>{html_escape(cond_ru)}</b></p>'
         + narx_blok
@@ -2199,7 +2225,7 @@ POST_CHANNEL = os.environ.get('POST_CHANNEL_ID', TEST_CHANNEL)
 # env POST_KANALLAR = "mobile=@nuqta_tech_mobile pc=@nuqta_tech_PC camera=@nuqta_tech_camera" (yoki -100… raqam).
 # Env yo'q — hamma yo'nalish POST_CHANNEL'ga, bitta post (avvalgidek). Yozilmagan yo'nalish — POST_CHANNEL.
 # channel_message_id: «123» — eski (POST_CHANNEL'dagi bitta post) yoki «mobile:123 pc:45» — har kanaldagi post.
-# To'plam va katalog postlari — avvalgidek faqat POST_CHANNEL.
+# 3403: to'plam posti ham o'z yo'nalishi kanaliga (kanal_toplam); katalog — umumiy kanalda.
 POST_KANALLAR = {k.strip().lower(): v.strip() for k, _, v in
                  (x.partition('=') for x in re.split(r'[\s,;]+', os.environ.get('POST_KANALLAR', '')) if '=' in x)
                  if k.strip() and v.strip()}
@@ -2248,13 +2274,14 @@ def umumiy_kanal():
 # (ular kanalga post emas, a'zoga xabar).
 KANAL_YOLI = {
     'elon': 'asosiy',          # e'lon posti: avto (faollashganda), sayt «📣 Kanalga» / «Yana keldi», /post, /yana, ommaviy, tomchi
-    'toplam': 'asosiy',        # to'plam posti (/toplam, saytda belgilab)
+    'toplam': 'asosiy',        # to'plam posti (/toplam, saytda belgilab) — yo'nalish kanaliga (kanal_toplam)
     'katalog': 'asosiy',       # /katalog (qadaladi)
     'guruh': 'guruh',          # rang guruhi posti: GURUH_KANAL_ID bo'sh / test → TEST; «asl» → asosiy; boshqa — o'sha chat
     'konkurs': 'konkurs',      # konkurs natijasi / g'oliblar (konkursni Owner boshlaydi)
     'konkurs_sinov': 'test',   # sinov konkursi (sovrin «TEST…» / 🧪)
     'richtest': 'test',        # /testpost N (/richtest N) — admin qo'lda bitta postni testga (id yozilmaydi)
     'rasm_yuklash': 'test',    # rasm file_id olish uchun vaqtincha yuklash (darhol o'chadi)
+    'sinov': 'test',           # 3346: saytdagi «🧪 Test kanal» yoqiq — «Kanalga» / belgilab «Yuborish» / guruh (id yozilmaydi)
 }
 
 
@@ -2292,6 +2319,85 @@ def elon_turi(elon, models_by_id):
     ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None)
     return ser_type(ser) if ser else 'phone'
 
+
+# 3422 (Owner 2026-11-08): aksessuar postida hammasiga bir xil «🔌 #accessory» edi — endi tovar turidan:
+#     avval e'lon turkumi (Turkumlar varag'i kaliti), bo'lmasa nomdagi so'z (turkumsiz tovar — eng yaqin tur).
+#     Telefon / kamera / g'ilof / ehtiyot qism — avvalgidek (TUR_NOMI).
+AKS_BELGI = {   # kalit → (emoji, heshteg)
+    'keyboard': ('⌨️', 'keyboard'), 'headphones': ('🎧', 'headset'), 'mouse': ('🖱', 'mouse'),
+    'mousepad': ('🖱', 'mousepad'), 'cable': ('🔌', 'cable'), 'charger': ('🔌', 'charger'),
+    'powerbank': ('🔋', 'powerbank'), 'hub': ('🔀', 'hub'), 'camera-acc': ('🎥', 'camera_gear'),
+    'flash': ('💾', 'memorycard'), 'laptop': ('💻', 'laptop'), 'storage': ('💽', 'storage'),
+    'watch': ('⌚', 'watch'), 'strap': ('⌚', 'strap'), 'holder': ('📲', 'holder'), 'scooter': ('🛴', 'scooter'),
+    'helmet': ('🪖', 'helmet'), 'lamp': ('💡', 'lamp'), 'model': ('🏎', 'model'),
+}
+AKS_BELGI_SUKUT = ('🧩', 'accessory')
+AKS_SOZLAR = (   # (nomdagi so'zlar, kalit) — tartib muhim: aniqrog'i oldin (gilamcha → sichqonchadan oldin)
+    (('tungi chiroq', 'lamp', 'светильник', 'ночник'), 'lamp'),   # «tungi chiroq — quloqchin» — chiroq, quloqchin emas
+    (('noutbuk', 'laptop', 'ноутбук', 'macbook', 'surface book', 'notebook'), 'laptop'),   # «… 128GB SSD» — noutbuk, disk emas
+    (('gilamcha', 'mousepad', 'mouse pad', 'коврик', 'qck'), 'mousepad'),
+    (('klaviatura', 'keyboard', 'клавиатур'), 'keyboard'),
+    (('quloqchin', 'naushnik', 'headset', 'headphone', 'наушник', 'гарнитур', 'arctis', 'airpods', 'earbuds'), 'headphones'),
+    (('sichqoncha', 'mouse', 'мышь', 'мышка'), 'mouse'),
+    (('powerbank', 'power bank', 'павербанк'), 'powerbank'),
+    (('zaryadlovchi', 'charger', 'зарядн', 'adapter', 'адаптер'), 'charger'),
+    (('kabel', 'cable', 'кабель', 'шнур'), 'cable'),
+    (('hub', 'хаб', 'dock'), 'hub'),
+    (('xotira karta', 'microsd', 'sd karta', 'карта памяти'), 'flash'),
+    (('hdd', 'ssd', 'qattiq disk', 'жёсткий диск', 'жесткий диск'), 'storage'),
+    (('bilaguzuk', 'tasma', 'strap', 'ремеш', 'браслет'), 'strap'),
+    (('soat', 'watch', 'mi band', 'fitbit', 'часы'), 'watch'),
+    (('tutqich', 'holder', 'держател'), 'holder'),
+    (('samokat', 'scooter', 'самокат', 'ninebot'), 'scooter'),
+    (('shlem', 'helmet', 'шлем'), 'helmet'),
+    (('maket', 'tamiya', 'model kit'), 'model'),
+    (('kamera', 'gopro', 'action cam', 'камер'), 'camera-acc'),
+)
+
+
+def _elon_turkum(elon, models_by_id):
+    """E'lon turkumi kaliti (model → lineyka → `turkum`), yo'q bo'lsa ''."""
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    sk = str((model or {}).get('series', '') or '')
+    ser = next((s for s in (_ELON_CACHE.get('series') or []) if str(s.get('key', '')) == sk), None) or {}
+    return str(ser.get('turkum', '') or '').strip().lower()
+
+
+def aks_kalit(elon, models_by_id):
+    """3422: aksessuar turi kaliti (AKS_BELGI dagi) — turkum, bo'lmasa nom / turkum nomidagi so'z; topilmasa ''."""
+    tk = _elon_turkum(elon, models_by_id)
+    if tk in AKS_BELGI:
+        return tk
+    model = models_by_id.get(str((elon or {}).get('specId', '') or ''), {}) if isinstance(models_by_id, dict) else {}
+    t = next((x for x in (_ELON_CACHE.get('turkumlar') or []) if str(x.get('key', '')).strip().lower() == tk), None) if tk else None
+    matn = ' '.join(str(v or '') for v in (
+        (elon or {}).get('nameUz'), (elon or {}).get('nameRu'), (elon or {}).get('name'),
+        (model or {}).get('name'), (model or {}).get('nameUz'), (t or {}).get('labelUz'), (t or {}).get('labelRu'))).lower()
+    for sozlar, kalit in AKS_SOZLAR:
+        if any(s in matn for s in sozlar):
+            return kalit
+    return ''
+
+
+def tur_belgisi(elon, models_by_id):
+    """3422: post sarlavhasi uchun (tur, emoji, heshteg) — aksessuar o'z turi bilan, qolgani TUR_NOMI dan."""
+    tur = elon_turi(elon, models_by_id)
+    if tur == 'accessory':
+        emoji, teg = AKS_BELGI.get(aks_kalit(elon, models_by_id), AKS_BELGI_SUKUT)
+        return tur, emoji, teg
+    return tur, TUR_NOMI.get(tur, TUR_NOMI['phone'])[0], tur
+
+
+def izoh_html(elon):
+    """3422: izoh — xarakteristika tagida yig'ilgan blok (nom tagida emas). uz va ru (ru farq qilsa)."""
+    uz = izoh_matni(elon, 'uz')
+    ru = izoh_matni(elon, 'ru')
+    if not uz:
+        return ''
+    # 3421 (Owner 2026-11-12): uz va ru orasida BITTA bo'sh qator. `<br/><br/>` (matnda «\n\n») Telegram rich'da paragraf
+    #     bo'linishi + bo'sh qator bo'lib ikki qatordek ko'rinardi; \u00a0 li qator — paragraf bo'linmaydi, bitta qator joy
+    matn = html_escape(uz) + (f'<br/>\u00a0<br/>{html_escape(ru)}' if ru and ru != uz else '')
+    return f'<blockquote expandable>📝 Izoh / Примечание<br/>{matn}</blockquote>'
 
 def elon_yonalishlar(elon, models_by_id):
     """E'lon yo'nalishlari (mobile / pc / camera) — e'lonning o'z `yonalish`i → model `yonalish` → seriya `yonalish` → mobile
@@ -2352,6 +2458,19 @@ def kanal_postlar(elon, hammasi=False):
     return out
 
 
+# 3452 (Owner 2026-11-12): kanalga HECH NARSA o'zidan ketmaydi. Owner kanaldan o'chirgan post QAYTA CHIQMAYDI:
+# tahrir «post kanalda yo'q» desa — channel_message_id ga shu belgi yoziladi (kanal_postlar uni o'tkazib yuboradi → post
+# yo'q), yangi post yuborilmaydi. Avto-taklif / ommaviy / tomchi navbati belgili e'lonni chetlab o'tadi. Owner o'zi
+# «📣 Kanalga» / «Yana keldi» / /post bossa — yangi id yoziladi, belgi o'zi ketadi (qo'lda — mumkin).
+KANALDAN_OCHIRILGAN = 'ochirildi'
+
+
+def kanaldan_ochirilganmi(elon):
+    """E'lon «kanaldan o'chirilgan» deb belgilanganmi (3452)."""
+    v = str((elon or {}).get('channel_message_id', '') or '').strip().lower()
+    return KANALDAN_OCHIRILGAN in re.split(r'[\s,;]+', v)
+
+
 def kanal_id_matn(postlar):
     """[(yo'nalish, mid)] → Sheets qiymati: bitta post umumiy kanalda — 123 / a123 (eski ko'rinish), aks holda «mobile:123 pc:45»."""
     if len(postlar) == 1 and post_kanal(postlar[0][0]) == umumiy_kanal():
@@ -2364,6 +2483,27 @@ def elon_kanali(num):
     elon, _ = elon_cache_get(num)
     p = kanal_postlar(elon)
     return p[0][1] if p else kanal_tanla('elon')
+
+
+KANAL_QISQA = {'mobile': 'Mobile', 'pc': 'PC', 'camera': 'Camera'}
+
+
+def kanal_nomi(chat):
+    """Kanal → admin o'qiydigan qisqa nom: «Camera»; yo'nalish kanali bo'lmasa — manzilning o'zi (3403)."""
+    for y, nom in KANAL_QISQA.items():
+        if chat == MAIN_KANALLAR.get(y) or str(chat).lstrip('@').lower() == YON_KANAL[y][1].lower():
+            return nom
+    return str(chat)
+
+
+def elon_kanallari(nums):
+    """Shu e'lonlarning postlari turgan kanallar (takrorsiz, chiqish tartibida) — javob va adminga xabar uchun (3403)."""
+    out = []
+    for n in nums:
+        for _, chat, _ in kanal_postlar(elon_cache_get(n)[0]):
+            if chat not in out:
+                out.append(chat)
+    return out
 
 
 def kop_donali(elon):
@@ -2386,6 +2526,37 @@ def oxirgi_mi(elon):
         return soni_val(elon) == 1 and int(float(str(elon.get('sotilgan') or 0).strip())) > 0
     except Exception:
         return False
+
+
+def _sotilgan_n(elon):
+    try:
+        return int(float(str((elon or {}).get('sotilgan') or 0).strip()))
+    except Exception:
+        return 0
+
+
+def tugadi_matni(elon):
+    """3421 (3351 qoidasi): post narx o'rnidagi yozuv — None (sotuvda), 'SOTILDI' (donalik sotildi), 'QOLMADI' (ko'p donali tugadi).
+    Store endi ko'p donali tovarning oxirgi donasida 'sold' QO'YMAYDI — status active, soni 0 («Hozircha qolmadi», sayt isQolmagan).
+    'sold' + soni ustuni to'la: jami 1 ta sotilgan (`sotilgan` = 1) — aslida 1 talik tovar (admin formasi soni=1 qo'yadi) → SOTILDI
+    (ilgari «QOLMADI» chiqardi); qolgani — ko'p donali edi → QOLMADI (eski xulq)."""
+    if elon_status(elon) == 'sold':
+        return 'QOLMADI' if kop_donali(elon) and _sotilgan_n(elon) != 1 else 'SOTILDI'
+    if elon_status(elon) == 'active' and soni_val(elon) == 0:
+        return 'QOLMADI'
+    return None
+
+
+def muhr_kerak(elon):
+    """3421: kanal rasmlariga «SOTILDI» muhri — faqat donalik sotilganda."""
+    return SOTILDI_MUHR and tugadi_matni(elon) == 'SOTILDI'
+
+
+def sotildi_muhr(url):
+    """Tayyor ImageKit manzilga (`…?tr=…`) «SOTILDI» muhri layer'i. ImageKit bo'lmagan / `tr=` siz — o'zgarmaydi."""
+    if 'ik.imagekit.io' not in url or ('?tr=' not in url and '&tr=' not in url):
+        return url
+    return url + ':' + SOTILDI_MUHR_LAYER
 
 
 def soni_qatori(elon):
@@ -2666,14 +2837,16 @@ def kanal_tahrir(num):
     mid = kanal_msg_id(elon)
     if not mid:
         return False, "post yo'q"
-    if toplam_postmi(elon, models):
-        return toplam_tahrir(mid)
     # A26: tahrirda ham suv belgisi (joyi o'zgargan bo'lsa — yangi joyda). editMessageText — bildirishnomasiz
     # MS3.1: har kanaldagi posti (yo'nalishi o'ziniki); kollaj — asosiy post bo'yicha
+    # 3403: ikki yo'nalishli e'lon bir kanalda to'plamda, boshqasida alohida bo'lishi mumkin — har post o'z ko'rinishida
     natija = (True, '')
     for y, chat, m in kanal_postlar(elon):
-        ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=kollajmi(mid),
-                                    yonalish=y or post_yonalish(elon, models, mid=m))
+        if post_toplammi(elon, models, y, chat, m):
+            ok, xato = toplam_tahrir(m, chat)
+        else:
+            ok, xato = kanal_rich_yubor(num, elon, models, chat, m, kollaj=kollajmi(mid),
+                                        yonalish=y or post_yonalish(elon, models, mid=m))
         if not ok and natija[0]:
             natija = (False, xato)
     return natija
@@ -2733,24 +2906,28 @@ def kanal_ochir(num):
     elon, models = elon_cache_get(num)
     if not elon:
         return False, "e'lon topilmadi"
-    mid = kanal_msg_id(elon)
-    if not mid:
+    postlar = kanal_postlar(elon)
+    if not postlar:
         return True, ''
-    if toplam_postmi(elon, models):
-        kanal_id_yoz(num, None)
-        return toplam_tahrir(mid)
+    toplamlar = [(c, m) for y, c, m in postlar if post_toplammi(elon, models, y, c, m)]   # 3403: har kanalda alohida
     qoldi, xato = [], ''   # MS3.1: hamma kanaldagi posti; o'chmagani id'da qoladi
-    for y, chat, m in kanal_postlar(elon):
+    for y, chat, m in postlar:
+        if (chat, m) in toplamlar:
+            continue
         ok, x = delete_msg(chat, m)
         if not ok:
             qoldi.append((y, m))
             xato = xato or x
     if not qoldi:
         kanal_id_yoz(num, None)
-        return True, ''
-    if qoldi[0][0] and len(qoldi) < len(kanal_postlar(elon)):
+    elif qoldi[0][0] and len(qoldi) < len(postlar):
         kanal_id_yoz(num, ' '.join(_tok(y, m) for y, m in qoldi))
-    return False, xato
+    natija = not qoldi
+    for chat, m in toplamlar:   # id yozilgandan keyin: to'plam shu e'lonsiz qayta yasaladi
+        ok, x = toplam_tahrir(m, chat)
+        if not ok:
+            natija, xato = False, xato or x
+    return natija, xato
 
 
 def kanal_yana_keldi(num, yonalish=None):
@@ -2761,11 +2938,13 @@ def kanal_yana_keldi(num, yonalish=None):
     if not elon:
         return None, "e'lon topilmadi"
     mid = kanal_msg_id(elon)
-    toplamda = bool(mid) and toplam_postmi(elon, models)
-    eskilar = [] if toplamda or not mid else kanal_postlar(elon)   # MS3.1: hamma kanaldagisi
+    postlar = kanal_postlar(elon)   # MS3.1: hamma kanaldagisi
+    toplamlar = [(c, m) for y, c, m in postlar if post_toplammi(elon, models, y, c, m)]
+    eskilar = [p for p in postlar if (p[1], p[2]) not in toplamlar]
     yangi, xato = kanal_post(num, yonalish or (_POST_YON.get(int(mid)) if mid else None))
-    if yangi and toplamda:
-        toplam_tahrir(mid)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
+    if yangi:
+        for chat, m in toplamlar:
+            toplam_tahrir(m, chat)   # BUGUN31: eski to'plamdan chiqdi (id endi yangi post'niki) — to'plam qayta yasaladi
     if yangi and eskilar:
         _eski_ochir(eskilar, f'№{num}')
     return yangi, xato
@@ -2839,26 +3018,35 @@ def toplam_elonlar():
     return _toplam_items(lambda e: not kanal_msg_id(e))
 
 
-def _mid_elonlar(mid, hammasi=False):
-    """Shu postga (channel_message_id) yozilgan e'lonlar — har qanday tur. hammasi=False — faqat faollari."""
+def _mid_elonlar(mid, hammasi=False, chat=None):
+    """Shu postga (channel_message_id) yozilgan e'lonlar — har qanday tur. hammasi=False — faqat faollari.
+    3403: message_id har kanalda o'zicha sanaladi (Mobile'dagi 300 va Camera'dagi 300 — boshqa-boshqa post), shuning uchun
+    solishtirish (kanal, id) bo'yicha. chat yo'q — umumiy kanaldagi post (faqat id saqlagan eski tugmalar)."""
+    chat = chat or (umumiy_kanal() if MAIN_KANALLAR else None)
     with _elon_cache_lock:
         items = list(_ELON_CACHE['by_num'].values())
         models = dict(_ELON_CACHE['models'])
-    out = [e for e in items if kanal_msg_id(e) == int(mid)
+    out = [e for e in items if any(m == int(mid) and chat in (None, c) for _, c, m in kanal_postlar(e))
            and (hammasi or elon_status(e) not in ('deleted', 'waited'))]
     out.sort(key=lambda e: _tur_kalit(e, models))
     return out, models
 
 
+def post_toplammi(elon, models, y, chat, mid):
+    """Shu kanaldagi post to'plammi: case/part/accessory (/toplam) yoki shu (kanal, id) ga 2+ e'lon yozilgan (B29)."""
+    # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
+    # 3184.5: id «mobile:123» — o'z alohida posti (kanal_post), to'plam emas
+    if not y and not guruh_idsi(elon) and elon_turi(elon, models) in TOPLAM_TURLAR:
+        return True
+    return len(_mid_elonlar(mid, hammasi=True, chat=chat)[0]) > 1
+
+
 def toplam_postmi(elon, models):
-    """E'lonning posti to'plammi: case/part/accessory (/toplam) yoki bitta id'ga 2+ e'lon yozilgan (saytdan belgilab, B29)."""
-    mid = kanal_msg_id(elon)
-    if guruh_idsi(elon):
-        # BUGUN251: rang guruhidagi e'lonning o'z posti (Ranglarni alohida) — oddiy post; to'plam faqat id umumiy bo'lsa
-        return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
-    if elon_turi(elon, models) in TOPLAM_TURLAR and not any(y for y, _, _ in kanal_postlar(elon)):
-        return True   # 3184.5: id «mobile:123» — o'z alohida posti (kanal_post), to'plam emas
-    return bool(mid) and len(_mid_elonlar(mid, hammasi=True)[0]) > 1
+    """E'lonning biror posti to'plammi (post_toplammi)."""
+    postlar = kanal_postlar(elon)
+    if not postlar:
+        return not guruh_idsi(elon) and elon_turi(elon, models) in TOPLAM_TURLAR
+    return any(post_toplammi(elon, models, *p) for p in postlar)
 
 
 def _narx_son(e):
@@ -2929,7 +3117,7 @@ def build_toplam_html(items, models_by_id, kollaj=False):
             else:
                 narx = f'<b>{price}$</b>' if price else ''
             qold = soni_qatori(e)
-            emoji = TUR_NOMI.get(elon_turi(e, models_by_id), ('▫️',))[0]
+            emoji = tur_belgisi(e, models_by_id)[1]   # 3422: aksessuar — o'z turi emojisi
             qatorlar.append(f'{emoji} №{num} {nom} — {narx}' + (f' · {qold.split(" / ")[0]}' if qold else ''))
         royxat = '<p>' + '<br/>'.join(qatorlar) + '</p>'
     else:
@@ -2964,12 +3152,14 @@ def build_toplam_html(items, models_by_id, kollaj=False):
     )
 
 
-def toplam_tahrir(mid):
-    """Shu to'plam postiga kirgan (id bir xil) e'lonlar bo'yicha post qayta yasalib tahrirlanadi; hech kim qolmasa — o'chadi."""
-    items, models = _mid_elonlar(mid)
+def toplam_tahrir(mid, chat=None):
+    """Shu to'plam postiga kirgan (id bir xil) e'lonlar bo'yicha post qayta yasalib tahrirlanadi; hech kim qolmasa — o'chadi.
+    chat — post turgan kanal (3403); yo'q — umumiy kanal."""
+    chat = chat or kanal_tanla('toplam')
+    items, models = _mid_elonlar(mid, chat=chat)
     if not items:
-        return delete_msg(kanal_tanla('toplam'), mid)
-    return edit_rich(kanal_tanla('toplam'), mid, build_toplam_html(items, models, kollaj=kollajmi(mid)))
+        return delete_msg(chat, mid)
+    return edit_rich(chat, mid, build_toplam_html(items, models, kollaj=kollajmi(mid)))
 
 
 def kollaj_tugma(mid, kollaj=False):
@@ -3110,11 +3300,27 @@ def kollaj_almashtir(admin_chat, xabar_id, data):
         logger.error(f'kollaj tugmasi: {e}')
 
 
+def toplam_guruhlari(items, models):
+    """3403: to'plam kanallarga bo'linadi — {kanal: (yo'nalish, [e'lonlar])}. Ikki yo'nalishli e'lon ikkala kanalda
+    (kanal_post kabi); ikki yo'nalish bitta kanalga tushsa — bir marta."""
+    out = {}
+    for e in items:
+        bor = set()
+        for y in [y for y in elon_yonalishlar(e, models) if y in YON_KANAL] or ['mobile']:
+            chat = kanal_tanla('toplam', y)
+            if chat not in bor:
+                bor.add(chat)
+                out.setdefault(chat, (y, []))[1].append(e)
+    return out
+
+
 def kanal_toplam(nums):
-    """B29 (A18 a): saytda belgilangan e'lonlar → kanalga BITTA to'plam posti.
-    Kanalda posti bor / chala / o'chirilgan e'lon o'tkazib yuboriladi (ikki marta chiqmasin).
+    """B29 (A18 a): saytda belgilangan e'lonlar → har kanalga BITTA to'plam posti (3403: o'z yo'nalishi kanaliga; turli
+    yo'nalish — har kanalga o'zinikilar, kanalga bittasi tushsa — o'sha e'lonning oddiy posti).
+    Kanalda posti bor / chala / o'chirilgan / OLX e'lon o'tkazib yuboriladi (ikki marta chiqmasin).
     Bitta qolsa va u telefon/kamera bo'lsa — oddiy post (kanal_post).
-    Natija: (mid, xato, yuborilgan nomerlar, [{'num', 'sabab'}])."""
+    id: hammasi umumiy kanalda — eskicha «a123»; boshqa kanalga ketsa — «camera:a123» (ikki kanalda — «mobile:a5 pc:a7»).
+    Natija: (mid, xato, yuborilgan nomerlar, [{'num', 'sabab'}]); mid — birinchi chiqqan post."""
     tanlangan, otkazildi, models = [], [], {}
     for n in dict.fromkeys(str(x) for x in nums):
         elon, md = elon_cache_get(n)
@@ -3123,6 +3329,8 @@ def kanal_toplam(nums):
             otkazildi.append({'num': int(n), 'sabab': "topilmadi yoki chala / o'chirilgan"})
         elif kanal_msg_id(elon):
             otkazildi.append({'num': int(n), 'sabab': 'kanalda posti bor'})
+        elif 'olx' in elon_yonalishlar(elon, models):   # 3228: yashirin bo'lim — kanal_post kabi
+            otkazildi.append({'num': int(n), 'sabab': "OLX e'loni kanalga chiqmaydi"})
         elif guruh_idsi(elon):   # BUGUN251: rang guruhi o'z posti bilan chiqadi
             otkazildi.append({'num': int(n), 'sabab': "rang guruhida — guruh blokidan «Kanalga»"})
         else:
@@ -3134,12 +3342,34 @@ def kanal_toplam(nums):
     if len(tanlangan) == 1 and elon_turi(tanlangan[0], models) not in TOPLAM_TURLAR:
         mid, xato = kanal_post(yuborildi[0])
         return mid, xato, (yuborildi if mid else []), otkazildi
-    mid, xato = send_rich(kanal_tanla('toplam'), build_toplam_html(tanlangan, models))
-    if not mid:
-        return None, xato, [], otkazildi
-    for n in yuborildi:
-        kanal_id_yoz(n, mid)
-    return mid, '', yuborildi, otkazildi
+    guruhlar = toplam_guruhlari(tanlangan, models)
+    if list(guruhlar) == [kanal_tanla('toplam')]:
+        mid, xato = send_rich(kanal_tanla('toplam'), build_toplam_html(tanlangan, models))
+        if not mid:
+            return None, xato, [], otkazildi
+        for n in yuborildi:
+            kanal_id_yoz(n, mid)
+        return mid, '', yuborildi, otkazildi
+    postlar, xatolar = {}, []
+    for chat, (y, items) in guruhlar.items():
+        if len(items) == 1:
+            m, x = kanal_rich_yubor(int(float(items[0].get('num', 0) or 0)), items[0], models, chat, yonalish=y)
+        else:
+            m, x = send_rich(chat, build_toplam_html(items, models))
+        if not m:
+            xatolar.append(f'{chat}: {x}')
+            logger.error(f'kanal_toplam → {chat}: {x}')
+            continue
+        for e in items:
+            postlar.setdefault(int(float(e.get('num', 0) or 0)), []).append((y, int(m)))
+    if not postlar:
+        return None, '; '.join(xatolar), [], otkazildi
+    for n, p in postlar.items():
+        kanal_id_yoz(n, ' '.join(_tok(y, m) for y, m in p))
+    otkazildi += [{'num': n, 'sabab': 'kanalga ketmadi'} for n in yuborildi if n not in postlar]
+    if xatolar:
+        send_msg(admin_joy('post'), f"⚠️ To'plam ba'zi kanalga chiqmadi: <code>{html_escape('; '.join(xatolar))}</code>")
+    return next(iter(postlar.values()))[0][1], '', [n for n in yuborildi if n in postlar], otkazildi
 
 
 def build_katalog_html():
@@ -3178,7 +3408,8 @@ def kanal_taklif(admin_chat, tur):
         return
     key = f'{tur}{int(time.time())}'
     _KANAL_KUTMOQDA[key] = {'tur': tur, 'html': html, 'nums': nums}
-    send_msg(admin_chat, izoh + f"\nKanal: {kanal_tanla(tur)}", {"inline_keyboard": [[
+    kanal = ', '.join(kanal_nomi(c) for c in toplam_guruhlari(items, models)) if tur == 'toplam' else kanal_tanla(tur)
+    send_msg(admin_chat, izoh + f"\nKanal: {kanal}", {"inline_keyboard": [[
         {"text": "✅ Kanalga yuborish", "callback_data": f"kanal_ok:{key}"},
         {"text": "❌ Bekor", "callback_data": f"kanal_no:{key}"}]]})
 
@@ -3191,17 +3422,20 @@ def kanal_tasdiq(admin_chat, key, ok):
     if not ok:
         send_msg(admin_chat, "❌ Bekor qilindi.")
         return
-    kanal = kanal_tanla(p['tur'])
-    mid, xato = send_rich(kanal, p['html'])
-    if not mid:
-        send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
-        return
-    if p['tur'] == 'toplam':
-        for n in p['nums']:
-            kanal_id_yoz(n, mid)
-        send_msg(admin_chat, f"✅ To'plam kanalga chiqdi (id {mid}), {len(p['nums'])} ta e'longa yozildi.", kollaj_tugma(mid))
+    if p['tur'] == 'toplam':   # 3403: o'z yo'nalishi kanaliga — saytdagi to'plam bilan bitta yo'l
+        mid, xato, yuborildi, _ = kanal_toplam(p['nums'])
+        if not mid:
+            send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
+            return
+        nomlar = ', '.join(kanal_nomi(c) for c in elon_kanallari(yuborildi))
+        send_msg(admin_chat, f"✅ To'plam kanalga chiqdi — {nomlar} (id {mid}), {len(yuborildi)} ta e'longa yozildi.", kollaj_tugma(mid))
         kollaj_nusxa_fonda(mid)
     else:
+        kanal = kanal_tanla(p['tur'])
+        mid, xato = send_rich(kanal, p['html'])
+        if not mid:
+            send_msg(admin_chat, f"❌ Kanalga ketmadi: <code>{html_escape(xato)}</code>")
+            return
         try:
             req.post(f'{TG_API}/pinChatMessage', json={'chat_id': kanal, 'message_id': mid, 'disable_notification': True}, timeout=15)
         except Exception as e:
@@ -3211,7 +3445,8 @@ def kanal_tasdiq(admin_chat, key, ok):
 
 def kanal_sinxron(eski, yangi):
     """Sayt (admin) e'lonni saqlaganda: o'chirilgan → post o'chadi; post bor → tahrir;
-    yangi phone/camera (waited→active yoki yangi) → avto-post. Boshqa turlar — /toplam."""
+    yangi phone/camera (waited→active yoki yangi) → adminga «📣 Kanalga yuborish» TAKLIFI (3452: o'zi yubormaydi).
+    3452: tahrir rad etilsa — YANGI POST YO'Q; post kanalda yo'q bo'lsa e'lon «kanaldan o'chirilgan» deb belgilanadi."""
     try:
         num = int(yangi['num'])
         st = elon_status(yangi)
@@ -3228,16 +3463,15 @@ def kanal_sinxron(eski, yangi):
             ok, xato = kanal_tahrir(num)
             sabab = '' if ok else tahrir_sabab(xato)
             if sabab and not toplam_postmi(yangi, elon_cache_get(num)[1]):
-                # BUGUN251: post qo'lda o'chirilgan / boshqa bot yuborgan — tahrir bo'lmaydi
-                izoh = f"⚠️ №{num} kanal posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}."
-                if st == 'active':
-                    yangi_mid, x2 = kanal_yana_keldi(num)
-                    izoh += (f" Yangi post yuborildi (id {yangi_mid})." if yangi_mid
-                             else f" Yangi post ham ketmadi: <code>{html_escape(x2)}</code>")
-                else:
-                    izoh += " E'lon faol emas — yangi post yuborilmadi."
-                send_msg(admin_joy('post'), izoh)
-                return 'yana' if st == 'active' else 'tahrir'
+                # BUGUN251: post qo'lda o'chirilgan / boshqa bot yuborgan — tahrir bo'lmaydi.
+                # 3452: yangi post YUBORILMAYDI (Owner o'chirgan post qayta chiqmasin) — faqat xabar va belgi
+                if sabab == 'yoq':
+                    kanaldan_ochirildi_belgila(num)
+                    send_msg(admin_joy('post'), f"🚫 №{num} kanalda yo'q — qayta yuborilmadi.")
+                    return 'ochirildi'
+                send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
+                                            "Yangi post yuborilmadi.")
+                return 'tahrir'
             if not ok:
                 send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
             elif eski is not None and _images_xom(eski) != _images_xom(yangi) and not toplam_postmi(yangi, elon_cache_get(num)[1]):
@@ -3248,18 +3482,63 @@ def kanal_sinxron(eski, yangi):
             return ''   # xotira yuklanmagan — eskisi noma'lum, ehtiyot: avto-post yo'q
         _, models = elon_cache_get(num)
         yangi_elon = eski is None or elon_status(eski) == 'waited'
-        if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR:
-            mid, xato = kanal_post(num)
-            if mid:
-                send_msg(admin_joy('post'), f"📣 №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}", kollaj_tugma(mid))
-                kollaj_nusxa_fonda(mid)
-            else:
-                send_msg(admin_joy('post'), f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
-            return 'post'
+        if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR and not kanaldan_ochirilganmi(yangi):
+            # 3452: avto-post YO'Q — faqat taklif; Owner «📣 Kanalga yuborish» ni bossa ketadi
+            send_msg(admin_joy('post'), f"🆕 №{num} saytga chiqdi. Kanalga o'zi yuborilmaydi — yuborasizmi?\nKanal: {elon_kanali(num)}",
+                     {"inline_keyboard": [[{"text": "📣 Kanalga yuborish", "callback_data": f"apost:{num}"},
+                                           {"text": "❌ Kerak emas", "callback_data": f"apost_no:{num}"}]]})
+            return 'taklif'
         return ''
     except Exception as e:
         logger.error(f'kanal_sinxron: {e}')
         return ''
+
+
+def kanaldan_ochirildi_belgila(num):
+    """3452: e'lon posti kanalda yo'q (Owner o'chirgan) — «kanaldan o'chirilgan» belgisi. Ikki kanalli e'londa tahrir
+    bo'ladigan (kanalda turgan) postlar id'da qoladi, yo'qlari olib tashlanadi."""
+    elon, models = elon_cache_get(num)
+    postlar = kanal_postlar(elon)
+    qoldi = []
+    if len(postlar) > 1:
+        for y, chat, m in postlar:
+            if post_toplammi(elon, models, y, chat, m):
+                qoldi.append((y, m))
+                continue
+            ok, x = kanal_rich_yubor(num, elon, models, chat, m, yonalish=y or post_yonalish(elon, models, mid=m))
+            if ok or tahrir_sabab(x) != 'yoq':
+                qoldi.append((y, m))
+    return kanal_id_yoz(num, ' '.join([KANALDAN_OCHIRILGAN] + [_tok(y, m) for y, m in qoldi]))
+
+
+def avto_post_tugma(chat, msg_id, data):
+    """3452: «📣 Kanalga yuborish» / «❌ Kerak emas» (kanal_sinxron taklifi). Owner bosdi — endi yuboriladi."""
+    ok = data.startswith('apost:')
+    try:
+        num = int(data.split(':', 1)[1])
+    except Exception:
+        return
+    try:   # tugma bir marta — ikkinchi bosish ikkinchi post yubormasin
+        req.post(f'{TG_API}/editMessageReplyMarkup', json={'chat_id': chat, 'message_id': msg_id,
+                                                           'reply_markup': {"inline_keyboard": []}}, timeout=10)
+    except Exception as e:
+        logger.error(f'avto_post_tugma: {type(e).__name__}')
+    if not ok:
+        send_msg(chat, f"❌ №{num} kanalga yuborilmadi (kerak emas).")
+        return
+    elon, _ = elon_cache_get(num)
+    if not elon or elon_status(elon) != 'active':
+        send_msg(chat, f"⚠️ №{num} hozir faol emas — yuborilmadi.")
+        return
+    if kanal_msg_id(elon):
+        send_msg(chat, f"ℹ️ №{num} kanalda allaqachon bor — qayta yuborilmadi.")
+        return
+    mid, xato = kanal_post(num)
+    if mid:
+        send_msg(chat, f"📣 №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}")
+        kollaj_nusxa_fonda(mid)
+    else:
+        send_msg(chat, f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3271,7 +3550,7 @@ def kanal_sinxron(eski, yangi):
 #    (orasi ≥3 s, 429 — kutib qayta), oxirida guruh posti tahrir: havolalar rang postlariga. Yo'q — faqat guruh posti.
 #  · Qayta yuborish: yangisi yuboriladi, eskisi o'chadi. O'chmasa (48 soatdan eski / boshqa bot) — bot tahrirlamaydi,
 #    adminga «eski postni qo'lda o'chiring» + havola (foydalanuvchi javobi 1B, 2026-10-17).
-#  · Tahrir rad etilsa (post qo'lda o'chirilgan / boshqa bot yuborgan) — yangi post + adminga sababi.
+#  · Tahrir rad etilsa (post qo'lda o'chirilgan / boshqa bot yuborgan) — 3452: yangi post YO'Q, adminga sababi.
 #  · Kanal: env GURUH_KANAL_ID — bo'sh / «test» → TEST_CHANNEL (sukut: merge'dan keyin ham asl kanalga sinov posti
 #    ketmasin); «asl» → e'lonning odatdagi kanali (post_kanal); boshqa qiymat — o'sha chat.
 #    Test rejimida rang postlarining id'si Elonlar'ga YOZILMAYDI (asl kanal posti deb o'ylanmasin) — guruh id'si ichida («r»).
@@ -3474,9 +3753,12 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
         if elon_status(e) == 'sold':
             qatorlar.append(f'• <s>{nom}</s> — qolmadi / нет')
             continue
-        url = havolalar.get(num) or f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}'
+        # 3413 (Owner 2026-11-07): rang guruhida har rangga havola YO'Q — mijoz «🛒 Sotib olish» bilan saytda guruhni ochib,
+        #     rangni o'zi tanlaydi. Havola faqat juft guruhda (telefon + g'ilof) va «Ranglarni alohida» yoqilganda (rang posti)
+        url = havolalar.get(num) or (f'https://t.me/{BOT_USERNAME}?startapp=elon_{num}' if aralash else '')
         p = _narx_son(e)
-        qatorlar.append(f'• <a href="{html_escape(url)}">{nom}</a>' + (f' — {fmt(p)}$' if (farqli or aralash) and p else '')
+        qatorlar.append((f'• <a href="{html_escape(url)}">{nom}</a>' if url else f'• {nom}')
+                        + (f' — {fmt(p)}$' if (farqli or aralash) and p else '')
                         + (f' · {html_escape(hol(e)[0])} / {html_escape(hol(e)[1])}' if len(hollar) > 1 else ''))
     ranglar = ('<p><b>Tanlang / Выберите:</b><br/>' if aralash else '<p><b>Ranglari / Цвета:</b><br/>') + '<br/>'.join(qatorlar) + '</p>' if qatorlar else ''
 
@@ -3490,7 +3772,8 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None):
     mosligi = '<p>' + '<br/>'.join(mos) + '</p>' if mos else ''
 
     birinchi = _gnum(faol[0] if faol else (azolar[0] if azolar else {}))
-    sahifa = f'elon_{birinchi}' if birinchi else 'home'
+    # 3413: rang guruhi — «Sotib olish» saytda guruhni rang TANLANMAGAN holda ochadi (startapp=guruh_<num>, 13-boshlash.js)
+    sahifa = (f'elon_{birinchi}' if aralash else f'guruh_{birinchi}') if birinchi else 'home'
     aloqa, tugmalar = post_oxiri(sahifa, post_yonalish(azolar[0], models) if azolar else 'mobile', shablon)
     return (
         media
@@ -3525,9 +3808,21 @@ def _guruh_havolalar(g, azolar, models, kd):
     return out
 
 
+def guruh_kanaldan_ochirilganmi(g):
+    """3452: guruh posti «kanaldan o'chirilgan» ({"o":1}) — navbat uni qayta chiqarmaydi."""
+    v = str((g or {}).get('kanal_message_id') or '').strip()
+    if not v.startswith('{'):
+        return False
+    try:
+        return bool(json.loads(v).get('o'))
+    except Exception:
+        return False
+
+
 def guruh_kanal_yoz(gid, kd, alohida=None):
-    """Guruh posti id'si (va «alohida») — Guruhlar varag'iga (Apps Script guruhKanal) va xotiraga. True — ok."""
-    payload = {'id': str(gid), 'kanal_message_id': json.dumps(kd, separators=(',', ':')) if kd and kd.get('m') else ''}
+    """Guruh posti id'si (va «alohida») — Guruhlar varag'iga (Apps Script guruhKanal) va xotiraga. True — ok.
+    3452: kd={'o': 1} — «kanaldan o'chirilgan» belgisi (post id'siz)."""
+    payload = {'id': str(gid), 'kanal_message_id': json.dumps(kd, separators=(',', ':')) if kd and (kd.get('m') or kd.get('o')) else ''}
     if alohida is not None:
         payload['alohida'] = bool(alohida)
     ok = False
@@ -3686,6 +3981,108 @@ def guruh_ranglar_fon(gid):
         logger.error(f'guruh_ranglar_fon {gid}: {e}')
 
 
+# ── 3346 (Owner 2026-11-03): saytdagi «🧪 Test kanal» richagi ──
+# Yoqiq bo'lsa sayt so'rovga test: true qo'shadi → «Kanalga» (PC, Mobile, Camera), belgilab «Yuborish» va guruh «Kanalga» —
+# hammasi TEST kanalga (KANAL_YOLI['sinov']). Jadvalga HECH NARSA yozilmaydi (channel_message_id, Guruhlar kanal id'si):
+# aks holda bot test postni asl kanaldagi post deb tahrirlab / o'chirib yurardi. Asl kanaldagi post o'chmaydi, OLX albomi yo'q.
+def kanal_sinov_post(num, yonalish=None):
+    """E'lon posti test kanalga — asl postdek (yo'nalish, rasm, matn), id yozilmaydi. (mid, xato)."""
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return None, "e'lon topilmadi"
+    if elon_status(elon) in ('deleted', 'waited'):
+        return None, "chala yoki o'chirilgan e'lon postlanmaydi"
+    if 'olx' in elon_yonalishlar(elon, models):
+        return None, "OLX e'loni kanalga chiqmaydi"
+    return kanal_rich_yubor(num, elon, models, kanal_tanla('sinov'), yonalish=post_yonalish(elon, models, tanlangan=yonalish))
+
+
+def kanal_sinov_toplam(nums):
+    """kanal_toplam'ning test nusxasi: kanalda posti borlari ham olinadi (sinash uchun), id yozilmaydi.
+    (mid, xato, yuborilgan nomerlar, [{'num', 'sabab'}])."""
+    tanlangan, otkazildi, models = [], [], {}
+    for n in dict.fromkeys(str(x) for x in nums):
+        elon, md = elon_cache_get(n)
+        models = md or models
+        if not elon or elon_status(elon) in ('deleted', 'waited'):
+            otkazildi.append({'num': int(n), 'sabab': "topilmadi yoki chala / o'chirilgan"})
+        elif 'olx' in elon_yonalishlar(elon, models):   # 3228: yashirin bo'lim — test kanalga ham chiqmaydi
+            otkazildi.append({'num': int(n), 'sabab': "OLX e'loni kanalga chiqmaydi"})
+        elif guruh_idsi(elon):
+            otkazildi.append({'num': int(n), 'sabab': "rang guruhida — guruh blokidan «Kanalga»"})
+        else:
+            tanlangan.append(elon)
+    if not tanlangan:
+        return None, "yuboriladigan e'lon yo'q", [], otkazildi
+    tanlangan.sort(key=lambda e: _tur_kalit(e, models))
+    yuborildi = [int(float(e.get('num', 0) or 0)) for e in tanlangan]
+    if len(tanlangan) == 1 and elon_turi(tanlangan[0], models) not in TOPLAM_TURLAR:
+        mid, xato = kanal_sinov_post(yuborildi[0])
+        return mid, xato, (yuborildi if mid else []), otkazildi
+    # 3403 dagidek bo'linadi (asl kanalda qanday chiqsa, testda ham shunday ko'rinsin), lekin HAR post test kanalga:
+    # toplam_guruhlari kaliti — asl kanal, u faqat guruhlash uchun, unga hech narsa yuborilmaydi
+    chat, birinchi, chiqdi, xatolar = kanal_tanla('sinov'), None, [], []
+    for y, items in toplam_guruhlari(tanlangan, models).values():
+        if len(items) == 1:
+            m, x = kanal_rich_yubor(int(float(items[0].get('num', 0) or 0)), items[0], models, chat, yonalish=y)
+        else:
+            m, x = send_rich(chat, build_toplam_html(items, models))
+        if not m:
+            xatolar.append(x)
+            continue
+        birinchi = birinchi or m
+        chiqdi += [n for n in (int(float(e.get('num', 0) or 0)) for e in items) if n not in chiqdi]
+    if not birinchi:
+        return None, '; '.join(str(x) for x in xatolar), [], otkazildi
+    otkazildi += [{'num': n, 'sabab': 'test kanalga ketmadi'} for n in yuborildi if n not in chiqdi]
+    return birinchi, '', [n for n in yuborildi if n in chiqdi], otkazildi
+
+
+def guruh_sinov_yubor(gid, alohida=False):
+    """Guruh posti test kanalga, Guruhlar'ga yozilmaydi. alohida — fonda har rang test kanalga, keyin guruh postidagi
+    havolalar ularga. (mid, xato, havola)."""
+    g, azolar, models = guruh_ol(str(gid or '').strip(), yangila=True)
+    if not g:
+        return None, 'Guruh topilmadi', ''
+    if not [e for e in azolar if elon_status(e) != 'sold']:
+        return None, "Guruhda sotuvdagi rang yo'q", ''
+    chat = kanal_tanla('sinov')
+    mid, xato = _429_bilan(send_rich, chat, guruh_post_qur(g, azolar, models, {}))
+    if not mid:
+        return None, xato, ''
+    havola = post_havola(chat, mid)
+    if alohida:
+        _fonda(_guruh_sinov_ranglar, g, azolar, models, int(mid))
+    else:
+        send_msg(admin_joy('post'), f"🧪 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}» TEST kanalga: {havola or mid}")
+    return int(mid), '', havola
+
+
+def _guruh_sinov_ranglar(g, azolar, models, mid):
+    """guruh_sinov_yubor(alohida) foni: har sotuvdagi rang test kanalga, keyin guruh posti shu havolalar bilan tahrir."""
+    try:
+        chat, havolalar, xatolar = kanal_tanla('sinov'), {}, []
+        for e in [x for x in azolar if elon_status(x) != 'sold']:
+            _uxla(GURUH_ORALIQ_S)
+            num = _gnum(e)
+            m, x = _429_bilan(kanal_rich_yubor, num, e, models, chat)
+            if m:
+                havolalar[num] = post_havola(chat, m)
+            else:
+                xatolar.append(f'№{num}: {x}')
+        if havolalar:
+            ok, x = _429_bilan(edit_rich, chat, mid, guruh_post_qur(g, azolar, models, havolalar))
+            if not ok:
+                xatolar.append(f'guruh posti tahriri: {x}')
+        izoh = (f"🧪 Guruh «{html_escape(_guruh_nomi(g, azolar, models))}» TEST kanalga: guruh posti + "
+                f"{len(havolalar)} ta rang ({post_havola(chat, mid) or mid})")
+        if xatolar:
+            izoh += '\n⚠️ ' + '\n⚠️ '.join(html_escape(x) for x in xatolar)
+        send_msg(admin_joy('post'), izoh)
+    except Exception as e:
+        logger.error(f'_guruh_sinov_ranglar: {e}')
+
+
 # ── 3184.5 (2026-10-25): kanalga OMMAVIY yuborish (konkursdan oldin — eski e'lonlar) va 15 kunlik TOMCHI ──
 # Owner: «test kanalga 4–5 ta; yaxshi bo'lsa kanalga eskilarni hammasini yuboramiz, so'ng konkurs — kirgan odam eski
 # e'lonlarni ko'radi; keyin yangi e'lonlar birin-ketin, 15 kun ichida».
@@ -3701,7 +4098,9 @@ OMMAVIY_XATO_KETMA_KET = 5                # shuncha ketma-ket xato — to'xtaydi
 # Yarim chegarasi — HAMMA faol telefonlar (kanalga chiqqani ham) raqam bo'yicha teng ikkiga: 1-yarim chiqqach 2-yarim siljimaydi.
 # (3184.5 da hamma tur: qism → g'ilof → aksessuar → kamera → telefon tartibida edi.)
 _OMMAVIY = {'ish': False, 'toxta': False}
-KANAL_TOMCHI_BOSHI = os.environ.get('KANAL_TOMCHI_BOSHI', '').strip()   # «2026-11-01» (Toshkent) — bo'sh: tomchi O'CHIQ
+# 3452 (Owner 2026-11-12): kanalga jadval bo'yicha o'zi yuborish YO'Q — env qo'yilsa ham tomchi ishlamaydi. Kod turibdi.
+TOMCHI_YOQIQ = False
+KANAL_TOMCHI_BOSHI = os.environ.get('KANAL_TOMCHI_BOSHI', '').strip() if TOMCHI_YOQIQ else ''   # «2026-11-01» (Toshkent) — bo'sh: tomchi O'CHIQ
 KANAL_TOMCHI_KUN = 15
 TOMCHI_SOAT = (10, 21)                    # Toshkent: kunlik postlar shu oraliqda teng taqsim
 _TOMCHI = {'sana': None, 'vaqtlar': [], 'yuborildi': 0, 'xato': set(), 'jim': False}
@@ -3735,12 +4134,13 @@ def kanal_navbat(tartib='ommaviy', yarim=None):
             turlar = {elon_turi(a, models) for a in azolar}
             if tartib == 'ommaviy' and 'phone' in turlar and len(turlar) > 1:
                 # 3189: juft guruh (telefon + g'ilof) — ommaviyda telefon o'z posti bilan, g'ilof chiqmaydi
-                out += [{'num': _gnum(a), 'tur': 'phone'} for a in azolar if elon_turi(a, models) == 'phone' and not kanal_msg_id(a)]
-            elif g and azolar and not guruh_kanal_oqi(g).get('m'):
+                out += [{'num': _gnum(a), 'tur': 'phone'} for a in azolar
+                        if elon_turi(a, models) == 'phone' and not kanal_msg_id(a) and not kanaldan_ochirilganmi(a)]
+            elif g and azolar and not guruh_kanal_oqi(g).get('m') and not guruh_kanaldan_ochirilganmi(g):
                 out.append({'gid': gid, 'num': min(_gnum(a) for a in azolar),
                             'tur': 'phone' if turlar == {'phone'} else elon_turi(azolar[0], models), 'soni': len(azolar)})
             continue
-        if not kanal_msg_id(e):
+        if not kanal_msg_id(e) and not kanaldan_ochirilganmi(e):   # 3452: Owner o'chirgani — navbatda yo'q
             out.append({'num': _gnum(e), 'tur': elon_turi(e, models)})
     if tartib == 'ommaviy':
         out = [x for x in out if x['tur'] == 'phone']
@@ -3911,6 +4311,9 @@ def tomchi_holat(hozir=None):
     navbat = [x for x in kanal_navbat('tomchi') if x['num'] not in _TOMCHI['xato']]
     r = tomchi_reja(hozir, len(navbat))
     if r['holat'] == 'ochiq':
+        if not TOMCHI_YOQIQ:
+            return (f"💧 Tomchi O'CHIRILGAN — kanalga o'zi hech narsa yubormaydi. Kanalga chiqmagan: {r['jami']} ta — "
+                    "qo'lda: saytdagi «📣 Kanalga» yoki /ommaviy boshla 1|2")
         return (f"💧 Tomchi O'CHIQ. Yoqilsa — kanal navbati: bugun {r['bugun']}, jami {r['jami']} "
                 f"({KANAL_TOMCHI_KUN} kunga, {TOMCHI_SOAT[0]}:00–{TOMCHI_SOAT[1]}:00). Yoqish — Render env KANAL_TOMCHI_BOSHI=YYYY-MM-DD")
     if r['holat'] == 'kutadi':
@@ -3924,7 +4327,7 @@ def tomchi_holat(hozir=None):
 
 def tomchi_qadam(hozir):
     """Fonda har daqiqa: vaqti kelgan bo'lsa navbatdagi BITTA narsa kanalga (eskisi birinchi). True — post yuborildi."""
-    if not _tomchi_boshi() or _OMMAVIY['ish']:
+    if not TOMCHI_YOQIQ or not _tomchi_boshi() or _OMMAVIY['ish']:
         return False
     navbat = [x for x in kanal_navbat('tomchi') if x['num'] not in _TOMCHI['xato']]
     r = tomchi_reja(hozir, len(navbat))
@@ -3978,7 +4381,8 @@ def kanal_navbat_buyruq(chat, text):
 
 def guruh_tahrir(gid, yangila=False):
     """Guruh postini hozirgi ma'lumotdan qayta yasab tahrirlaydi. Post yo'q — hech narsa; a'zo qolmasa — post o'chadi.
-    Tahrir rad etilsa (post o'chirilgan / boshqa bot) — yangi post + adminga sababi. Guruh tarqatilgan (Guruhlar'da
+    3452: tahrir rad etilsa (post o'chirilgan / boshqa bot) — YANGI POST YO'Q, adminga sababi; post kanalda yo'q bo'lsa
+    guruh «kanaldan o'chirilgan» ({"o":1}) — keyin ham qayta chiqmaydi. Guruh tarqatilgan (Guruhlar'da
     endi yo'q) — posti o'chadi. (True, '') / (False, xato)."""
     with _elon_cache_lock:
         oldin = (_ELON_CACHE.get('guruhlar') or {}).get(str(gid))
@@ -4008,20 +4412,11 @@ def guruh_tahrir(gid, yangila=False):
     if not sabab:
         return False, xato
     nom = html_escape(_guruh_nomi(g, azolar, models))
-    chat = guruh_kanali(azolar, models)
-    yangi = {'k': chat, 'm': None, 't': int(time.time()), 'r': kd['r'] if kd['k'] == chat else {}}
-    html = guruh_post_qur(g, azolar, models, _guruh_havolalar(g, azolar, models, yangi))
-    mid, x2 = _429_bilan(send_rich, chat, html)
-    if not mid:
-        send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
-                                    f"Yangi post ham ketmadi: <code>{html_escape(x2)}</code>")
-        return False, x2
-    yangi['m'] = int(mid)
-    guruh_kanal_yoz(gid, yangi)
-    if sabab == 'begona':
-        _eski_ochir([(None, kd['k'], kd['m'])], f'Guruh «{nom}»', kd.get('t'))
-    send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
-                                f"Yangi post yuborildi: {post_havola(chat, mid) or mid}")
+    if sabab == 'yoq':
+        guruh_kanal_yoz(gid, {'o': 1})
+        send_msg(admin_joy('post'), f"🚫 Guruh «{nom}» kanalda yo'q — qayta yuborilmadi.")
+        return True, ''
+    send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti yangilanmadi — {TAHRIR_SABAB_MATN[sabab]}. Yangi post yuborilmadi.")
     return True, ''
 
 
@@ -4437,6 +4832,14 @@ def get_konkurs():
 #  • 429 — retry_after kutiladi; 403 (bloklagan) — yozib qo'yiladi, keyingisiga o'tiladi.
 #  • Tugash vaqtidan 6 soatdan ko'p o'tgan (bot uzoq o'chiq edi) — o'zi tugatmaydi, adminga xabar.
 # ═══════════════════════════════════════════════════════════════
+# 3452 (Owner 2026-11-12 15:40; 3459 — endi 5 daqiqa): g'olib tugashdan 1 SOAT OLDIN tanlanadi, natija posti TEST kanalga (oldindan
+# ko'rish); Owner tekshiradi (tanish bo'lsa — saytda «🎲 Qayta»). G'olib / qatnashchilarga xabar — tanlovdan 1 soat
+# keyin (ended_at + 1 soat, jadvaldan — restartda ham). ASOSIY kanalga natija — faqat Owner tugmasi bilan.
+# 3459 (Owner 2026-11-12 18:37): 1 soat ko'p — g'olib tanlash va qo'shilishni yopish tugashdan 5 DAQIQA oldin;
+# xabarlar — tanlovdan 5 daqiqa keyin (= e'lon qilingan tugash vaqti). Owner'ga eslatma: 1 soat, 30 va 15 daqiqa
+# qolganda (faqat admin lichkasiga); 5 daqiqada — «G'oliblar tanlandi» xabari tugmalari bilan.
+KONKURS_KORISH_S = 300
+KONKURS_ESLATMA_S = (3600, 1800, 900)
 KONKURS_KECHIKISH_S = 6 * 3600   # shundan ko'p kechikkan konkursni bot o'zi tugatmaydi
 KONKURS_PARTIYA = 10             # navbatdan bir olishda nechta odam
 KONKURS_ORALIQ_S = 0.1           # xabarlar orasida (Telegram chegarasi ~30/soniya — ancha past)
@@ -4978,8 +5381,11 @@ def _kk_yangibot_xabari(k, til):
     return "\n\n".join(q), {"inline_keyboard": [[{"text": tugma, "callback_data": "kk_qatnash"}]]}
 
 
-async def _kk_admin(matn, joy=None):
-    await blok(send_msg, joy or ADMIN_ID, matn)
+async def _kk_admin(matn, joy=None, markup=None):
+    if markup:
+        await blok(send_msg, joy or ADMIN_ID, matn, markup)
+    else:
+        await blok(send_msg, joy or ADMIN_ID, matn)
 
 
 # ═══ BUGUN147: g'oliblar obunasi, kanaldan chiqish ogohlantirishi, yashirin oyna, /start bloki ═══
@@ -5271,7 +5677,7 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
         if not tugat:
             return 'aktiv'   # /notify, tiklash — aktiv konkursni TUGATMAYDI
         end = _parse_end_time(h.get('end_time'))
-        if manba == 'taymer' and end and end > time.time() + 5:   # vaqt surilgan — taymer qayta
+        if manba == 'taymer' and end and end - KONKURS_KORISH_S > time.time() + 5:   # vaqt surilgan — taymer qayta
             konkurs_taymer_qoy({'id': kid, 'status': 'active', 'end_time': h.get('end_time')})
             return 'erta'
     elif st == 'ended':
@@ -5304,17 +5710,36 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
             await _kk_admin(f"🔎 <b>Konkurs {ek} — g'oliblar obunasi</b> ({html_escape(_kk_kanal(e))})\n"
                             + "\n".join(obuna_izoh), joy)
     win_text = _kk_goliblar_matni(winners)
-    if not e.get('already'):
+    sinov_bosh = (html_escape(prize) + "\n") if _kk_sinovmi(prize) else ''   # 3459: sinov xabari — boshida sovrin nomi
+    fids, urls = _kk_rasmlar(e)
+    xv = _kk_xabar_vaqti(e)
+    xabar_kutadi = manba not in ('buyruq', 'xabar_tugma') and bool(xv) and xv > time.time() + 5
+    # 3452: natija hali e'lon qilinmagan, xabar hali boshlanmagan — oldindan ko'rish (bir marta shu jarayonda)
+    korish = (kid not in _kk_korildi and str(e.get('kanal_post') or '').split('|')[0] == 'navbatda'
+              and str(e.get('yetkazish') or '').split('|')[0] == 'navbatda')
+    if korish:
+        _kk_korildi.add(kid)
+        # natija posti — TEST kanalga (asosiy kanalga o'zidan chiqmaydi), Owner g'olibni ko'radi
+        await blok(_kk_korish_post, kid, prize, win_text, fids, urls)
+    if korish or not e.get('already'):
         # BUGUN125: g'olib bir qurilmadan boshqa akkaunt bilan kirgan bo'lsa — faqat adminga ⚠️ (kanalga emas)
         ogoh = [f"⚠️ {_kk_medal(int(w.get('place') or 1))} {html_escape(str(w.get('ogohlantirish')))}"
                 for w in winners if w.get('ogohlantirish')]
         ogoh_t = ("\n\n" + "\n".join(ogoh) + "\n(qayta tanlash — saytda «🎲 Qayta»)") if ogoh else ''
-        await _kk_admin(f"🏁 <b>Konkurs tugadi</b> ({html_escape(sabab or manba)})\n🎁 {html_escape(prize)}\n"
-                        f"👥 Qatnashchi: {e.get('total', 0)}\n🏆 G'oliblar:\n{win_text}{ogoh_t}\n\n📨 Xabarlar yuborilmoqda…",
-                        joy)
+        xq = (f"📨 G'olib va qatnashchilarga xabar: {_kk_vaqt(xv)} da (Toshkent)." if xabar_kutadi
+              else "📨 Xabarlar yuborilmoqda…")
+        qoldi5 = ("⏰ Konkurs tugashiga 5 daqiqa qoldi — qo'shilish yopildi.\n" if manba == 'taymer' else '')
+        await _kk_admin(f"{sinov_bosh}🏁 <b>G'oliblar tanlandi</b> ({html_escape(sabab or manba)})\n{qoldi5}🎁 {html_escape(prize)}\n"
+                        f"👥 Qatnashchi: {e.get('total', 0)}\n🏆 G'oliblar:\n{win_text}{ogoh_t}\n\n"
+                        f"🧪 Natija posti — TEST kanalda. G'olib tanishingiz bo'lsa — saytda «🎲 Qayta».\n{xq}\n"
+                        f"📢 Asosiy kanalga o'zidan chiqmaydi — pastdagi tugma bilan.",
+                        joy, _kk_natija_tugmalar(kid, xabar=xabar_kutadi))
 
     # 3) Shaxsiy xabarlar — navbatdan (har odamga bir marta)
-    fids, urls = _kk_rasmlar(e)
+    # 3452: tanlovdan 1 soat o'tmaguncha kutadi (Owner ko'rib, qayta tanlashi mumkin). Owner buyrug'i — darhol.
+    if xabar_kutadi:
+        _kk_xabar_taymer_qoy(kid, xv)
+        return 'kutadi'
     bir_rasm = fids[:1] + urls[:1]
 
     def yubor(x):
@@ -5335,17 +5760,8 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
         lambda natija: _kk_sheet('konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija=json.dumps(natija)),
         yubor)
 
-    # 4) Kanal posti — bir marta (kanal_post: navbatda → olindi → natija)
+    # 4) Kanal posti — 3452: o'zidan YO'Q. Faqat Owner «📢 Asosiy kanalga e'lon qilish» tugmasi (konkurs_kanal_elon).
     kanal = None
-    ko = await _kk_sorov('konkursKanalOl', id=kid, worker=KONKURS_WORKER)
-    if ko and ko.get('ok') and ko.get('ol'):
-        matn, mk = _kk_kanal_xabari(prize, win_text)
-        kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk, kanal_tanla('konkurs_sinov' if _kk_sinovmi(prize) else 'konkurs'))
-        for n in range(3):
-            if await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]',
-                          kanal=kanal) is not None:
-                break
-            await asyncio.sleep(3)
 
     # 5) Hisobot — jadvaldagi sanoq bo'yicha
     if sum(sanoq.values()) or kanal or manba == 'buyruq' or holat != 'tugadi':
@@ -5367,8 +5783,103 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
             q.append(f"Xatolarni qayta: /konkursdavom {ek}")
         if (x.get('noaniq') or 0) + (x.get('olindi') or 0):
             q.append(f"Noaniqlarni ham (ba'zilariga 2-marta borishi mumkin): /konkursdavom {ek} noaniq")
-        await _kk_admin("\n".join(q), joy)
+        kn = str(hh.get('kanal_post') or '').split('|')[0] == 'navbatda'
+        await _kk_admin("\n".join(q), joy, _kk_natija_tugmalar(kid, xabar=False) if kn else None)
     return holat
+
+
+# ── 3452: natija — TEST kanalda oldindan ko'rish, xabar vaqti, asosiy kanalga faqat tugma bilan ──
+_kk_korildi = set()          # oldindan ko'rish posti shu jarayonda yuborilgan konkurslar
+_kk_xabar_taymerlar = {}     # kid → {'task', 'vaqt'}: g'olib / qatnashchilarga xabar vaqti (tanlov + 1 soat)
+
+
+def _kk_xabar_vaqti(k):
+    """Xabarlar qachon ketadi (UTC soniya): g'olib tanlangan vaqt (ended_at, Toshkent) + 1 soat. Bilinmasa — None."""
+    t = _parse_end_time((k or {}).get('ended_at'))
+    return t + KONKURS_KORISH_S if t else None
+
+
+def _kk_xabar_taymer_qoy(kid, vaqt):
+    x = _kk_xabar_taymerlar.get(kid)
+    if x and x['vaqt'] == vaqt and not x['task'].done():
+        return 'bor'
+    if x and not x['task'].done():
+        x['task'].cancel()
+
+    async def kut():
+        try:
+            await asyncio.sleep(max(0, vaqt - time.time()))
+        except asyncio.CancelledError:
+            return
+        _kk_xabar_taymerlar.pop(kid, None)
+        await konkurs_tugat_va_yetkaz(kid, False, 'xabar vaqti keldi', 'xabar_taymer')
+    _kk_xabar_taymerlar[kid] = {'task': asyncio.create_task(kut()), 'vaqt': vaqt}
+    logger.info(f'Konkurs {kid} xabar taymeri: {int(vaqt - time.time())}s')
+    return 'qoyildi'
+
+
+def _kk_natija_tugmalar(kid, xabar=True):
+    q = [[{"text": "📢 Asosiy kanalga e'lon qilish", "callback_data": f"kkk:{kid}"[:64]}]]
+    if xabar:
+        q.append([{"text": "📨 Xabarlarni hozir yuborish", "callback_data": f"kkx:{kid}"[:64]}])
+    return {"inline_keyboard": q}
+
+
+def _kk_korish_post(kid, prize, win_text, fids, urls):
+    """3452: konkurs natija posti — faqat TEST kanalga + tagida izoh. Asosiy kanalga hech qachon (kanal tekshiriladi)."""
+    kanal = kanal_tanla('konkurs_sinov')
+    if not kanal or str(kanal) == str(CHANNEL):
+        return ''
+    matn, mk = _kk_kanal_xabari(prize, win_text)
+    h = _kk_kanal_post(matn, [fids, urls], mk, kanal)
+    _kk_tg('sendMessage', {'chat_id': kanal, 'parse_mode': 'HTML', 'text':
+           f"🧪 <b>Oldindan ko'rish</b> — ish 3452, konkurs {html_escape(kid)}\n"
+           f"Nima uchun: g'oliblar tanlandi, asosiy kanalga hali CHIQMADI.\n"
+           f"Tekshiring: g'olib tanishingiz emasmi? Tanish bo'lsa — saytda «🎲 Qayta». "
+           f"Asosiy kanalga — botdagi «📢 Asosiy kanalga e'lon qilish» tugmasi."})
+    return h
+
+
+async def konkurs_kanal_elon(kid, joy=None):
+    """3452: Owner «📢 Asosiy kanalga e'lon qilish» bosdi — natija posti kanalga, bir marta (kanal_post:
+    navbatda → olindi → natija). G'oliblar — jadvaldagi HOZIRGI (qayta tanlanganlari bilan)."""
+    kid = str(kid or '').strip()
+    ek = html_escape(kid)
+    if not kid:
+        return 'id'
+    if kid in _kk_qulflar:
+        await _kk_admin(f"⏳ Konkurs {ek} hozir ishlanmoqda — birozdan keyin qayta bosing.", joy)
+        return 'band'
+    _kk_qulflar.add(kid)
+    try:
+        ko = await _kk_sorov('konkursKanalOl', id=kid, worker=KONKURS_WORKER)
+        if not ko or not ko.get('ok'):
+            m = (ko or {}).get('msg') or 'Apps Script javob bermadi'
+            await _kk_admin(f"❌ Kanalga chiqmadi: "
+                            f"{'g‘oliblar obunasi hali tekshirilmoqda' if m == 'obuna' else html_escape(m)}", joy)
+            return 'xato'
+        if not ko.get('ol'):
+            await _kk_admin(f"ℹ️ Konkurs {ek} natijasi kanalga allaqachon chiqqan — qayta yuborilmadi.", joy)
+            return 'bor'
+        e = await _kk_sorov('endKonkurs', timeout=60, id=kid, obuna='1')   # tugagan — saqlangan g'oliblar (already)
+        if not e or not e.get('ok'):
+            await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]', kanal='xato')
+            await _kk_admin(f"❌ Konkurs {ek}: g'oliblar o'qilmadi — kanalga chiqmadi.", joy)
+            return 'xato'
+        prize = str(e.get('prize') or '')
+        fids, urls = _kk_rasmlar(e)
+        matn, mk = _kk_kanal_xabari(prize, _kk_goliblar_matni(e.get('winners') or []))
+        kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk,
+                           kanal_tanla('konkurs_sinov' if _kk_sinovmi(prize) else 'konkurs'))
+        for n in range(3):
+            if await blok(_kk_sheet, 'konkursXabarNatija', id=kid, worker=KONKURS_WORKER, natija='[]',
+                          kanal=kanal) is not None:
+                break
+            await asyncio.sleep(3)
+        await _kk_admin(f"📢 Konkurs {ek} natijasi kanalga: {html_escape(kanal)}", joy)
+        return kanal
+    finally:
+        _kk_qulflar.discard(kid)
 
 
 # ── Taymer — faqat «vaqt keldi» signali. Tugatishda baribir jadvaldagi holat tekshiriladi.
@@ -5402,9 +5913,69 @@ def konkurs_taymer_qoy(k):
         return 'bor'
     if t['task'] and not t['task'].done():
         t['task'].cancel()
-    t.update(task=asyncio.create_task(_kk_taymer(kid, max(0, end - now))), id=kid, end=end)
-    logger.info(f'Konkurs {kid} taymeri: {int(end - now)}s')
+    # 3452/3459: g'olib tugashdan 5 daqiqa oldin tanlanadi; 5 daqiqadan kam qolganda qo'yilsa (bot qayta yondi / qisqa
+    # konkurs) — tugash vaqtida (darhol tanlansa — oxirgi daqiqadagilar qolib ketadi)
+    tanlov = end - KONKURS_KORISH_S if end - KONKURS_KORISH_S > now else end
+    t.update(task=asyncio.create_task(_kk_taymer(kid, max(0, tanlov - now))), id=kid, end=end, tanlov=tanlov)
+    logger.info(f'Konkurs {kid} taymeri: {int(tanlov - now)}s')
+    _kk_eslatma_qoy(kid, end, str(k.get('prize') or ''))
     return 'qoyildi'
+
+
+# ── 3459: Owner'ga eslatma — tugashga 1 soat / 30 / 15 daqiqa qolganda (faqat admin lichkasiga, kanalga hech narsa).
+# O'tib ketgan vaqt (bot qayta yondi) — yuborilmaydi: takror bo'lmaydi.
+_kk_eslatma_holat = {'task': None, 'id': None, 'end': None, 'qolgan': []}
+_kk_eslatildi = set()   # (kid, end, s) — yuborilgan eslatma qayta yuborilmaydi (taymer qayta qo'yilsa ham)
+
+
+def _kk_qoldi_matn(s):
+    return f"{s // 3600} soat" if s >= 3600 and s % 3600 == 0 else f"{s // 60} daqiqa"
+
+
+def _kk_eslatma_qoy(kid, end, prize=''):
+    t = _kk_eslatma_holat
+    if t['id'] == kid and t['end'] == end and t['task'] and not t['task'].done():
+        return 'bor'
+    if t['task'] and not t['task'].done():
+        t['task'].cancel()
+    now = time.time()
+    qolgan = [s for s in sorted(KONKURS_ESLATMA_S, reverse=True) if end - s > now + 1 and (kid, end, s) not in _kk_eslatildi]
+    t.update(task=None, id=kid, end=end, qolgan=qolgan)
+    if qolgan:
+        t['task'] = asyncio.create_task(_kk_eslatma(kid, end, prize, qolgan))
+    return 'qoyildi'
+
+
+async def _kk_eslatma(kid, end, prize, qolgan):
+    ek = html_escape(kid)
+    try:
+        for s in list(qolgan):
+            await asyncio.sleep(max(0, end - s - time.time()))
+            t = _kk_eslatma_holat
+            if t['qolgan'] and t['qolgan'][0] == s:
+                t['qolgan'].pop(0)
+            if (kid, end, s) in _kk_eslatildi:
+                continue
+            _kk_eslatildi.add((kid, end, s))
+            h = await _kk_sorov('konkursHolat', id=kid)
+            if h and h.get('ok') and str(h.get('status', '')) != 'active':
+                return   # tugatilgan / bekor — eslatma kerak emas
+            if h and h.get('ok') and _parse_end_time(h.get('end_time')) != end:
+                return   # vaqt surilgan — yangi taymer o'z eslatmalarini qo'yadi
+            nomi = str((h or {}).get('prize') or prize or '')
+            bosh = (html_escape(nomi) + "\n") if _kk_sinovmi(nomi) else ''
+            soni = (h or {}).get('count') if h and h.get('ok') else None
+            await _kk_admin(
+                f"{bosh}⏰ <b>Konkurs tugashiga {_kk_qoldi_matn(s)} qoldi</b> ({ek})\n"
+                + (f"🎁 {html_escape(nomi)}\n" if nomi and not bosh else '')
+                + (f"👥 Qatnashchi: {soni}\n" if soni is not None else '')
+                + f"⏰ Tugash: {_kk_vaqt(end)} (Toshkent)\n"
+                f"🎲 G'olib tanlash va qo'shilish yopilishi — {_kk_vaqt(end - KONKURS_KORISH_S)} "
+                f"(5 daqiqa oldin), natija avval TEST kanalga.\nHolat: /konkursholat")
+    except asyncio.CancelledError:
+        return
+    except Exception as x:
+        logger.error(f'Konkurs {kid} eslatma: {x}')
 
 
 async def _kk_taymer(kid, kut):
@@ -5613,8 +6184,14 @@ async def konkurs_buyruq(chat_id, text):
             x = h.get('xabar') or {}
             end = _parse_end_time(h.get('end_time'))
             t = _kk_taymer_holat
-            taymer = (f"qo'yilgan — {_kk_vaqt(t['end'])}" if t['id'] == kid and t['task'] and not t['task'].done()
-                      else "yo'q")
+            taymer = (f"g'olib tanlash — {_kk_vaqt(t.get('tanlov') or t['end'])}"
+                      if t['id'] == kid and t['task'] and not t['task'].done() else "yo'q")
+            xt = _kk_xabar_taymerlar.get(kid)
+            if xt and not xt['task'].done():
+                taymer += f" · xabarlar — {_kk_vaqt(xt['vaqt'])}"
+            es = _kk_eslatma_holat
+            eslatma = ("yo'q" if not (es['id'] == kid and es['task'] and not es['task'].done() and es['qolgan'])
+                       else ", ".join(f"{_kk_qoldi_matn(s)} qolganda — {_kk_vaqt(es['end'] - s)}" for s in es['qolgan']))
             await _kk_admin("\n".join([
                 f"📊 <b>Konkurs {ek}</b>",
                 f"Holat: <b>{html_escape(h.get('status') or '—')}</b>",
@@ -5628,7 +6205,8 @@ async def konkurs_buyruq(chat_id, text):
                 f"🔎 G'oliblar obunasi: {html_escape(str(h.get('obuna') or '—').split('|')[0])} · "
                 f"obunasiz: {h.get('obunasiz', 0)} · kanaldan chiqqan: {h.get('chiqdi', 0)}",
                 f"🙈 Oyna: {'yashirin (/konkursochiq)' if h.get('yashirin', True) else 'hammaga ochiq (/konkursyashir)'}",
-                f"⏱ Taymer: {taymer}"]), chat_id)
+                f"⏱ Taymer: {taymer}",
+                f"🔔 Sizga eslatma: {eslatma}"]), chat_id)
             return
 
         if not kid:
@@ -5641,7 +6219,7 @@ async def konkurs_buyruq(chat_id, text):
                 end = _parse_end_time(h.get('end_time'))
                 if end and end > time.time() and (len(q) < 3 or q[2] != 'hozir'):
                     await _kk_admin(f"Konkurs {ek} hali tugamagan (tugash: {_kk_vaqt(end)}).\n"
-                                    f"Hozir tugatish (g'olib tanlanadi, hammaga xabar ketadi): /konkurstugat {ek} hozir",
+                                    f"Hozir tugatish (g'olib + xabarlar; kanalga — tugma bilan): /konkurstugat {ek} hozir",
                                     chat_id)
                     return
             r = await konkurs_tugat_va_yetkaz(kid, True, "admin buyrug'i", 'buyruq', chat_id)
@@ -7852,8 +8430,931 @@ async def webhook(request):
     return web.json_response({'ok': True})
 
 
+# ═══ 3428 (Owner 2026-11-11): TashkentComp ochiq guruhiga e'lonlarni bot tarqatadi (kuniga ~5 ta, hafta davomida) ═══
+# Saytda e'longa «🏷 TashCo'ga» belgisi (jadval `tashco` ustuni — TashkentComp bo'limi kaliti). Kanalda posti bor bo'lsa —
+# o'sha post forward qilinadi, yo'q bo'lsa (aksessuar va h.k.) bot o'zi rich post yuboradi. Bir e'lon — haftada ko'pi bilan
+# bir marta, sotilgani — hech qachon. Boshqaruv — klon forum-guruh (shu 7 mavzu) General'idagi panel (tugmalar; HTML panel
+# widget'i faqat lichkada ishlaydi). Holat — Apps Script «Script Properties» (TASHCO_HOLAT, action tashcoHolat).
+# 🔴 Klon guruh id'si logga / xabarga yozilmaydi (faqat holat ichida). Avtomat yoqilishi uchun avval 1 ta jonli e'lon
+#    yuboriladi va Owner «👀 Ko'rdim» bosadi.
+TASHCO_NISHON = (os.environ.get('TASHCO_NISHON', '') or '@TashkentComp').strip()
+TASHCO_BOLIMLAR = [   # (kalit, qisqa nom, mavzu nomi, TashkentComp mavzu id'si)
+    ('jihoz', 'Jihozlar', 'Комплектующие / Jihozlar', 902519),
+    ('periferiya', 'Periferiya', 'Периферия / Periferiya', 1694249),
+    ('telefon', 'Telefonlar', 'Телефоны / Telefon', 908147),
+    ('foto', 'Foto/Video', 'Фото/Видео техника', 2875873),
+    ('aksessuar', 'Aksessuarlar', 'Аксессуары / Aksessuarlar', 917420),
+    ('noutbuk', 'Noutbuklar', 'Ноутбуки / Noutbuklar', 917422),
+    ('monitor', 'Monitorlar', 'Мониторы / Monitorlar', 996908),
+]
+TASHCO_NOM = {k: n for k, n, _, _ in TASHCO_BOLIMLAR}
+TASHCO_THREAD = {k: t for k, _, _, t in TASHCO_BOLIMLAR}
+TASHCO_HAFTA = 7 * 86400        # bir e'lon — haftada ko'pi bilan bir marta
+TASHCO_ORALIQ = 30 * 60         # ikki jonli yuborish orasi kamida (guruh qoidasini buzmaslik)
+TASHCO_YON = {'foto': 'camera', 'telefon': 'mobile', 'aksessuar': 'mobile'}   # bo'lim → kanal yo'nalishi (boshqasi — pc)
+# 3428 (Owner 2026-11-11 23:10): bot TashkentComp'ga qo'shilmaydi — e'lonni Jasur (foydalanuvchi akkaunti) yuboradi.
+#   Bot — «miya»: navbatdan bitta ISH qo'yadi (h['ish']); Jasur kompyuterdagi skript (BOSHQARUV/claude_userbot/tashco.mjs)
+#   har 2 daqiqada /tashco/jasur dan oladi, yuboradi, natijani qaytaradi. Kuniga ko'pi bilan 5 ta (spam xavfi).
+TASHCO_KUN_MAX = 5
+TASHCO_ISH_KUT = 60 * 60          # Jasur 1 soatda olmasa — ish bekor (kompyuter o'chiq)
+TASHCO_ISH_BERILDI = 2 * 3600     # oldi-yu natija qaytarmadi — yuborilgan deb hisoblanadi (qayta yubormaslik — spam emas)
+_TC_MONITOR = ('monitor', 'монитор')
+_TC_NOUT = ('noutbuk', 'laptop', 'ноутбук', 'macbook', 'notebook', 'thinkpad', 'chromebook')
+_TC_PERIF = ('keyboard', 'mouse', 'mousepad', 'headphones', 'hub')
+_TC_JOY = {'h': None, 'yuklandi': False, 'iflos': False, 'oxirgi_urinish': 0.0, 'izoh': ''}
+_tc_qulf = threading.RLock()
+
+
+def tashco_link(mid):
+    u = TASHCO_NISHON.lstrip('@')
+    return f'https://t.me/{u}/{int(mid)}' if TASHCO_NISHON.startswith('@') and mid else ''
+
+
+def _tc_sukut():
+    return {'yoq': False, 'korildi': False, 'kun': 5, 'bosh': 9, 'oxir': 21,
+            'b': {k: {'on': 1, 'n': 0, 'u': 'a'} for k in TASHCO_NOM},
+            'log': {}, 'oxirgi': [], 'klon': {}, 'kunlik': {}, 'sinov': {}, 'ish': {}, 'w': {}}
+
+
+def _tc_tozala(h):
+    """Jadvaldan kelgan holat → to'liq, chegaralangan (noto'g'ri qiymat — sukut)."""
+    s = _tc_sukut()
+    if not isinstance(h, dict):
+        return s
+    for k in ('yoq', 'korildi'):
+        s[k] = bool(h.get(k))
+    for k, a, b in (('kun', 1, TASHCO_KUN_MAX), ('bosh', 0, 23), ('oxir', 1, 24)):
+        try:
+            s[k] = min(b, max(a, int(h.get(k, s[k]))))
+        except (TypeError, ValueError):
+            pass
+    if s['oxir'] <= s['bosh']:
+        s['bosh'], s['oxir'] = 9, 21
+    for k, v in (h.get('b') or {}).items() if isinstance(h.get('b'), dict) else []:
+        if k in s['b'] and isinstance(v, dict):
+            s['b'][k] = {'on': 1 if v.get('on', 1) else 0, 'n': min(TASHCO_KUN_MAX, max(0, int(v.get('n') or 0))),
+                         'u': 'b' if v.get('u') == 'b' else 'a'}
+    if isinstance(h.get('log'), dict):
+        s['log'] = {str(k): float(v) for k, v in h['log'].items() if str(k).isdigit() and isinstance(v, (int, float))}
+    if isinstance(h.get('oxirgi'), list):
+        s['oxirgi'] = [x for x in h['oxirgi'] if isinstance(x, list) and len(x) == 5][-10:]
+    for k in ('klon', 'kunlik', 'sinov', 'ish', 'w'):
+        if isinstance(h.get(k), dict):
+            s[k] = h[k]
+    return s
+
+
+def tashco_yukla():
+    """Holat jadvaldan (bir marta). True — tayyor. Jadval o'qilmasa — False (saqlash ham yo'q: eskisini bosib ketmasin)."""
+    if _TC_JOY['yuklandi']:
+        return True
+    _TC_JOY['oxirgi_urinish'] = time.time()
+    j = _kk_sheet('tashcoHolat', timeout=20)
+    if not (j and j.get('ok')):
+        logger.error("tashco: holat jadvaldan o'qilmadi (tarmoq yoki Apps Script eski)")
+        return False
+    try:
+        h = json.loads(j.get('j') or '{}')
+    except ValueError:
+        h = {}
+    with _tc_qulf:
+        _TC_JOY['h'] = _tc_tozala(h)
+        _TC_JOY['yuklandi'] = True
+    logger.info(f"tashco: holat yuklandi ({'yoqiq' if _TC_JOY['h']['yoq'] else 'oʻchiq'}, "
+                f"{'klon bor' if _TC_JOY['h']['klon'].get('id') else 'klon yoʻq'})")
+    return True
+
+
+def tashco_saqla():
+    """Holat → jadval. Ishlamasa — `iflos` (sikl qayta urinadi)."""
+    with _tc_qulf:
+        if not _TC_JOY['yuklandi']:
+            return False
+        h = _TC_JOY['h']
+        chegara = time.time() - 8 * 86400
+        h['log'] = {k: v for k, v in h['log'].items() if v >= chegara}
+        h['oxirgi'] = h['oxirgi'][-10:]
+        matn = json.dumps(h, ensure_ascii=False, separators=(',', ':'))
+    j = _kk_sheet('tashcoHolat', timeout=20, yoz=1, j=matn)
+    ok = bool(j and j.get('ok'))
+    _TC_JOY['iflos'] = not ok
+    if not ok:
+        logger.error('tashco: holat jadvalga saqlanmadi — keyinroq qayta')
+    return ok
+
+
+async def tashco_tiklash():
+    try:
+        await blok(tashco_yukla)
+    except Exception as e:
+        logger.error(f'tashco_tiklash: {type(e).__name__}')
+
+
+def tashco_klon_id():
+    h = _TC_JOY['h'] or {}
+    try:
+        return int((h.get('klon') or {}).get('id') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def tashco_guruhmi(chat):
+    """Xabar TashkentComp'danmi (username yoki id) — u yerda bot hech narsaga javob bermaydi."""
+    chat = chat or {}
+    u = str(chat.get('username') or '').lower()
+    return bool(u) and TASHCO_NISHON.startswith('@') and u == TASHCO_NISHON[1:].lower() or \
+        str(chat.get('id')) == TASHCO_NISHON
+
+
+def tashco_avto(elon, models):
+    """E'lon turidan TashkentComp bo'limi (saytda «🤖 Avto»). Admin saytda boshqasini tanlay oladi."""
+    elon = elon or {}
+    model = models.get(str(elon.get('specId', '') or ''), {}) if isinstance(models, dict) else {}
+    matn = ' '.join(str(v or '') for v in (elon.get('nameUz'), elon.get('nameRu'), elon.get('name'),
+                                           (model or {}).get('name'))).lower()
+    tur = elon_turi(elon, models)
+    if any(s in matn for s in _TC_MONITOR) and tur != 'case':
+        return 'monitor'
+    yon = elon_yonalishlar(elon, models)
+    if tur == 'camera':
+        return 'foto'
+    if tur == 'case':
+        return 'aksessuar'
+    if tur == 'accessory':
+        k = aks_kalit(elon, models)
+        if k == 'laptop':
+            return 'noutbuk'
+        if k in _TC_PERIF:
+            return 'periferiya'
+        if k == 'storage':
+            return 'jihoz'
+        if k == 'camera-acc':
+            return 'foto'
+        return 'aksessuar'
+    if tur == 'part':
+        return 'jihoz' if 'pc' in yon else 'aksessuar'
+    if 'camera' in yon:
+        return 'foto'
+    if 'pc' in yon and 'mobile' not in yon:
+        return 'noutbuk' if any(s in matn for s in _TC_NOUT) else 'jihoz'
+    return 'telefon'
+
+
+def tashco_bolim(elon):
+    v = str((elon or {}).get('tashco', '') or '').strip().lower()
+    return v if v in TASHCO_NOM else ''
+
+
+def _tc_post_tanla(elon, kalit):
+    """Asosiy kanaldagi post (kanal, mid) — bo'limga mos yo'nalishdagisi, bo'lmasa birinchisi. Test rejimda — None."""
+    if not MAIN_KANALLAR:
+        return None
+    postlar = kanal_postlar(elon)
+    if not postlar:
+        return None
+    kerak = TASHCO_YON.get(kalit, 'pc')
+    for y, ch, mid in postlar:
+        if y == kerak:
+            return ch, mid
+    return postlar[0][1], postlar[0][2]
+
+
+def _tc_rich(chat, thread, elon, models, yon):
+    """sendRichMessage — chat oddiy (Joy emas) va mavzu aniq: _TgReq mavzusiz (General'ga) qayta yubormaydi."""
+    html, media, _ = kanal_rich(elon, models, yonalish=yon)
+
+    def yub(h, md):
+        rich = {'html': h}
+        if md:
+            rich['media'] = md
+        try:
+            return req.post(f'{TG_API}/sendRichMessage', json={'chat_id': chat, 'message_thread_id': thread,
+                                                                'rich_message': rich}, timeout=30).json()
+        except Exception as ex:
+            return {'ok': False, 'description': f'tarmoq: {type(ex).__name__}'}
+    j = yub(html, media)
+    if not j.get('ok') and media:
+        j = yub(build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon), None)
+    if j.get('ok'):
+        return (j.get('result') or {}).get('message_id'), ''
+    return None, str(j.get('description') or 'xato')[:200]
+
+
+def tashco_yubor(num, klonga=False, usul=None):
+    """Bitta e'lonni yuboradi. (mid, usul 'f'|'b', kalit, xato). klonga=True — faqat klon guruhga (sinov).
+    usul: 'a' — kanal posti bo'lsa forward, 'b' — bot o'zi; None — bo'lim sozlamasi."""
+    elon, models = elon_cache_get(str(num))
+    if not elon:
+        return None, '', '', "e'lon topilmadi"
+    if elon_status(elon) != 'active':
+        return None, '', '', "e'lon faol emas (sotilgan / kutilmoqda)"
+    kalit = tashco_bolim(elon) or tashco_avto(elon, models)
+    h = _TC_JOY['h'] or _tc_sukut()
+    if klonga:
+        chat = tashco_klon_id()
+        thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
+        if not chat or not thread:
+            return None, '', kalit, 'klon guruh sozlanmagan (/tashco)'
+    else:
+        chat, thread = TASHCO_NISHON, TASHCO_THREAD[kalit]
+    usul = usul or h['b'].get(kalit, {}).get('u', 'a')
+    xato = ''
+    if usul == 'a':
+        post = _tc_post_tanla(elon, kalit)
+        if post:
+            j = _tg_j('forwardMessage', {'chat_id': chat, 'message_thread_id': thread,
+                                         'from_chat_id': post[0], 'message_id': post[1]})
+            if j.get('ok'):
+                return (j.get('result') or {}).get('message_id'), 'f', kalit, ''
+            xato = str(j.get('description') or '')[:200]
+            logger.warning(f'tashco №{num}: forward bo\'lmadi ({xato}) — bot o\'zi yuboradi')
+    mid, x = _tc_rich(chat, thread, elon, models, post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc')))
+    return (mid, 'b', kalit, '') if mid else (None, '', kalit, x or xato)
+
+
+def _tc_klonga_nusxa(kalit, mid):
+    """Jonli yuborilgan xabar — klon guruhning o'sha mavzusiga (Owner ko'rib tursin). Bo'lmasa — jim."""
+    h = _TC_JOY['h'] or {}
+    chat = tashco_klon_id()
+    thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
+    if chat and thread and mid:
+        _tg_j('forwardMessage', {'chat_id': chat, 'message_thread_id': thread, 'from_chat_id': TASHCO_NISHON,
+                                 'message_id': int(mid), 'disable_notification': True})
+
+
+def _tc_bugun(h):
+    """Bugungi hisob (Toshkent sanasi) — yangi kun bo'lsa nolga."""
+    from datetime import datetime, timezone, timedelta
+    sana = datetime.now(timezone(timedelta(hours=5))).strftime('%Y-%m-%d')
+    if (h.get('kunlik') or {}).get('sana') != sana:
+        h['kunlik'] = {'sana': sana, 's': 0, 'b': {}}
+    return h['kunlik']
+
+
+def _tc_soniya():
+    """Toshkent yarim tunidan beri soniya."""
+    from datetime import datetime, timezone, timedelta
+    t = datetime.now(timezone(timedelta(hours=5)))
+    return t.hour * 3600 + t.minute * 60 + t.second
+
+
+def _tc_slotlar(h):
+    span = (h['oxir'] - h['bosh']) * 3600
+    return [h['bosh'] * 3600 + (i + 0.5) * span / h['kun'] for i in range(h['kun'])]
+
+
+def tashco_navbat(h, by_num=None):
+    """{kalit: [(oxirgi_vaqt, -num, num)]} — hozir yuborsa bo'ladiganlar (faol, haftalik chegara o'tgan), tartibda."""
+    if by_num is None:
+        by_num, _ = elon_cache_hammasi()
+    hozir = time.time()
+    out = {k: [] for k in TASHCO_NOM}
+    for num, e in by_num.items():
+        k = tashco_bolim(e)
+        if not k or not str(num).isdigit() or elon_status(e) != 'active':
+            continue
+        ts = float(h['log'].get(str(num), 0) or 0)
+        if hozir - ts < TASHCO_HAFTA:
+            continue
+        out[k].append((ts, -int(num), str(num)))
+    for v in out.values():
+        v.sort()
+    return out
+
+
+def tashco_tanla(h, navbat=None):
+    """Keyingi yuboriladigan (num, kalit) yoki None — yoqilgan, kunlik chegarasi to'lmagan bo'limlardan,
+    bugun eng kam yuborilgani; ichida — hech yuborilmagani, keyin eng eskisi."""
+    navbat = navbat if navbat is not None else tashco_navbat(h)
+    kb = _tc_bugun(h)['b']
+    eng = None
+    for k in TASHCO_NOM:
+        s = h['b'][k]
+        if not s['on'] or not navbat.get(k) or (s['n'] and kb.get(k, 0) >= s['n']):
+            continue
+        kalit = (kb.get(k, 0), navbat[k][0][0], navbat[k][0][1])
+        if eng is None or kalit < eng[0]:
+            eng = (kalit, navbat[k][0][2], k)
+    return (eng[1], eng[2]) if eng else None
+
+
+def _tc_qayd(h, num, kalit, mid, usul):
+    hozir = time.time()
+    h['log'][str(num)] = int(hozir)
+    h['oxirgi'] = (h['oxirgi'] + [[int(hozir), int(num), kalit, int(mid), usul]])[-10:]
+    kb = _tc_bugun(h)
+    kb['s'] = kb.get('s', 0) + 1
+    kb['b'][kalit] = kb['b'].get(kalit, 0) + 1
+
+
+def tashco_jasur_kalit():
+    """Jasur skripti kaliti — bot tokenidan (Render'ga yangi o'zgaruvchi kerak emas; token o'zi chiqmaydi)."""
+    return hmac.new(BOT_TOKEN.encode(), b'tashco-jasur', hashlib.sha256).hexdigest()[:32] if BOT_TOKEN else ''
+
+
+def _tc_ish_qoy(h, num, kalit, sabab):
+    h['ish'] = {'num': int(num), 'k': kalit, 'ts': int(time.time()), 'sabab': sabab, 'holat': 'kut'}
+
+
+def _tc_ish_eskir(h):
+    """Jasur olmagan (1 soat) / olib natija bermagan (2 soat) ish — bekor. True — holat o'zgardi."""
+    ish = h.get('ish') or {}
+    if not ish.get('num'):
+        return False
+    hozir = time.time()
+    if ish.get('holat') == 'berildi':
+        if hozir - float(ish.get('bt') or ish.get('ts') or 0) < TASHCO_ISH_BERILDI:
+            return False
+        h['log'][str(ish['num'])] = int(hozir)   # yuborilgan bo'lishi mumkin — bir hafta qayta yuborilmaydi
+        _TC_JOY['izoh'] = f"⚠️ №{ish['num']}: Jasur natija qaytarmadi — TashkentComp'da bormi, tekshiring"
+    elif hozir - float(ish.get('ts') or 0) < TASHCO_ISH_KUT:
+        return False
+    else:
+        _TC_JOY['izoh'] = f"⚠️ №{ish['num']}: Jasur 1 soatda olmadi — kompyuter yoqiqmi?"
+    h['ish'] = {}
+    return True
+
+
+def _tc_keyingi_vaqt(h):
+    """Avtomatda keyingi yuborish soati «15:00» / «tugadi» / ''."""
+    kb = _tc_bugun(h)
+    if not (h['yoq'] and h['korildi']):
+        return ''
+    if kb['s'] >= h['kun']:
+        return 'tugadi'
+    sl = _tc_slotlar(h)[kb['s']]
+    oxirgi = max([x[0] for x in h['oxirgi']] or [0])
+    sl = max(sl, _tc_soniya() + max(0, oxirgi + TASHCO_ORALIQ - time.time()))
+    return _tc_soat(sl) if sl < h['oxir'] * 3600 else 'tugadi'
+
+
+# 3452 (Owner 2026-11-12): TashkentComp'ga kunlik avto navbat YO'Q — har e'lon faqat Owner «1 ta yuborish» bosganda.
+TASHCO_AVTO = False
+
+
+def tashco_tick():
+    """Fon (har daqiqa): vaqti kelsa — Jasurga BITTA ish. Faqat yoqilgan va sinov e'loni ko'rilgan bo'lsa."""
+    if not _TC_JOY['yuklandi']:
+        if time.time() - _TC_JOY['oxirgi_urinish'] > 300:
+            tashco_yukla()
+        return
+    if _TC_JOY['iflos']:
+        tashco_saqla()
+    ozg = False
+    with _tc_qulf:
+        h = _TC_JOY['h']
+        ozg = _tc_ish_eskir(h)
+        tanlov = None
+        if TASHCO_AVTO and h['yoq'] and h['korildi'] and not h.get('ish'):   # 3452: avto o'chiq
+            kb = _tc_bugun(h)
+            sek = _tc_soniya()
+            oxirgi = max([x[0] for x in h['oxirgi']] or [0])
+            if kb['s'] < h['kun'] and h['oxir'] * 3600 > sek >= _tc_slotlar(h)[kb['s']] and \
+                    time.time() - oxirgi >= TASHCO_ORALIQ:
+                tanlov = tashco_tanla(h)
+                if tanlov:
+                    _tc_ish_qoy(h, tanlov[0], tanlov[1], 'avto')
+                    ozg = True
+    if ozg:
+        tashco_saqla()
+        tashco_panel()
+    if tanlov:
+        logger.info(f'tashco: №{tanlov[0]} → Jasur navbatiga ({TASHCO_NOM[tanlov[1]]})')
+
+
+async def tashco_loop():
+    await asyncio.sleep(45)
+    while True:
+        try:
+            await blok(tashco_tick)
+        except Exception as e:
+            logger.error(f'tashco_loop: {type(e).__name__}: {_maxfiy(e)}')
+        await asyncio.sleep(60)
+
+
+# ── Panel (klon guruh General'i) ──
+def _tc_soat(sek):
+    sek = int(sek)
+    return f'{sek // 3600:02d}:{sek % 3600 // 60:02d}'
+
+
+# ── Panel — Owner lichkasidagi HTML vidjet (Owner 2026-11-11 23:20; vidjet faqat shaxsiy chatda ishlaydi) ──
+# Bitta ekran: holat, bugun N/5, keyingisi, Jasur; ▶️/⏸, «1 ta yuborish», ⚙️ Sozlamalar (jadval, bo'limlar — ichkarida).
+# Holat vidjetga chat_data (JSON ≤1024 B) bo'lib boradi; tugma → widget_query → bot o'zgartiradi → editMessageWidgetData.
+TASHCO_BOLIM_QISQA = ['Jihoz', 'Periferiya', 'Telefon', 'Foto/Video', 'Aksessuar', 'Noutbuk', 'Monitor']
+TASHCO_VIDJET = r'''<style>
+:root{--t:var(--tg-theme-text-color,#000);--h:var(--tg-theme-hint-color,#888);--a:var(--tg-theme-button-color,#2a8bf2);
+--at:var(--tg-theme-button-text-color,#fff);--s:var(--tg-theme-secondary-bg-color,rgba(127,127,127,.12));
+--g:#2fb15a;--r:var(--tg-theme-destructive-text-color,#e5533d)}
+*{box-sizing:border-box}body{margin:0;font:15px/1.35 system-ui;color:var(--t);user-select:none}
+#w{padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
+.r{display:flex;align-items:center;gap:8px}.sp{flex:1}.h{color:var(--h);font-size:13px}
+.pl{padding:3px 10px;border-radius:99px;font-size:13px;font-weight:600;background:var(--s)}
+.on{color:var(--g)}.of{color:var(--h)}
+.big{font-size:44px;font-weight:700;line-height:1;margin:14px 0 4px;font-variant-numeric:tabular-nums}
+.big small{font-size:22px;color:var(--h);font-weight:600}
+.cd{background:var(--s);border-radius:12px;padding:10px 12px;margin-top:10px}
+button{font:inherit;border:0;border-radius:12px;padding:12px;width:100%;margin-top:8px;background:var(--s);color:var(--t);font-weight:600}
+.p{background:var(--a);color:var(--at);font-size:17px;padding:14px}.st{background:var(--r);color:#fff}
+.gr{background:var(--g);color:#fff}.b{opacity:.5}
+.m{width:auto;margin:0;padding:6px 12px;border-radius:9px}
+.k{font-weight:600}.ln{color:var(--tg-theme-link-color,var(--a))}
+.x{display:flex;align-items:center;gap:6px;padding:7px 0;border-top:1px solid rgba(127,127,127,.15)}
+.x:first-child{border-top:0}.n{min-width:22px;text-align:center;font-weight:600}
+.iz{margin-top:10px;font-size:13px;white-space:pre-wrap;color:var(--h)}
+</style><div id="w"></div><script>
+var W=window.TelegramWidget,S=null,V='m',B=0,E='',N=['Jihoz','Periferiya','Telefon','Foto/Video','Aksessuar','Noutbuk','Monitor'];
+function g(){try{S=JSON.parse(W&&W.chatData||'null')}catch(e){}}
+function q(d){if(!W||B)return;B=1;E='';r();W.request(d).then(function(a){B=0;try{var x=JSON.parse(a.result);if(x&&x.n)S=x}catch(e){}r()},function(e){B=0;if(d!='h')E=e&&e.code||'FAILED';r()})}
+function bt(t,d,c){return '<button class="'+(c||'')+(B?' b':'')+'" onclick="q(\''+d+'\')">'+t+'</button>'}
+function ago(t){if(t<0)return 'hali ulanmagan';var m=Math.round((Date.now()/1e3-t)/60);return m<1?'hozirgina':m<60?m+' daq oldin':Math.round(m/60)+' soat oldin'}
+function lk(m){if(W)W.openLink('https://t.me/TashkentComp/'+m)}
+function r(){var s=S,h='';if(!s){document.getElementById('w').innerHTML='<div class="h">Yuklanmoqda…</div>';return}
+if(V=='m'){var on=s.y&&s.k;
+h+='<div class="r"><b>TashkentComp</b><span class="sp"></span><span class="pl '+(on?'on':'of')+'">'+(on?'● Ishlayapti':'⏸ To‘xtagan')+'</span></div>';
+h+='<div class="big">'+s.s+'<small> / '+s.n+'</small></div><div class="h">bugun yuborildi'+(s.ky=='tugadi'?' · bugungisi tugadi':s.ky?' · keyingisi ≈ '+s.ky:'')+'</div>';
+h+='<div class="cd"><div class="r"><span>👤 Jasur</span><span class="sp"></span><span class="h">'+ago(s.j)+'</span></div>'+(s.q?'<div class="h" style="margin-top:4px">⏳ '+s.q+'</div>':'')+'</div>';
+if(!s.k)h+='<div class="iz">'+(s.t?'Sinov e‘loni chiqdi — ko‘rib «Ko‘rdim» bosing.':'Avval 1 ta yuboring, TashkentComp’da ko‘ring.')+'</div>';
+h+=on?bt('⏸ To‘xtatish','yoq','p st'):bt('▶️ Yoqish','yoq','p');
+h+=bt('1️⃣ Hozir 1 ta yuborish','bir');
+if(s.t&&!s.k)h+=bt('👀 Ko‘rdim — davom','kor','gr');
+h+=bt('⚙️ Sozlamalar','v');
+if(s.l&&s.l.length){h+='<div class="cd">';s.l.forEach(function(x){h+='<div class="x"><span class="h">'+x[0]+'</span><span class="sp">№'+x[1]+' '+(N[x[2]]||'')+(x[4]=='f'?' 🔁':' 🤖')+'</span><span class="ln" onclick="lk('+x[3]+')">ochish ›</span></div>'});h+='</div>'}
+}else{
+h+='<div class="r"><button class="m" onclick="V=\'m\';r()">‹ Orqaga</button><span class="sp"></span><b>Sozlamalar</b></div>';
+h+='<div class="h" style="margin-top:12px">JADVAL (Toshkent vaqti)</div><div class="cd">';
+[['Kuniga',s.n+' ta','kun'],['Boshi',s.bo+':00','bosh'],['Oxiri',s.ox+':00','oxir']].forEach(function(x){h+='<div class="x"><span class="sp">'+x[0]+'</span>'+bt('−',x[2]+'-','m')+'<span class="n" style="min-width:52px">'+x[1]+'</span>'+bt('+',x[2]+'+','m')+'</div>'});
+h+='</div><div class="h" style="margin-top:12px">BO‘LIMLAR · navbatda · kuniga · usul</div><div class="cd">';
+s.b.forEach(function(x,i){h+='<div class="x"><button class="m '+(x[0]?'gr':'')+'" style="min-width:104px" onclick="q(\'b'+i+'o\')">'+(x[0]?'✓ ':'')+N[i]+'</button><span class="h sp">'+x[3]+' ta</span>'+bt('−','b'+i+'-','m')+'<span class="n">'+(x[1]||'∞')+'</span>'+bt('+','b'+i+'+','m')+bt(x[2]?'🤖':'🔁','b'+i+'u','m')+'</div>'});
+h+='</div><div class="h" style="margin-top:6px">🔁 — kanal postidan forward, 🤖 — Jasur o‘zi yozadi</div>';
+h+=bt('🧪 Klon guruhga sinov','sinov')}
+if(s.i||E)h+='<div class="iz">'+(E?'⚠️ '+E+'\n':'')+(s.i||'')+'</div>';
+document.getElementById('w').innerHTML=h}
+window.q=function(d){if(d=='v'){V='s';r();return}q(d)};
+g();r();if(W){W.onEvent('chatDataChanged',function(){g();r()});W.ready();q('h');setInterval(function(){if(!document.hidden)q('h')},60000)}
+</script>'''
+
+
+def _tc_vaqt(ts):
+    from datetime import datetime, timezone, timedelta
+    return datetime.fromtimestamp(ts, timezone(timedelta(hours=5))).strftime('%d.%m %H:%M')
+
+
+def _tc_holat_json(h):
+    """Vidjet holati (chat_data) — ≤1024 bayt. Matnlar Toshkent vaqtida."""
+    by_num, _ = elon_cache_hammasi()
+    navbat = tashco_navbat(h, by_num)
+    kalitlar = list(TASHCO_NOM)
+    ish = h.get('ish') or {}
+    q = ''
+    if ish.get('num'):
+        q = (f"№{ish['num']} ({TASHCO_NOM.get(ish.get('k'), '')}) — Jasur " +
+             ('yuboryapti' if ish.get('holat') == 'berildi' else 'olishini kutyapti (≤2 daq)'))
+    izoh = _TC_JOY['izoh'] + ('\n⚠️ Sozlama jadvalga saqlanmadi — bot qayta urinadi' if _TC_JOY['iflos'] else '')
+    d = {'y': int(h['yoq']), 'k': int(h['korildi']), 't': int(bool(h['sinov'].get('mid'))),
+         's': _tc_bugun(h)['s'], 'n': h['kun'], 'bo': h['bosh'], 'ox': h['oxir'], 'ky': _tc_keyingi_vaqt(h),
+         'j': int(_TC_JOY.get('jasur_ts') or 0) or -1, 'q': q, 'i': izoh.strip()[:200],
+         'b': [[h['b'][k]['on'], h['b'][k]['n'], int(h['b'][k]['u'] == 'b'), len(navbat[k])] for k in kalitlar],
+         'l': [[_tc_vaqt(ts), num, kalitlar.index(k) if k in kalitlar else -1, mid, u]
+               for ts, num, k, mid, u in reversed(h['oxirgi'][-3:])]}
+    while True:
+        out = json.dumps(d, ensure_ascii=False, separators=(',', ':'))
+        if len(out.encode()) <= 1024:
+            return out
+        if d['l']:
+            d['l'].pop()
+        else:
+            d['i'] = d['i'][:max(0, len(d['i']) - 60)]
+
+
+def tashco_panel(yangi=False):
+    """Lichkadagi vidjet holatini yangilaydi (editMessageWidgetData). Vidjet yo'q bo'lsa — jim (Owner /tashco yozadi)."""
+    with _tc_qulf:
+        h = _TC_JOY['h']
+        w = (h or {}).get('w') or {}
+        if not h or not w.get('m'):
+            return False
+        d = _tc_holat_json(h)
+    j = _tg_j('editMessageWidgetData', {'chat_id': w['c'], 'message_id': w['m'], 'chat_data': d})
+    tav = str(j.get('description', '')).lower()
+    if j.get('ok') or 'not modified' in tav:
+        return True
+    logger.warning(f'tashco vidjet: yangilanmadi ({tav[:120]})')
+    if 'not found' in tav:
+        with _tc_qulf:
+            h['w'] = {}
+        tashco_saqla()
+    return False
+
+
+def tashco_vidjet_yubor(chat):
+    """/tashco (Owner lichkasi): yangi vidjet; eskisi va klon guruhdagi eski tugmali panel o'chiriladi."""
+    if not tashco_yukla():
+        send_msg(chat, "⚠️ Sozlama jadvaldan o'qilmadi — 1 daqiqadan keyin /tashco ni qayta yuboring.")
+        return
+    with _tc_qulf:
+        h = _TC_JOY['h']
+        eski = dict(h.get('w') or {})
+        d = _tc_holat_json(h)
+    j = _tg_j('sendWidget', {'chat_id': chat, 'html': TASHCO_VIDJET, 'chat_data': d, 'allow_queries': True,
+                             'caption': "🏷 TashkentComp — e'lon tarqatish"})
+    if not j.get('ok'):
+        logger.error(f"tashco vidjet: yuborilmadi ({str(j.get('description', ''))[:150]})")
+        send_msg(chat, "⚠️ Panel (vidjet) ochilmadi: <code>" + html_escape(str(j.get('description', ''))[:150]) +
+                 "</code>\nTelegram ilovasini yangilang va /tashco ni qayta yuboring.")
+        return
+    with _tc_qulf:
+        h['w'] = {'c': chat, 'm': j['result']['message_id']}
+        klon = h.get('klon') or {}
+        p, klon_id = int(klon.get('p') or 0), tashco_klon_id()
+        if p:
+            klon['p'] = 0
+    if eski.get('m') and eski.get('m') != h['w']['m']:
+        _tg_j('deleteMessage', {'chat_id': eski['c'], 'message_id': eski['m']})
+    if p and klon_id:
+        _tg_j('deleteMessage', {'chat_id': klon_id, 'message_id': p})   # eski tugmali panel (guruhda)
+    tashco_saqla()
+
+
+def _tc_amal(amal):
+    """Tugma amali (xotirada, tez). → (saqlash kerakmi, keyin: '' | 'sinov' | 'bir')."""
+    h = _TC_JOY['h']
+    with _tc_qulf:
+        _TC_JOY['izoh'] = ''
+        if amal == 'yoq':
+            if not TASHCO_AVTO and not h['yoq']:
+                _TC_JOY['izoh'] = "⏸ Avtomatik yuborish o'chirilgan — har e'lon faqat «1 ta yuborish» tugmasi bilan."
+                return False, ''
+            if not h['yoq'] and not h['korildi']:
+                _TC_JOY['izoh'] = "⚠️ Avval «1 ta yuborish», TashkentComp'da ko'rib «👀 Ko'rdim» bosing."
+                return False, ''
+            h['yoq'] = not h['yoq']
+            return True, ''
+        if amal == 'kor':
+            if not h['sinov'].get('mid'):
+                _TC_JOY['izoh'] = "⚠️ Hali TashkentComp'ga sinov e'loni chiqmagan — avval «1 ta yuborish»."
+                return False, ''
+            h['korildi'] = True
+            return True, ''
+        m = re.fullmatch(r'(kun|bosh|oxir):?([+-])', amal)
+        if m:
+            k, d = m.group(1), 1 if m.group(2) == '+' else -1
+            if k == 'kun':
+                h['kun'] = min(TASHCO_KUN_MAX, max(1, h['kun'] + d))
+            elif k == 'bosh':
+                h['bosh'] = min(h['oxir'] - 1, max(0, h['bosh'] + d))
+            else:
+                h['oxir'] = min(24, max(h['bosh'] + 1, h['oxir'] + d))
+            return True, ''
+        # bo'lim: vidjetda «b2o» (raqam), eski tugmada «b:telefon:on»
+        m = re.fullmatch(r'b(\d)([o+u-])', amal) or re.fullmatch(r'b:([a-z]+):(on|[+u-])', amal)
+        if m:
+            k = m.group(1)
+            k = list(TASHCO_NOM)[int(k)] if k.isdigit() and int(k) < len(TASHCO_NOM) else k
+            s = h['b'].get(k)
+            if s is None:
+                return False, ''
+            a = m.group(2)
+            if a in ('o', 'on'):
+                s['on'] = 0 if s['on'] else 1
+            elif a in ('-', '+'):
+                s['n'] = min(TASHCO_KUN_MAX, max(0, s['n'] + (1 if a == '+' else -1)))
+            else:
+                s['u'] = 'b' if s['u'] == 'a' else 'a'
+            return True, ''
+        if amal in ('sinov', 'bir'):
+            return False, amal
+        return False, ''
+
+
+def _tc_keyin(saqla, keyin, chat=None):
+    if keyin == 'sinov':
+        tashco_sinov(chat or tashco_klon_id())
+    elif keyin == 'bir':
+        tashco_bir()
+        saqla = False   # tashco_bir o'zi saqlaydi
+    if saqla:
+        tashco_saqla()
+
+
+def tashco_tugma(chat, data):
+    """Eski tc:… tugmalari (klon guruhdagi eski panel; faqat admin — handle_update tekshiradi)."""
+    if not tashco_yukla():
+        return
+    saqla, keyin = _tc_amal(data[3:])
+    _tc_keyin(saqla, keyin, chat)
+    tashco_panel()
+
+
+def _tc_vidjet_amal(amal, chat, mid):
+    """widget_query'ning tez qismi (sinxron): amal xotirada → (holat JSON, saqla, keyin)."""
+    saqla, keyin = (False, '') if amal == 'h' else _tc_amal(amal)
+    with _tc_qulf:
+        h = _TC_JOY['h']
+        if mid and chat == ADMIN_ID and (h.get('w') or {}).get('m') != mid:
+            h['w'] = {'c': ADMIN_ID, 'm': mid}   # oxirgi bosilgan vidjet — yangilanadigani
+            saqla = True
+        if keyin == 'bir':
+            _TC_JOY['izoh'] = '⏳ …'
+        return _tc_holat_json(h), saqla, keyin
+
+
+async def tashco_vidjet_sorov(wq):
+    """widget_query: 15 soniyada javob shart. Tez amal → javob (holat) → sekin ish (jadval, sinov) → vidjet yangilanadi."""
+    qid = wq.get('id')
+    try:
+        if (wq.get('from') or {}).get('id') != ADMIN_ID or not _TC_JOY['yuklandi']:
+            await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid})
+            if not _TC_JOY['yuklandi']:
+                asyncio.create_task(blok(tashco_yukla))
+            return
+        d, saqla, keyin = await blok(_tc_vidjet_amal, str(wq.get('data') or '')[:64],
+                                     (wq.get('chat') or {}).get('id'), wq.get('message_id'))
+        await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid, 'data': d})
+        if saqla or keyin:
+            await blok(_tc_keyin, saqla, keyin)
+            await blok(tashco_panel)
+    except Exception as e:
+        logger.error(f'tashco_vidjet_sorov: {type(e).__name__}: {_maxfiy(e)}')
+        try:
+            await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid})
+        except Exception:
+            pass
+
+
+def tashco_sinov(chat, num=None):
+    """🧪 Klon guruhga: bitta e'lon kanaldan forward, bitta — bot o'zi (TashkentComp'ga hech narsa ketmaydi)."""
+    h = _TC_JOY['h']
+    by_num, _ = elon_cache_hammasi()
+    if not tashco_klon_id():
+        _TC_JOY['izoh'] = "⚠️ Klon guruh ulanmagan — o'sha guruhda /tashco yozing."
+        return _TC_JOY['izoh']
+    if num:
+        nomzod = [str(num)]
+    else:
+        navbat = tashco_navbat(h, by_num)
+        nomzod = [x[2] for v in navbat.values() for x in v] or \
+                 [n for n, e in sorted(by_num.items(), key=lambda x: -int(x[0]) if str(x[0]).isdigit() else 0)
+                  if str(n).isdigit() and elon_status(e) == 'active'][:30]
+    natija = []
+    kanalli = next((n for n in nomzod if _tc_post_tanla(by_num.get(n), 'telefon')), None)
+    for n, usul in ((kanalli, 'a'), (next((x for x in nomzod if x != kanalli), kanalli), 'b')):
+        if not n:
+            natija.append('🔁 forward: kanal posti bor e\'lon topilmadi' if usul == 'a' else '🤖 bot: e\'lon topilmadi')
+            continue
+        mid, u, kalit, xato = tashco_yubor(n, klonga=True, usul=usul)
+        natija.append(f'{"🔁 forward" if u == "f" else "🤖 bot"}: №{n} → {TASHCO_NOM.get(kalit, kalit)} ✅' if mid
+                      else f'{"🔁" if usul == "a" else "🤖"} №{n}: ❌ {xato}')
+    _TC_JOY['izoh'] = '🧪 Klon guruhga sinov:\n' + '\n'.join(natija)
+    return _TC_JOY['izoh']
+
+
+def tashco_bir():
+    """1️⃣ TashkentComp'ga BITTA e'lon — Jasurga ish. Owner ko'rmaguncha ikkinchisi yo'q; kunlik chegara va 30 daqiqa
+    oraliq ham tekshiriladi (spam xavfi)."""
+    h = _TC_JOY['h']
+    with _tc_qulf:
+        _tc_ish_eskir(h)
+        ish = h.get('ish') or {}
+        kb = _tc_bugun(h)
+        oxirgi = max([x[0] for x in h['oxirgi']] or [0])
+        if ish.get('num'):
+            _TC_JOY['izoh'] = f"⏳ №{ish['num']} Jasur navbatida — biroz kuting."
+            return
+        if not h['korildi'] and h['sinov'].get('mid'):
+            _TC_JOY['izoh'] = "⚠️ Sinov e'loni allaqachon chiqqan — avval ko'ring, keyin «👀 Ko'rdim»."
+            return
+        if kb['s'] >= h['kun']:
+            _TC_JOY['izoh'] = f"⚠️ Bugun {kb['s']} ta yuborildi — kunlik chegara. Ertaga."
+            return
+        if time.time() - oxirgi < TASHCO_ORALIQ:
+            _TC_JOY['izoh'] = (f"⚠️ Oxirgisidan 30 daqiqa o'tmagan — {_tc_vaqt(oxirgi + TASHCO_ORALIQ)[-5:]} dan keyin "
+                               "(guruh qoidasi).")
+            return
+        tanlov = tashco_tanla(h)
+        if not tanlov:
+            _TC_JOY['izoh'] = "⚠️ Yuboradigan e'lon yo'q — saytda e'longa «🏷 TashCo'ga» belgisini qo'ying."
+            return
+        num, kalit = tanlov
+        _tc_ish_qoy(h, num, kalit, 'bir')
+        _TC_JOY['izoh'] = f'⏳ №{num} ({TASHCO_NOM[kalit]}) — Jasur 2 daqiqa ichida yuboradi.'
+    logger.info(f'tashco: 1 ta — №{num} → Jasur navbatiga ({TASHCO_NOM[kalit]})')
+    tashco_saqla()
+
+
+# ── Jasur (foydalanuvchi akkaunti) — /tashco/jasur ──
+def _tc_tg_html(rich, chegara=1024):
+    """Kanal rich HTML → oddiy Telegram HTML (rasm izohi uchun, ≤1024): rasm / slayd / telefon havolasi olib tashlanadi,
+    tugmalar — «🔗 havola» qatorlari (sig'masa — tushiriladi)."""
+    s = re.sub(r'(?is)<tg-slideshow\b.*?</tg-slideshow>', '', rich or '')
+    tugmalar = [(u, re.sub(r'<[^>]+>', '', m).strip())
+                for u, m in re.findall(r'(?is)<tg-button\b[^>]*?\burl="([^"]+)"[^>]*>(.*?)</tg-button>', s)]
+    s = re.sub(r'(?is)<tg-button-row\b.*?</tg-button-row>|<tg-button\b.*?</tg-button>|<img\b[^>]*>', '', s)
+    s = re.sub(r'(?is)<a\s+href="tel:[^"]*"[^>]*>(.*?)</a>', r'\1', s)
+    s = re.sub(r'(?i)<br\s*/?>', '\n', s)
+    s = re.sub(r'(?i)</p>|</h\d>|<hr\s*/?>', '\n\n', s)
+    s = re.sub(r'(?i)<li\b[^>]*>', '• ', s)
+    s = re.sub(r'(?i)</li>', '\n', s)
+    s = re.sub(r'(?i)<strong\b[^>]*>', '<b>', s).replace('</strong>', '</b>')
+    s = re.sub(r'(?i)<em\b[^>]*>', '<i>', s).replace('</em>', '</i>')
+    s = re.sub(r'(?is)</?(?!(?:b|i|u|s|a|code)\b)[a-z][^>]*>', '', s)
+    s = re.sub(r'(?is)<(b|i|u|s|code)\b[^>]+>', r'<\1>', s)
+    s = re.sub(r'[ \t]+\n', '\n', s)
+    s = re.sub(r'\n{3,}', '\n\n', s).strip()
+    pastki = '\n'.join(f'🔗 <a href="{u}">{html_escape(_html.unescape(m))}</a>' for u, m in tugmalar if u.startswith('http'))
+    out = s + ('\n\n' + pastki if pastki else '')
+    if len(out) <= chegara:
+        return out
+    if len(s) <= chegara:
+        return s
+    toza = _html.unescape(re.sub(r'<[^>]+>', '', s))
+    return html_escape(toza[:chegara - 40].rstrip()) + '…'
+
+
+def tashco_ish_ber():
+    """Jasur so'rovi: navbatdagi ish (bo'lsa) — nima, qayerga, qanday. Ish «berildi» bo'ladi (ikki marta berilmaydi)."""
+    if not tashco_yukla():
+        return {'ok': False, 'xato': 'holat yuklanmadi'}
+    h = _TC_JOY['h']
+    with _tc_qulf:
+        _TC_JOY['jasur_ts'] = time.time()
+        ozg = _tc_ish_eskir(h)
+        ish = dict(h.get('ish') or {})
+    if not ish.get('num') or ish.get('holat') != 'kut':
+        if ozg:
+            tashco_saqla()
+            tashco_panel()
+        return {'ok': True, 'ish': None}
+    num, kalit = str(ish['num']), ish['k']
+    elon, models = elon_cache_get(num)
+    if not elon or elon_status(elon) != 'active':
+        with _tc_qulf:
+            h['ish'] = {}
+            _TC_JOY['izoh'] = f"⚠️ №{num} endi faol emas (sotilgan?) — o'tkazib yuborildi."
+        tashco_saqla()
+        tashco_panel()
+        return {'ok': True, 'ish': None}
+    post = _tc_post_tanla(elon, kalit) if h['b'][kalit]['u'] == 'a' else None
+    yon = post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc'))
+    javob = {'num': int(num), 'nishon': TASHCO_NISHON, 'thread': TASHCO_THREAD[kalit], 'bolim': TASHCO_NOM[kalit],
+             'usul': 'f' if post else 'b',
+             'matn': _tc_tg_html(build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)),
+             'rasmlar': kanal_manbalari(elon)[:4]}
+    if post:
+        javob.update(kanal=post[0], kanal_mid=int(post[1]))
+    with _tc_qulf:
+        if (h.get('ish') or {}).get('num') == ish['num']:
+            h['ish']['holat'], h['ish']['bt'] = 'berildi', int(time.time())
+    tashco_saqla()
+    tashco_panel()
+    return {'ok': True, 'ish': javob}
+
+
+def tashco_natija(num, mid, usul, xato=''):
+    """Jasur natijasi: yuborildi (mid) yoki xato. Sinov e'loni — Owner lichkasiga havola."""
+    h = _TC_JOY['h']
+    with _tc_qulf:
+        ish = h.get('ish') or {}
+        if not ish.get('num') or str(ish['num']) != str(num):
+            return {'ok': False, 'xato': "bunday ish yo'q"}
+        kalit, h['ish'] = ish['k'], {}
+        sinov = False
+        if mid:
+            _tc_qayd(h, num, kalit, mid, 'f' if usul == 'f' else 'b')
+            if not h['korildi'] and not h['sinov'].get('mid'):
+                h['sinov'] = {'num': int(num), 'mid': int(mid), 'ts': int(time.time())}
+                sinov = True
+            _TC_JOY['izoh'] = f'✅ №{num} → {TASHCO_NOM[kalit]}'
+        else:
+            h['log'][str(num)] = int(time.time() - TASHCO_HAFTA + 86400)   # bugun qayta urinilmaydi
+            _TC_JOY['izoh'] = f'❌ №{num} yuborilmadi (Jasur): {str(xato)[:150]}'
+    tashco_saqla()
+    tashco_panel()
+    if mid:
+        logger.info(f'tashco: №{num} → {TASHCO_NOM[kalit]} (Jasur, {"forward" if usul == "f" else "o‘zi"}, id {mid})')
+        if sinov:
+            send_msg(ADMIN_ID, f"🏷 TashkentComp'ga birinchi e'lon chiqdi: №{num} ({TASHCO_NOM[kalit]})\n"
+                               f"{tashco_link(mid)}\n\nKo'rib chiqing — hammasi joyida bo'lsa, panelda «👀 Ko'rdim».")
+    else:
+        logger.warning(f'tashco №{num}: Jasur yubora olmadi — {str(xato)[:150]}')
+        send_msg(ADMIN_ID, f"⚠️ TashkentComp: №{num} yuborilmadi (Jasur): {html_escape(str(xato)[:150])}")
+    return {'ok': True}
+
+
+async def tashco_jasur_endpoint(request):
+    """POST {kalit, amal: 'ol' | 'natija' | 'sinov', …} — faqat Jasur skripti (kalit — tashco_jasur_kalit)."""
+    try:
+        data = await request.json()
+        kalit = tashco_jasur_kalit()
+        if not kalit or not hmac.compare_digest(str(data.get('kalit', '')), kalit):
+            return web.json_response({'ok': False, 'xato': 'kalit'}, status=401)
+        amal = data.get('amal')
+        if amal == 'ol':
+            return web.json_response(await blok(tashco_ish_ber))
+        if amal == 'natija':
+            mid = data.get('mid')
+            mid = int(mid) if str(mid or '').isdigit() else None
+            return web.json_response(await blok(tashco_natija, str(data.get('num', '')), mid,
+                                                str(data.get('usul', '')), str(data.get('xato', ''))))
+        if amal == 'sinov':   # klon guruhga (Owner'ning o'z guruhi) — forward + bot e'loni; TashkentComp'ga emas
+            if not await blok(tashco_yukla):
+                return web.json_response({'ok': False, 'xato': 'holat'})
+            izoh = await blok(tashco_sinov, tashco_klon_id())
+            await blok(tashco_panel)
+            return web.json_response({'ok': True, 'izoh': izoh})
+        return web.json_response({'ok': False, 'xato': 'amal'}, status=400)
+    except Exception as e:
+        logger.error(f'tashco_jasur_endpoint: {type(e).__name__}: {_maxfiy(e)}')
+        return web.json_response({'ok': False, 'xato': 'server'}, status=500)
+
+
+def tashco_sozla(chat, forum, xabar_joy, soz):
+    """/tashco (klon guruhda, admin): 7 mavzu (borlari takrorlanmaydi), General'ga panel (qadalgan).
+    «/tashco yangi» — boshqa guruh ulangan bo'lsa ham shu guruhga o'tadi. «/tashco sinov 123» — №123 shu guruhga."""
+    if not forum:
+        send_msg(xabar_joy, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: sozlamalar → Topics → yoqing, keyin /tashco.")
+        return
+    if not tashco_yukla():
+        send_msg(xabar_joy, "⚠️ Sozlama jadvaldan o'qilmadi — 1 daqiqadan keyin /tashco ni qayta yuboring.")
+        return
+    h = _TC_JOY['h']
+    eski = tashco_klon_id()
+    if eski and eski != chat and soz[:1] != ['yangi']:
+        send_msg(xabar_joy, "⚠️ Panel boshqa guruhga ulangan. Shu guruhga ko'chirish: <code>/tashco yangi</code>")
+        return
+    if soz[:1] == ['sinov'] and eski == chat:
+        num = soz[1] if len(soz) > 1 and re.fullmatch(r'\d{1,6}', soz[1]) else None
+        send_msg(xabar_joy, html_escape(tashco_sinov(chat, num)))
+        tashco_panel()
+        return
+    with _tc_qulf:
+        if eski != chat:
+            h['klon'] = {'id': chat, 'm': {}, 'p': 0}
+        m = h['klon'].setdefault('m', {})
+    ochildi, xato = 0, ''
+    for k, _, mavzu, _ in TASHCO_BOLIMLAR:
+        if m.get(k) and mavzu_bormi(chat, m[k]) is not False:
+            continue
+        j = _tg_j('createForumTopic', {'chat_id': chat, 'name': mavzu})
+        if j.get('ok'):
+            m[k] = j['result']['message_thread_id']
+            ochildi += 1
+        else:
+            m.pop(k, None)
+            xato = str(j.get('description', ''))[:150]
+    tashco_saqla()
+    if xato:
+        send_msg(xabar_joy, f"⚠️ Ba'zi mavzular ochilmadi: <code>{html_escape(xato)}</code>\n"
+                            "Botga «Mavzularni boshqarish» huquqi bering va /tashco ni qayta yuboring.")
+    send_msg(xabar_joy, f"✅ Mavzular tayyor ({len(m)}/7). Boshqaruv paneli endi lichkada: botga <b>/tashco</b> yozing.")
+    with _tc_qulf:
+        p = int(h['klon'].get('p') or 0)
+        h['klon']['p'] = 0
+    if p:
+        _tg_j('deleteMessage', {'chat_id': chat, 'message_id': p})   # eski tugmali panel
+        tashco_saqla()
+    tashco_panel()
+    logger.info(f'tashco: klon guruh sozlandi ({ochildi} mavzu ochildi)')
+
+
+async def tashco_endpoint(request):
+    """3428: saytdagi «🏷 TashCo'ga» — e'longa TashkentComp bo'limi. {initData, num, bolim: 'avto'|kalit|''} → {ok, bolim, nom}."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        num = str(data.get('num', '') or '').strip()
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'error': 'Nomer notogri'}, status=400)
+        bolim = str(data.get('bolim', '') or '').strip().lower()
+        if bolim and bolim != 'avto' and bolim not in TASHCO_NOM:
+            return web.json_response({'error': "Bo'lim notogri"}, status=400)
+        elon, models = await blok(elon_cache_get, num)
+        if bolim == 'avto':
+            if not elon:
+                return web.json_response({'ok': False, 'error': "E'lon topilmadi"})
+            bolim = tashco_avto(elon, models)
+        ok = await blok(_sheets_update, {'num': int(num), 'tashco': bolim})
+        if not ok:
+            return web.json_response({'ok': False, 'error': 'Jadvalga yozilmadi'})
+        with _elon_cache_lock:
+            e = _ELON_CACHE['by_num'].get(num)
+            if e is not None:
+                e['tashco'] = bolim
+        return web.json_response({'ok': True, 'bolim': bolim, 'nom': TASHCO_NOM.get(bolim, '')})
+    except Exception as e:
+        logger.error(f'tashco_endpoint: {type(e).__name__}: {_maxfiy(e)}')
+        return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
+
+
 async def handle_update(data):
     try:
+        # 3428: lichkadagi TashkentComp vidjeti (HTML panel) tugmasi
+        if data.get('widget_query'):
+            asyncio.create_task(tashco_vidjet_sorov(data['widget_query']))
+            return
+
         # BUGUN16 §1: «@bot …» — inline rejim
         if data.get('inline_query'):
             await inline_javob(data['inline_query'])
@@ -7876,7 +9377,17 @@ async def handle_update(data):
         # qilinadi; chat_id — mavzuli (Joy), javob o'sha mavzuga ketadi. Boshqa guruhlar — eskicha.
         guruhdan = False
         if message.get('chat', {}).get('type') in ('group', 'supergroup'):
+            # 3428: TashkentComp (begona ochiq guruh) — bot u yerda hech narsaga javob bermaydi
+            if tashco_guruhmi(message.get('chat')):
+                return
             buyruq = text.split(' ')[0].split('@')[0]
+            if buyruq == '/tashco':   # 3428: klon guruhda — 7 mavzu + boshqaruv paneli (faqat admin)
+                if user.get('id') == ADMIN_ID:
+                    asyncio.create_task(blok(tashco_sozla, chat_id, bool(message['chat'].get('is_forum')),
+                                             Joy(chat_id, message.get('message_thread_id')), text.split()[1:3]))
+                return
+            if tashco_klon_id() and chat_id == tashco_klon_id():
+                return   # 3428: klon guruh — faqat /tashco va panel tugmalari
             if buyruq == '/guruh':
                 if user.get('id') == ADMIN_ID and text.split()[1:2] == ['namuna']:   # 3214.1: fonda (T1 — 10 namuna + xulosa)
                     asyncio.create_task(blok(guruh_namuna, chat_id, Joy(chat_id, message.get('message_thread_id'))))
@@ -7904,12 +9415,18 @@ async def handle_update(data):
                 cq_chat = Joy(cq_chat, cq_msg.get('message_thread_id'))
             cq_data = cq.get('data', '')
             cq_id = cq.get('id')
+            if tashco_guruhmi(cq_msg.get('chat')):
+                return   # 3428: TashkentComp'da bot hech narsaga javob bermaydi
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
                        json={'callback_query_id': cq_id, **({'text': "✔️ Bu bosqich bajarilgan — holat xabar matnida"}
                                                             if cq_data == 'bh:-' else
                                                             {'text': "🖼 Kollaj hozircha o'chiq"}   # 3244
                                                             if not KOLLAJ_YOQIQ and cq_data.startswith(('kollaj:', 'kg:'))
                                                             else {})}, timeout=5)
+            # 3428: TashCo paneli (faqat admin, faqat klon guruhda)
+            if cq_data.startswith('tc:') and cq_user.get('id') == ADMIN_ID and tashco_klon_id()                     and cq_msg.get('chat', {}).get('id') == tashco_klon_id():
+                asyncio.create_task(blok(tashco_tugma, tashco_klon_id(), cq_data))
+                return
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
@@ -7925,6 +9442,15 @@ async def handle_update(data):
                         {"inline_keyboard": azo_kanal_tugmalari(yet) + [
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
+            # 3452: konkurs natijasi — «📢 Asosiy kanalga e'lon» / «📨 Xabarlarni hozir» (faqat admin)
+            if cq_data.startswith('kkk:') and cq_adm:
+                asyncio.create_task(konkurs_kanal_elon(cq_data[4:], cq_chat))
+            if cq_data.startswith('kkx:') and cq_adm:
+                asyncio.create_task(konkurs_tugat_va_yetkaz(cq_data[4:], False, 'Owner: xabarlar hozir', 'xabar_tugma',
+                                                            cq_chat))
+            # 3452: yangi telefon / kamera — «📣 Kanalga yuborish» taklifi (faqat admin)
+            if cq_data.startswith(('apost:', 'apost_no:')) and cq_adm:
+                asyncio.create_task(blok(avto_post_tugma, cq_chat, cq_msg.get('message_id'), cq_data))
             # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
             if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_adm:
                 asyncio.create_task(blok(kanal_tasdiq, cq_chat, cq_data.split(':', 1)[1], cq_data.startswith('kanal_ok:')))
@@ -7964,6 +9490,11 @@ async def handle_update(data):
         if not chat_id:
             return
 
+        # 3428: /tashco lichkada (faqat Owner) — TashkentComp boshqaruv paneli (HTML vidjet)
+        if not guruhdan and chat_id == ADMIN_ID and user.get('id') == ADMIN_ID and                 text.split(' ')[0].split('@')[0] == '/tashco':
+            asyncio.create_task(blok(tashco_vidjet_yubor, chat_id))
+            return
+
         # 3301: «🚚 Yo'lda» bosilgan, isbot kutilmoqda — rasm-e'lon / istak javobidan OLDIN
         if adm and user.get('id') == ADMIN_ID:
             yk = _yolda_javobmi(chat_id, message, text)
@@ -7984,12 +9515,22 @@ async def handle_update(data):
             await handle_rasmlar_xabar(chat_id, message)
             return
 
-        # BUGUN296: lichkada rasm / rasm-fayl / PDF — mijozning cheki (admin bo'lsa — faqat o'zi «chek kutilmoqda» qo'ygan bo'lsa,
-        # ya'ni sinab ko'rayotgan bo'lsa; aks holda admin rasmi eskicha e'lon yaratadi)
-        if (message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id
-                and _chek_fayl(message) is not None and (not adm or await blok(_chek_kutyapti, chat_id))):
-            asyncio.create_task(chek_qabul(chat_id, user, message))
-            return
+        # BUGUN296: lichkada rasm / fayl — mijozning cheki (admin bo'lsa — faqat o'zi «chek kutilmoqda» qo'ygan bo'lsa,
+        # ya'ni sinab ko'rayotgan bo'lsa; aks holda admin rasmi eskicha e'lon yaratadi).
+        # 3386: «chek kutilmoqda» (To'landim bosilgan) yoki chek qabul qilingach 30 daqiqa (qo'shimcha) — HAR QANDAY xabar (matn, ovoz,
+        # video, stiker, joylashuv…) ham chek: rad etilmaydi, buyurtmaga bog'lanib adminga boradi. Buyruq (/…), eski tugma, faol
+        # konkursga qo'lda yozilgan telefon — o'z yo'lida; sharh (yulduzdan keyingi matn) kutilsa — qo'shimcha emas, sharh.
+        if (message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id and _chek_mazmun(message)
+                and not text.startswith('/') and not _eski_tugmami(text)):
+            chek_kod = await blok(_chek_oyna, chat_id)
+            if _chek_fayl(message) is not None and (not adm or chek_kod == 'kut'):
+                asyncio.create_task(chek_qabul(chat_id, user, message))
+                return
+            if (chek_kod and (not adm or chek_kod == 'kut') and chat_id not in user_states
+                    and (chek_kod == 'kut' or not _sharh_kutyapti(chat_id))
+                    and not (text and _phone_ok(text) and await tiklash_holati(chat_id, user))):
+                asyncio.create_task(chek_qabul(chat_id, user, message))
+                return
 
         # 3262: yulduz bosilgach 30 daqiqa ichidagi matn — sharh. Konkurs raqami, e'lon raqami, eski tugma — o'z yo'lida
         if (text and not text.startswith('/') and message.get('chat', {}).get('type') == 'private' and user.get('id') == chat_id
@@ -8133,7 +9674,8 @@ async def handle_update(data):
                     f"✅ Aktiv konkurs: {kid}\n"
                     f"🎁 {html_escape(k.get('prize', ''))}\n"
                     f"⏰ Tugash: {_kk_vaqt(end)} (Toshkent)\n"
-                    f"⏳ Taymer {taymer} — vaqti kelganda avtomatik tugaydi.\n"
+                    f"⏳ Taymer {taymer} — tugashdan 5 daqiqa oldin g'olib tanlanadi (qo'shilish yopiladi), natija TEST kanalga "
+                    f"(asosiy kanalga — faqat tugma bilan). Sizga eslatma: 1 soat, 30 va 15 daqiqa qolganda.\n"
                     f"Holat: /konkursholat")
             elif r == 'kechikdi':
                 await blok(send_msg, chat_id,
@@ -8312,7 +9854,7 @@ def send_elon_card(chat_id, num):
                 '']
     qatorlar.append(f"{cond_emoji} {cond_uz} / {cond_ru}")
     if holat == 'sold':
-        qatorlar.append("❗️ <b>QOLMADI / НЕТ В НАЛИЧИИ</b>" if kop_donali(elon) else "❗️ <b>SOTILDI / ПРОДАНО</b>")
+        qatorlar.append("❗️ <b>QOLMADI / НЕТ В НАЛИЧИИ</b>" if tugadi_matni(elon) == 'QOLMADI' else "❗️ <b>SOTILDI / ПРОДАНО</b>")
     else:
         qatorlar.append(f"💰 <b>{narx}$</b>")
         if soni_qatori(elon):
@@ -8416,6 +9958,14 @@ def send_reroll_notify(data):
     sinov = _kk_sinovmi(nomi_xom) or _kk_sinovmi(data.get('sovga'))
     ishonchsiz = sinov or not nomi_xom
     admin_uid = str(ADMIN_ID)
+    # 3452: xabarlar hali ketmagan — eski / yangi g'olibga alohida xabar YO'Q (navbat to'g'ri g'olibga o'zi yuboradi);
+    # natija asosiy kanalga hali chiqmagan — «o'zgardi» posti TEST kanalga. Holat o'qilmasa — kanalga emas, adminga.
+    kid_r = str(data.get('konkurs_id') or '').strip()
+    kh = _kk_sheet('konkursHolat', id=kid_r) if kid_r else None
+    kh_ok = bool(kh and kh.get('ok'))
+    if kh_ok and str(kh.get('yetkazish') or '').split('|')[0] == 'navbatda':
+        ishonchsiz = True
+    korish_kanal = not kh_ok or str(kh.get('kanal_post') or '').split('|')[0] == 'navbatda'
 
     # ── (A) ESKI g'olibga — endi g'olib emas (kanal button) ──
     old_uid = str(old.get('user_id', '') or '')
@@ -8483,7 +10033,9 @@ def send_reroll_notify(data):
             f"🏆 Новый победитель: {new_disp}"
         )
         # sinov — TEST kanal; haqiqiy (tasdiqlangan) — asosiy kanal; tasdiqlanmagan — faqat admin lichkasi
-        if sinov:
+        if korish_kanal and not sinov:   # 3452
+            c_chat = (kanal_tanla('konkurs_sinov') or ADMIN_ID) if kh_ok else ADMIN_ID
+        elif sinov:
             c_chat = kanal_tanla('konkurs_sinov') or ADMIN_ID     # TEST kanal sozlanmagan bo'lsa — jimgina yo'qolmasin, adminga
         elif nomi_xom:
             c_chat = kanal_tanla('konkurs')
@@ -8495,6 +10047,11 @@ def send_reroll_notify(data):
                 "text": "🛍 Do'kon / Магазин",
                 "url": f"https://t.me/{BOT_USERNAME}?startapp"}]]}
         }, timeout=8)
+        if korish_kanal and not sinov and str(c_chat) != str(ADMIN_ID):
+            req.post(f'{TG_API}/sendMessage', json={'chat_id': c_chat, 'parse_mode': 'HTML', 'text':
+                "🧪 <b>Oldindan ko'rish</b> — ish 3452: g'olib qayta tanlandi, asosiy kanalga hali chiqmagan.\n"
+                "Tekshiring: yangi g'olib to'g'rimi. Asosiy kanalga — botdagi «📢 Asosiy kanalga e'lon qilish» "
+                "tugmasi (hozirgi g'oliblar bilan)."}, timeout=8)
     except Exception as e:
         logger.error(f'reroll channel: {e}')
 
@@ -9063,6 +10620,9 @@ def _sovga_holat(elonlar, sonlar, ranglar, kel, ogoh):
     return sovga, sovga and not ogoh and not kop
 
 
+_SINOV_BOSH = "🧪 <b>SINOV</b> — admin sinov xaridi (Sheets / Store / Ombor'ga yozilmaydi)\n"   # 3394
+
+
 def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonlar=None, ranglar=None, kel=None, kel_ogoh=False,
                    ogoh=(), tel_ogoh=False):
     """Adminga boradigan xabar (HTML). Narx — SERVERDAGI e'londan (mijoz yuborganiga ishonilmaydi).
@@ -9109,6 +10669,8 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     elif sovga:
         holat_s = ("⏳ <b>To'lov kutilmoqda</b> — 🎁 sovg'a, lekin tekshiring (e'lon yopiq yoki dona havoladagidan ko'p). "
                    "To'g'ri bo'lsa «✅ To'lov keldi» ni bosing.\n")
+    elif (joy or {}).get('tolov') == 'naqd':   # 3420: naqd — chek so'ralmaydi, pul topshirishda olinadi
+        holat_s = "⏳ <b>To'lov kutilmoqda</b> — 💵 naqd: topshirishda olinadi, chek so'ralmaydi.\n"
     else:
         holat_s = ("⏳ <b>To'lov kutilmoqda</b> — chek hali kelmagan. Mijoz chekni o'zi yuboradi; "
                    "kelmasa — telefon qiling.\n")
@@ -9123,7 +10685,8 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
             "\n"
             f"👤 {html_escape(ism)}\n"
             f"📞 {tel_s}\n"
-            f"📍 {_buyurtma_joy_matn(joy)}\n\n"
+            f"📍 {_buyurtma_joy_matn(joy)}\n"
+            + ("💵 To'lov: <b>naqd</b> (topshirishda)\n" if (joy or {}).get('tolov') == 'naqd' else '') + "\n"
             + holat_s +
             f"🕒 {_kk_vaqt(time.time())}")
 
@@ -9135,10 +10698,10 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
 # 3288: «yopildi» — oxirgi bosqich (sharh qoldirildi yoki admin yopdi). «yetkazildi» = mijoz qo'liga tegdi («Qabul qilindi»).
 _HOLAT_TARTIB = ('kutilmoqda', 'tolandi', 'yolda', 'yetkazildi', 'yopildi')
 _HOLAT_ADMIN = {'tolandi': ('✅', "To'lov keldi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi'),
-                'yopildi': ('🔒', 'Yopish (baho kutmasdan)')}
+                'yopildi': ('🔕', "Baho so'ramay yopish")}
 _HOLAT_TASDIQ = ('tolandi', 'yolda', 'yetkazildi', 'yopildi')   # BUGUN275: to'lov tasdiqlangan — Store'da «sotildi»
 _HOLAT_ADMIN_NOM = {'kutilmoqda': "⏳ To'lov kutilmoqda", 'tolandi': "✅ To'lov keldi", 'yolda': "🚚 Yo'lda",
-                    'yetkazildi': '📦 Yetkazildi', 'yopildi': '🔒 Yopildi', 'bekor': '❌ Mijoz bekor qilgan'}
+                    'yetkazildi': '📦 Yetkazildi', 'yopildi': '✅ Yakunlandi', 'bekor': '❌ Mijoz bekor qilgan'}
 _HOLAT_MIJOZ = {   # mijozga xabar: (uz, ru) — {o} buyurtma raqami
     'tolandi': ("✅ <b>Buyurtma №{o}</b> — to'lovingiz qabul qilindi. Rahmat!",
                 "✅ <b>Заказ №{o}</b> — оплата получена. Спасибо!"),
@@ -9146,9 +10709,57 @@ _HOLAT_MIJOZ = {   # mijozga xabar: (uz, ru) — {o} buyurtma raqami
               "🚚 <b>Заказ №{o}</b> уже в пути!\nКогда получите — нажмите «✅ Получил»."),
     'yetkazildi': ("📦 <b>Buyurtma №{o}</b> qabul qilindi. Xaridingiz uchun rahmat!\n⭐ Baho qoldiring — 1 daqiqa.",
                    "📦 <b>Заказ №{o}</b> получен. Спасибо за покупку!\n⭐ Оставьте отзыв — 1 минута."),
-    'yopildi': ("🔒 <b>Buyurtma №{o}</b> yopildi. Rahmat!",
-                "🔒 <b>Заказ №{o}</b> закрыт. Спасибо!"),
+    'yopildi': ("✅ <b>Buyurtma №{o}</b> yakunlandi. Xaridingiz uchun rahmat!",
+                "✅ <b>Заказ №{o}</b> завершён. Спасибо за покупку!"),
 }
+# 3420: «O'zim olib ketaman» — yo'l bosqichi yo'q: «Yo'lda» o'rniga «Tayyor — olib ketishingiz mumkin», «Yetkazildi» o'rniga «Topshirildi».
+# Ichki holat nomlari o'sha (yolda / yetkazildi) — Sheets, sayt, sharh oqimi o'zgarmaydi; faqat matn va tugma nomi boshqa.
+# NEGA: Owner 2026-11-10 — «o'zim olib ketaman dedi, olib ketdi — hali ham botda «yo'lga chiqdi», BTS / Yandex havola … skip qilish kerak».
+_HOLAT_MIJOZ_OZIM = {
+    'yolda': ("🏪 <b>Buyurtma №{o}</b> tayyor — do'kondan olib ketishingiz mumkin!\nOlgach «✅ Qabul qilib oldim» ni bosing.",
+              "🏪 <b>Заказ №{o}</b> готов — можно забрать в магазине!\nКогда заберёте — нажмите «✅ Получил»."),
+    'yetkazildi': ("🤝 <b>Buyurtma №{o}</b> topshirildi. Xaridingiz uchun rahmat!\n⭐ Baho qoldiring — 1 daqiqa.",
+                   "🤝 <b>Заказ №{o}</b> выдан. Спасибо за покупку!\n⭐ Оставьте отзыв — 1 минута."),
+}
+_HOLAT_OZIM = {'yolda': ('🏪', 'Tayyor — olib ketishi mumkin', 'Tayyor'), 'yetkazildi': ('🤝', 'Topshirildi', 'Topshirildi')}
+
+
+def _ozimmi(b):
+    """3420: «O'zim olib ketaman» buyurtmasi."""
+    b = b or {}
+    return (b.get('tur') or (b.get('joy') or {}).get('tur')) == 'ozim'
+
+
+def _naqdmi(b):
+    """3420: «💵 Naqd beraman» — chek so'ralmaydi, pul topshirishda / kuryerga."""
+    b = b or {}
+    return b.get('tolov') == 'naqd' or (b.get('joy') or {}).get('tolov') == 'naqd'
+
+
+def _tasdiqlangan(b):
+    """Store'da «sotildi» bo'ladigan holat. Naqd — pul qo'lga tekkanda (topshirildi / yakunlandi), kartada — to'lov kelganda."""
+    h = (b or {}).get('holat')
+    return h in (('yetkazildi', 'yopildi') if _naqdmi(b) else _HOLAT_TASDIQ)
+
+
+def _holat_tugma(b, h):
+    """Admin tugmasi matni: (emoji, nom). Olib ketishda — «Tayyor», «Topshirildi»; naqdda topshirish — «· 💵 naqd olindi»."""
+    e, nom = _HOLAT_ADMIN[h]
+    if _ozimmi(b) and h in _HOLAT_OZIM:
+        e, nom = _HOLAT_OZIM[h][0], _HOLAT_OZIM[h][1]
+    if h == 'yetkazildi' and _naqdmi(b):
+        nom += ' · 💵 naqd olindi'
+    return e, nom
+
+
+def _holat_qator_nom(b, h):
+    """Xabardagi holat zanjiri bo'g'ini: (emoji, nom)."""
+    e, nom = _HOLAT_QATOR[h]
+    if _ozimmi(b) and h in _HOLAT_OZIM:
+        e, nom = _HOLAT_OZIM[h][0], _HOLAT_OZIM[h][2]
+    if h == 'yetkazildi' and _naqdmi(b):
+        nom += ' · 💵 naqd olindi'
+    return e, nom
 _HOLAT_MIJOZ_TUGMA = {   # 3288: xabar tagidagi tugma — sayt «Buyurtmalarim» (qabul / sharh shu yerda)
     'yolda': ("📦 Buyurtmalarim", "📦 Мои заказы"),
     'yetkazildi': ("⭐ Baho qoldirish", "⭐ Оставить отзыв"),
@@ -9158,8 +10769,9 @@ _HOLAT_MIJOZ_TUGMA = {   # 3288: xabar tagidagi tugma — sayt «Buyurtmalarim»
 # BUGUN295: buyurtma xabaridagi holat qatori — admin tugma bosganda xabar MATNI ham o'zgaradi (ilgari faqat tugmalar o'zgarib,
 # «⏳ To'lov kutilmoqda — chek hali kelmagan…» qolib ketardi). Bosqichlar ketma-ket: «✅ To'landi · 20:31 → 🚚 Yo'lda · 21:05».
 _HOLAT_QATOR = {'tolandi': ('✅', "To'landi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi'),
-                'yopildi': ('🔒', 'Yopildi')}
-_HOLAT_QATOR_RE = re.compile("\n\n(?:⏳ To'lov kutilmoqda|✅ To'landi|🚚 Yo'lda|📦 Yetkazildi|🔒 Yopildi)")
+                'yopildi': ('✅', 'Yakunlandi')}   # 3420: «🔒 Yopildi» o'rniga (eski xabarlarda qoladi — RE taniydi)
+_HOLAT_QATOR_RE = re.compile("\n\n(?:⏳ To'lov kutilmoqda|✅ To'landi|🚚 Yo'lda|📦 Yetkazildi|🔒 Yopildi|✅ Yakunlandi"
+                             "|🏪 Tayyor|🤝 Topshirildi)")
 _BUYURTMA_VAQT_RE = re.compile(r'🕒 (?:Buyurtma: )?(\d\d\.\d\d\.\d{4} \d\d:\d\d)')
 
 
@@ -9168,7 +10780,7 @@ def _u16(s):
     return len(s.encode('utf-16-le')) // 2
 
 
-def _buyurtma_holat_matn(text, entities, holat, ts):
+def _buyurtma_holat_matn(text, entities, holat, ts, b=None):
     """Admin xabari (text + entities, Telegram'dan qaytgan) → (yangi text, entities): holat qatoridan pasti almashadi.
     Holat qatori topilmasa (boshqa xabar) yoki xabarda shu holat allaqachon yozilgan bo'lsa (3302) — None."""
     if holat not in _HOLAT_QATOR:
@@ -9181,7 +10793,7 @@ def _buyurtma_holat_matn(text, entities, holat, ts):
     bosh, dum = text[:m.start()], text[m.start() + 2:]
     v = _BUYURTMA_VAQT_RE.search(dum)
     eski = dum.split('\n', 1)[0]
-    e, nom = _HOLAT_QATOR[holat]
+    e, nom = _holat_qator_nom(b, holat)   # 3420: olib ketish / naqd
     if eski.split(' → ')[-1].startswith(f'{e} {nom}'):
         return None
     zanjir = '' if eski.startswith('⏳') else eski + ' → '
@@ -9254,7 +10866,7 @@ async def _admin_xb_tahrir(chat_id, message_id, caption, yangi_m, klava, uid, or
     return natija
 
 
-def _buyurtma_klava(uid, order, holat, bron_nums):
+def _buyurtma_klava(uid, order, holat, bron_nums, b=None):
     """Adminga boradigan buyurtma xabarining tugmalari: Mijozga yozish · KEYINGI bosqich · bronni bekor qilish.
     3301: faqat keyingi bosqich tugmasi (bajarilgani — xabar matnidagi holat qatorida, BUGUN295). NEGA: Owner 2026-10-31 — «hamma tugma
     birdan turibdi, bosilgani ham bilinishi qiyin». Hozirgi qoida saqlangan: to'lovni kutmay ham jo'natish mumkin — «kutilmoqda» da
@@ -9262,12 +10874,22 @@ def _buyurtma_klava(uid, order, holat, bron_nums):
     3304: «🔓 Bronni bekor qilish» — FAQAT «⏳ To'lov kutilmoqda» da. NEGA: Owner 2026-10-31 — «to'lov keldidan keyin chiqmasin»:
     to'langan (yoki to'lovni kutmay jo'natilgan) buyurtmada bron ochilsa, e'lon yana hammaga sotuvga chiqib qoladi."""
     qator = [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]
-    if holat in _HOLAT_TARTIB:
+    if holat in ('yetkazildi', 'yopildi'):
+        # 3420: buyurtma YAKUNLANGAN — «Yopish» majburiy qadam emas (Owner 2026-11-10: «zakaz oxiriga yetmagandek, bosish shartdek
+        # turibdi»). Baho — ixtiyoriy; xohlasa «Baho so'ramay yopish» (bot 3 kundan keyin baho so'ramaydi).
+        qator.append([{'text': '✅ Yakunlandi' + (' — baho ixtiyoriy' if holat == 'yetkazildi' else ''), 'callback_data': 'bh:-'}])
+        if holat == 'yetkazildi':
+            qator.append([{'text': f"{_HOLAT_ADMIN['yopildi'][0]} {_HOLAT_ADMIN['yopildi'][1]}",
+                           'callback_data': f'bh:yopildi:{uid}:{order}'}])
+    elif holat in _HOLAT_TARTIB:
         i = _HOLAT_TARTIB.index(holat)
-        qator += [[{'text': f'{_HOLAT_ADMIN[h][0]} {_HOLAT_ADMIN[h][1]}', 'callback_data': f'bh:{h}:{uid}:{order}'}]
-                  for h in _HOLAT_TARTIB[i + 1:i + 2]]
-        if holat == 'kutilmoqda':
-            qator.append([{'text': "⏭ To'lovni kutmay — Yo'lda", 'callback_data': f'bh:yolda:{uid}:{order}'}])
+        keyingi = _HOLAT_TARTIB[i + 1:i + 2]
+        if holat == 'kutilmoqda' and _naqdmi(b):   # 3420: naqd — to'lov topshirishda; «To'lov keldi» bosqichi yo'q
+            keyingi = ('yolda',)
+        qator += [[{'text': '{} {}'.format(*_holat_tugma(b, h)), 'callback_data': f'bh:{h}:{uid}:{order}'}] for h in keyingi]
+        if holat == 'kutilmoqda' and not _naqdmi(b):
+            qator.append([{'text': "⏭ To'lovni kutmay — " + ('Tayyor' if _ozimmi(b) else "Yo'lda"),
+                           'callback_data': f'bh:yolda:{uid}:{order}'}])
     else:   # bekor — tugma emas, holat
         qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
     if holat == 'kutilmoqda':
@@ -9304,7 +10926,10 @@ def _buyurtma_holat_qoy(uid, order, yangi):
 def _mijoz_matn_klava(b, yangi, havola=''):
     """(matn, reply_markup | None) — mijozga holat xabari. Til — buyurtma berilganda Telegram'dan olingan; bilinmasa ikkalasi.
     3288: «yolda» / «yetkazildi» tagida sayt «Buyurtmalarim» tugmasi; havola — yetkazish isboti (Yandex …)."""
-    uz, ru = _HOLAT_MIJOZ[yangi]
+    uz, ru = (_HOLAT_MIJOZ_OZIM if _ozimmi(b) and yangi in _HOLAT_MIJOZ_OZIM else _HOLAT_MIJOZ)[yangi]
+    if yangi == 'yolda' and _naqdmi(b):   # 3420
+        uz, ru = (uz + "\n💵 To'lov — naqd, " + ("olib ketayotganda." if _ozimmi(b) else "kuryerga."),
+                  ru + "\n💵 Оплата — наличными, " + ("при получении." if _ozimmi(b) else "курьеру."))
     o = html_escape(b.get('order', ''))
     til = b.get('til')
     matn = uz.format(o=o) if til == 'uz' else ru.format(o=o) if til == 'ru' else uz.format(o=o) + '\n\n' + ru.format(o=o)
@@ -9330,7 +10955,10 @@ def _buyurtma_mijozga(uid, b, yangi, havola=''):
 def _sotuv_sheet_yoz(uid, b):
     """BUGUN275: tasdiqlangan buyurtma → Store (Sotuvlar varag'i + e'lon «sotildi»). Store'da (order, num) bo'yicha bir marta
     yoziladi — qayta chaqirish xavfsiz (admin tugmani qayta bossa shu qayta urinish). nik — buyurtma paytidagi username,
-    yo'q bo'lsa Telegram getChat. Raqam/nik logga YOZILMAYDI. True — Store qabul qildi."""
+    yo'q bo'lsa Telegram getChat. Raqam/nik logga YOZILMAYDI. True — Store qabul qildi.
+    3394: sinov (admin) buyurtmasi — Store'ga / Ombor'ga sotuv YOZILMAYDI (True — qayta urinish so'ralmasin)."""
+    if (b or {}).get('sinov'):
+        return True
     try:
         tovar = [{'num': x.get('num'), 'soni': x.get('soni') or 1, 'narx': x.get('narx'), 'chegirma': x.get('chegirma') or 0}
                  for x in (b.get('tovar') or []) if x.get('num')]   # BUGUN287: narx — haqiqiy (kelishilgan), chegirma — 1 donaga
@@ -9356,17 +10984,17 @@ def _sotuv_sheet_yoz(uid, b):
 def _holat_matn_b(text, entities, joriy, ts, b):
     """3312: «📦 jo'natilgan» buyurtmada to'lov kelib holat to'g'ri «Yo'lda» ga o'tsa — zanjirda «✅ To'landi» ham qoladi."""
     if joriy == 'yolda' and (b or {}).get('jonatildi'):
-        ym = _buyurtma_holat_matn(text, entities, 'tolandi', ts)
+        ym = _buyurtma_holat_matn(text, entities, 'tolandi', ts, b)
         if ym:
-            return _buyurtma_holat_matn(ym[0], ym[1], 'yolda', ts) or ym
-    return _buyurtma_holat_matn(text, entities, joriy, ts)
+            return _buyurtma_holat_matn(ym[0], ym[1], 'yolda', ts, b) or ym
+    return _buyurtma_holat_matn(text, entities, joriy, ts, b)
 
 
 async def _buyurtma_xabar_yangila(chat_id, message_id, xabar, uid, order, b, joriy, kod):
     """Admin buyurtma xabari: tugmalar yangilanadi, xabardagi holat qatori joriy holatda bo'lmasa — u ham.
     3302: 'eski' da ham (holat boshqa xabarda surilgan); shu buyurtmaning boshqa admin xabarlari (`admin_xb`) ham yangilanadi."""
     bron_nums = [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')]
-    klava = _buyurtma_klava(uid, order, joriy, bron_nums)
+    klava = _buyurtma_klava(uid, order, joriy, bron_nums, b)
     xb = xabar or {}
     rasmli = not xb.get('text') and bool(xb.get('caption'))   # BUGUN296: chek nusxasi — rasm, matni caption'da
     surildi = kod in ('ok', 'eski') and b
@@ -9387,16 +11015,44 @@ async def _buyurtma_xabar_yangila(chat_id, message_id, xabar, uid, order, b, jor
             await _admin_xb_tahrir(ADMIN_ID, x['m'], x.get('c'), ym, klava, uid, order)
 
 
+def sotuv_kanal_yangila(nums):
+    """3421 (Owner 2026-11-08, №199): to'lov tasdig'idan keyin Store e'lonni «sotildi» qildi / sonini kamaytirdi — kanal posti
+    ham o'shanga (matn + donalikda rasm muhri). Ilgari post faqat sayt saqlaganda tahrirlanardi (kanal_sinxron) — №199 sotilgan,
+    kanalda «aktual» turgan. E'lon Store'dan QAYTA olinadi (xotirada eski holat). Post yo'q — hech narsa. Tahrir bo'lmasa —
+    adminga bitta qator; yangi post YUBORILMAYDI (sotuv paytida kanalga yangi xabar chiqmasin). Fonda (_fonda) — sekin."""
+    for num in dict.fromkeys(str(n).strip() for n in nums or [] if str(n or '').strip().isdigit()):
+        try:
+            yangi, _ = fetch_elon_by_num(num)
+            if not yangi:
+                logger.warning(f'sotuv_kanal_yangila №{num}: Store javob bermadi')
+                continue
+            with _elon_cache_lock:
+                eski = _ELON_CACHE['by_num'].get(num)
+            yangi['num'] = num
+            elon_cache_put(yangi)
+            for g in {guruh_idsi(eski), guruh_idsi(yangi)} - {''}:
+                guruh_yangila_keyin(g)
+            if not kanal_msg_id(yangi):
+                continue
+            ok, xato = kanal_tahrir(int(num))
+            if not ok:
+                send_msg(admin_joy('post'), f"⚠️ №{num} sotildi, lekin kanal posti yangilanmadi: <code>{html_escape(str(xato))}</code>")
+        except Exception as e:
+            logger.error(f'sotuv_kanal_yangila №{num}: {type(e).__name__}')
+
+
 async def _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija):
     """Holat surilgach: mijozga yetmagan bo'lsa ⚠️ adminga; BUGUN275: tasdiqlangan (to'langan / yo'lda / yetkazilgan) buyurtma → Store'ga
     sotuv yozuvi, e'lonlar «sotildi». 'eski' ham — bir xil tugma qayta bosilsa Store'ga yozish qayta uriniladi (Store takror yozmaydi)."""
     if kod == 'ok' and natija != 'yuborildi':
         await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: holat saqlandi, lekin mijozga xabar bormadi "
                                       f"(botni to'xtatgan bo'lishi mumkin). «Mijozga yozish» orqali o'zingiz yozing.")
-    if kod in ('ok', 'eski') and b and b.get('holat') in _HOLAT_TASDIQ:
+    if kod in ('ok', 'eski') and b and _tasdiqlangan(b):
         if not await blok(_sotuv_sheet_yoz, uid, b):
             await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: Store'ga sotuv yozuvi tushmadi — "
                                           f"tugmani qayta bosing (takror yozilmaydi).")
+        else:   # 3421: kanal posti ham «sotildi» / soni kamaydi (fonda)
+            _fonda(sotuv_kanal_yangila, [x.get('num') for x in (b.get('tovar') or [])])
 
 
 async def buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar=None):
@@ -9486,7 +11142,7 @@ async def buyurtma_yolda_soroq(chat_id, message_id, cq_data, xabar=None):
             return
         uid, order = int(p[2]), p[3]
         b = await blok(_yolda_buyurtma, uid, order)
-        if not b or b.get('holat') not in ('kutilmoqda', 'tolandi') or not message_id:
+        if not b or b.get('holat') not in ('kutilmoqda', 'tolandi') or not message_id or _ozimmi(b):   # 3420: olib ketish — savolsiz
             await buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar)
             return
         natija, j = await blok(_kk_tg, 'sendMessage', {
@@ -9572,10 +11228,13 @@ async def yolda_isbot_qabul(chat_id, message, k):
 #  1) buyurtma tushganda mijozga botda xabar: tarkibi, jami, «💳 To'lash» va «🧾 To'landim — chek yuborish» (to'langan bo'lsa — tugmasiz);
 #  2) «To'landim» (yoki saytdagi tugma → ?start=chek_<raqam>) — bot «chek rasmini yuboring — №…» deydi; «chek kutilmoqda» holati
 #     buyurtma yozuvida (chek = 'kut') — Sheets'dagi «chek» ustuniga ham yoziladi, bot qayta yonsa ham yo'qolmaydi;
-#  3) rasm / rasm-fayl / PDF kelsa: holat bor — o'sha buyurtmaga; yo'q — oxirgi to'lanmagan buyurtmaga; bir nechta bo'lsa — tugma bilan so'raydi;
-#  4) mijozga «✅ Chekingiz qabul qilindi…» + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
+#  3) rasm yoki istalgan fayl (PDF, …) kelsa (3375: matn chek emas): holat bor — o'sha buyurtmaga; yo'q — oxirgi to'lanmagan buyurtmaga; bir nechta bo'lsa — tugma bilan so'raydi;
+#  4) mijozga «✅ Chek yuborildi, admin tekshiryapti» (3375, 3386, 3397) + «✍️ Adminga yozish»; adminga chek nusxasi + «🧾 Chek keldi — №…» + «✅ To'lov keldi» (BUGUN295 oqimi).
 # Bir xil rasm (file_unique_id) ikkinchi marta adminga bormaydi. Albom (bir nechta rasm) — bitta javob, hammasi adminga.
-TOLOV_URL = os.environ.get('TOLOV_URL', 'https://nuqta-tech-tolov.netlify.app/').strip()   # sayt SOTIB_TOLOV_JONLI bilan bir xil
+# 3420: to'lov sahifasi Store ichida (eski nuqta-tech-tolov.netlify.app shu yerga yo'naltiradi). Env eski manzilni bersa ham — Store'niki.
+TOLOV_URL = os.environ.get('TOLOV_URL', '').strip()
+if not TOLOV_URL or 'nuqta-tech-tolov' in TOLOV_URL:
+    TOLOV_URL = 'https://nuqtatech-store.netlify.app/tolov-sotib/'
 _CHEK_QULF = threading.Lock()
 _CHEK_ALBOM = {}      # (uid, media_group_id) → {'t', 'order' | None (so'ralmoqda), 'mid': [xabar id'lari]}
 _CHEK_TANLASH = {}    # (uid, message_id) → {'t', 'fid', 'mgid'} — «qaysi buyurtma?» deb so'ralgan chek
@@ -9631,6 +11290,7 @@ def _chek_tolov_url(b):
         q['y'] = f"{b['yetkazish']:g}"
     if b.get('jonatildi'):
         q['j'] = 1
+    q['c'] = _chek_imzo(b.get('order'))   # 3397: to'lov sahifasidan chek shu buyurtmaga
     return TOLOV_URL.rstrip('/') + '/?' + urllib.parse.urlencode(q)
 
 
@@ -9663,6 +11323,14 @@ def _chek_buyurtma_matn(b):
     o = html_escape(b.get('order', ''))
     qat = _chek_tovar_qator(b)
     jami = html_escape(_chek_summa_s(b))
+    if _naqdmi(b):   # 3420: naqd — to'lov sahifasi va chek yo'q
+        uz_q, ru_q = (("olib ketayotganda", "при получении") if _ozimmi(b) else ("kuryerga", "курьеру"))
+        return _chek_matn(
+            b.get('til'),
+            f"🛒 <b>Buyurtma №{o}</b>\n\n{qat}\n💵 Jami: <b>{jami}</b>\n\n"
+            f"💵 To'lov — naqd, {uz_q}. Chek kerak emas — admin siz bilan bog'lanadi.",
+            f"🛒 <b>Заказ №{o}</b>\n\n{qat}\n💵 Итого: <b>{jami}</b>\n\n"
+            f"💵 Оплата — наличными, {ru_q}. Чек не нужен — админ свяжется с вами.")
     return _chek_matn(
         b.get('til'),
         f"🛒 <b>Buyurtma №{o}</b>\n\n{qat}\n💵 Jami: <b>{jami}</b>\n\n"
@@ -9673,13 +11341,13 @@ def _chek_buyurtma_matn(b):
 
 def _chek_buyurtma_klava(b):
     """To'langan (yoki bekor) buyurtmada tugma yo'q; «To'lash» — summa va kurs ma'lum bo'lsa."""
-    if b.get('holat') != 'kutilmoqda':
+    if b.get('holat') != 'kutilmoqda' or _naqdmi(b):   # 3420: naqd — tugma yo'q
         return None
     til = b.get('til')
     qator = []
     url = _chek_tolov_url(b)
-    if url:
-        qator.append([{'text': _chek_tugma_nomi(til, "💳 To'lash", '💳 Оплатить'), 'url': url}])
+    if url:   # 3420: Store ichida (Mini App) ochiladi — tashqi brauzerga chiqmaydi
+        qator.append([{'text': _chek_tugma_nomi(til, "💳 To'lash", '💳 Оплатить'), 'web_app': {'url': url}}])
     qator.append([{'text': _chek_tugma_nomi(til, "🧾 To'landim — chek yuborish", '🧾 Оплатил — отправить чек'),
                    'callback_data': f"chk:{b.get('order')}"}])
     return {'inline_keyboard': qator}
@@ -9714,7 +11382,7 @@ def _chek_mijozga_xabar(uid, order):
         natija = _chek_yubor(uid, _chek_sovga_matn(b)) if sovga else _chek_yubor(uid, _chek_buyurtma_matn(b), _chek_buyurtma_klava(b))
     except Exception as e:
         logger.error(f'chek mijozga xabar: {type(e).__name__}')
-    if sovga and b.get('holat') in _HOLAT_TASDIQ and not _sotuv_sheet_yoz(uid, b):
+    if sovga and _tasdiqlangan(b) and not _sotuv_sheet_yoz(uid, b):
         send_msg(ADMIN_ID, f"⚠️ №{html_escape(order)} (🎁 sovg'a): Store'ga sotuv yozuvi tushmadi — "
                            f"«🚚 Yo'lda» bosilganda qayta yoziladi (takror yozilmaydi).")
     return natija
@@ -9763,20 +11431,76 @@ def _chek_boshla(uid, order, user=None):
         _chek_yubor(uid, _chek_matn(til, f"✅ Buyurtma №{o} — to'lov allaqachon qabul qilingan. Rahmat!",
                                     f"✅ Заказ №{o} — оплата уже принята. Спасибо!"))
         return 'tolangan'
-    _chek_yubor(uid, _chek_matn(til, f"🧾 Chek rasmini (yoki faylini) shu yerga yuboring — buyurtma №{o}",
-                                f"🧾 Отправьте сюда фото (или файл) чека — заказ №{o}"))
+    _chek_yubor(uid, _chek_matn(til, f"🧾 Chekni shu yerga yuboring — buyurtma №{o}\nRasm, skrinshot, fayl yoki shunchaki yozib yuboring — hammasi adminga boradi.",
+                                f"🧾 Отправьте сюда чек — заказ №{o}\nФото, скриншот, файл или просто напишите — всё уйдёт админу."))
     return 'kutilmoqda'
 
 
 def _chek_fayl(message):
-    """Chek bo'la oladigan xabar: rasm · rasm / PDF fayl → file_unique_id ('' bo'lishi mumkin). Boshqasi — None."""
+    """Rasm yoki ISTALGAN fayl (3375: PDF, skrinshot, boshqa tur) → file_unique_id ('' bo'lishi mumkin), boshqasi — None.
+    Rasm / fayl «chek kutilmoqda» siz ham chek (ochiq buyurtmaga). 3386: matn, ovoz, video… ham chek — lekin faqat «chek
+    kutilmoqda» yoki qo'shimcha oynasida (_chek_oyna). Takror chek (dup) — faqat rasm / fayl bo'yicha."""
     ph = message.get('photo')
     if ph:
         return (ph[-1].get('file_unique_id') or ph[-1].get('file_id') or '')
-    d = message.get('document') or {}
-    mt = str(d.get('mime_type') or '')
-    if d and (mt.startswith('image/') or mt == 'application/pdf'):
+    d = message.get('document')
+    if isinstance(d, dict) and d:
         return d.get('file_unique_id') or d.get('file_id') or ''
+    return None
+
+
+# 3386: chek — mijoz nima yuborsa (3375 dagi «matn chek hisoblanmaydi» rad etishi olib tashlandi; Owner 2026-11-06: matn ham chek
+# o'rnida kelishi mumkin — «kecha to'ladim», «naqd beraman»…)
+_CHEK_MAZMUN = ('text', 'photo', 'document', 'video', 'animation', 'audio', 'voice', 'video_note', 'sticker', 'contact',
+                'location', 'venue', 'poll', 'dice', 'story')
+_CHEK_IZOHLI = ('photo', 'document', 'video', 'animation', 'audio', 'voice')   # copyMessage nusxasiga izoh (caption) qo'yiladi
+_CHEK_IZOH_SIG = 800     # nusxa izohida mijoz so'zi shundan uzun bo'lsa — sarlavha alohida xabar (Telegram izohi ≤ 1024)
+_CHEK_MATN_SIG = 3500    # sarlavha + mijoz matni bitta xabarda (Telegram ≤ 4096)
+_CHEK_OYNA_S = 1800
+_CHEK_OYNA = {}   # uid → {'order', 't'}: chek qabul qilingach 30 daqiqa keyingi xabarlar shu buyurtmaga «➕ qo'shimcha» (xotirada)
+
+
+def _chek_mazmun(message):
+    """Xabarda chek bo'la oladigan narsa bormi (xizmat xabari — yo'q)."""
+    return any(message.get(k) for k in _CHEK_MAZMUN)
+
+
+def _chek_tur(message):
+    """'matn' — faqat matn (sarlavha bilan bitta xabar) · 'izohli' — rasm / fayl / video / ovoz… (nusxa izohi bilan) ·
+    'boshqa' — stiker, dumaloq video, joylashuv… (izohsiz nusxa + sarlavha javob bo'lib). Mazmuni noma'lum — 'izohli'."""
+    if any(message.get(k) for k in _CHEK_IZOHLI):
+        return 'izohli'
+    if any(message.get(k) for k in _CHEK_MAZMUN if k != 'text'):
+        return 'boshqa'
+    return 'matn' if 'text' in message else 'izohli'
+
+
+def _chek_soz(message):
+    """Mijoz yozgan so'z: matn yoki rasm / fayl izohi."""
+    return str(message.get('text') or message.get('caption') or '').strip()
+
+
+def _chek_qisqa(soz, sig):
+    soz = str(soz or '').strip()
+    return soz if len(soz) <= sig else soz[:sig - 1].rstrip() + '…'
+
+
+def _chek_oyna(uid, hozir=None):
+    """3386: 'kut' — «To'landim» bosilgan, chek kutilmoqda · 'oyna' — chek qabul qilinganiga 30 daqiqa bo'lmagan va buyurtma hali
+    to'lov kutmoqda (keyingi xabar — qo'shimcha) · None — chek holati yo'q (xabar o'z yo'lida)."""
+    hozir = hozir or time.time()
+    with _CHEK_QULF:
+        oy = _CHEK_OYNA.get(uid)
+        if oy and hozir - oy['t'] > _CHEK_OYNA_S:
+            _CHEK_OYNA.pop(uid, None)
+            oy = None
+        oy = dict(oy) if oy else None
+    with _MIJOZ_LOCK:
+        ochiq = [b for b in _chek_buyurtmalar(uid) if b.get('holat') == 'kutilmoqda']
+        if any(b.get('chek') == 'kut' for b in ochiq):
+            return 'kut'
+        if oy and any(b.get('order') == oy['order'] for b in ochiq):
+            return 'oyna'
     return None
 
 
@@ -9786,43 +11510,74 @@ def _chek_kutyapti(uid):
         return any(b.get('chek') == 'kut' and b.get('holat') == 'kutilmoqda' for b in _chek_buyurtmalar(uid))
 
 
-def _chek_admin_matn(b, davomi=False):
+def _chek_admin_matn(b, davomi=False, soz='', yoq=False):
+    """Admin'ga chek sarlavhasi. soz — mijoz yozgan so'z («💬»), holat qatoridan OLDIN (holat tugmasi pastini almashtiradi).
+    davomi — 3386: birinchi chekdan keyingi xabar «➕ Qo'shimcha» (tugmasiz). yoq — saytdan hech narsasiz «Yuborish»."""
     o = html_escape(b.get('order', ''))
+    izoh = f"\n💬 {html_escape(soz)}" if soz else ''
+    sb = _SINOV_BOSH if b.get('sinov') else ''   # 3394: admin sinov xaridi
     if davomi:
-        return f"🧾 <b>Chek (davomi)</b> — №{o}"
-    return (f"🧾 <b>Chek keldi</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
-            f"👤 {html_escape(b.get('ism') or '—')}\n\n"
+        return f"{sb}➕ <b>Qo'shimcha</b> — №{o}{izoh}"
+    nom = "Mijoz to'ladim dedi (chek yo'q)" if yoq else 'Chek keldi'
+    return (f"{sb}🧾 <b>{nom}</b> — №{o}\n💵 {html_escape(_chek_summa_s(b))}\n"
+            f"👤 {html_escape(b.get('ism') or '—')}{izoh}\n\n"
             f"⏳ To'lov kutilmoqda\n🕒 {_kk_vaqt(time.time())}")
 
 
-def _chek_adminga(uid, b, mid, davomi=False):
-    """Chek nusxasi (copyMessage) + izoh + «✅ To'lov keldi». Nusxa bo'lmasa — forward, u ham bo'lmasa — False."""
-    order = b.get('order')
+def _chek_adminga(uid, b, xabar, davomi=False):
+    """Chek adminga, buyurtma sarlavhasi bilan (davomi bo'lmasa «✅ To'lov keldi» tugmasi). xabar — mijoz xabari (dict; eski
+    chaqiruv — message_id). 3386: har qanday tur —
+      rasm / fayl / video / ovoz — nusxa (copyMessage), izohida sarlavha + mijoz so'zi;
+      matn — sarlavha + matnning o'zi bitta xabarda (message_id yo'q — saytdan izoh yoki hech narsa: «chek yo'q»);
+      stiker, joylashuv… (izoh qo'yib bo'lmaydi) yoki juda uzun izoh — nusxa, sarlavha unga javob bo'lib alohida.
+    Nusxa bo'lmasa — forward. Hech biri ketmasa — False."""
+    if not isinstance(xabar, dict):
+        xabar = {'message_id': xabar}
+    order, mid = b.get('order'), xabar.get('message_id')
+    tur, soz = _chek_tur(xabar), _chek_soz(xabar)
     yoz = [{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]
     tolandi = _HOLAT_ADMIN['tolandi']
     klava = {'inline_keyboard': [yoz]} if davomi else {
         'inline_keyboard': [yoz, [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f'bh:tolandi:{uid}:{order}'}]]}
-    matn = _chek_admin_matn(b, davomi)
-    natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
-                                       'parse_mode': 'HTML', 'reply_markup': klava}, urinish=2)
-    if natija in ('yuborildi', 'noaniq'):   # noaniq — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki nusxa bo'lmasin)
-        if natija == 'yuborildi' and not davomi:   # 3302: holat tugmasi buyurtma xabarida bosilsa — chek nusxasi ham yangilansin
-            _admin_xb_yoz(uid, order, ((j or {}).get('result') or {}).get('message_id'), True, *_html_b_ents(matn))
-        return True
-    f, _ = _kk_tg('forwardMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
-    if f != 'yuborildi':
-        return False
-    natija, j = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava},
-                       urinish=2)
+    nusxa, soz_alohida = None, soz
+    if mid and tur == 'izohli' and len(soz) <= _CHEK_IZOH_SIG:
+        matn = _chek_admin_matn(b, davomi, soz)
+        natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid, 'caption': matn,
+                                           'parse_mode': 'HTML', 'reply_markup': klava}, urinish=2)
+        if natija in ('yuborildi', 'noaniq'):   # noaniq — ketgan bo'lishi mumkin: qayta yuborilmaydi (ikki nusxa bo'lmasin)
+            if natija == 'yuborildi' and not davomi:   # 3302: holat tugmasi buyurtma xabarida bosilsa — chek nusxasi ham yangilansin
+                _admin_xb_yoz(uid, order, ((j or {}).get('result') or {}).get('message_id'), True, *_html_b_ents(matn))
+            return True
+        nusxa = 'forward'
+    elif mid and (tur != 'matn' or len(soz) > _CHEK_MATN_SIG):   # izohsiz nusxa (asl izoh / matn o'zida qoladi)
+        natija, j = _kk_tg('copyMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
+        nusxa = (((j or {}).get('result') or {}).get('message_id') or 'yoq') if natija in ('yuborildi', 'noaniq') else 'forward'
+        if tur == 'matn':
+            soz_alohida = ''
+    if nusxa == 'forward':
+        f, fj = _kk_tg('forwardMessage', {'chat_id': ADMIN_ID, 'from_chat_id': uid, 'message_id': mid}, urinish=2)
+        if f != 'yuborildi':
+            return False
+        nusxa = ((fj or {}).get('result') or {}).get('message_id') or 'yoq'
+        soz_alohida = '' if tur == 'matn' else soz_alohida
+    matn = _chek_admin_matn(b, davomi, _chek_qisqa(soz_alohida, _CHEK_MATN_SIG),
+                            yoq=not mid and not soz and not davomi)
+    p = {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava}
+    if isinstance(nusxa, int):
+        p['reply_parameters'] = {'message_id': nusxa, 'allow_sending_without_reply': True}
+    natija, j = _kk_tg('sendMessage', p, urinish=2)
     if natija == 'yuborildi' and not davomi:
         r = (j or {}).get('result') or {}
         _admin_xb_yoz(uid, order, r.get('message_id'), False, r.get('text'), r.get('entities'))
     return natija in ('yuborildi', 'noaniq')
 
 
-def _chek_topshir(uid, user, order, mids, fid):
-    """Chek aniq buyurtmaga biriktirildi: holat belgilanadi, adminga nusxa, mijozga «qabul qilindi». mids[0] — asosiy xabar,
-    qolgani (albom) — «davomi». Admin nusxasi yetmasa — holat qaytariladi va mijozga rost aytiladi (jimgina «qabul» demaydi)."""
+def _chek_topshir(uid, user, order, xabarlar, fid):
+    """Chek aniq buyurtmaga biriktirildi: holat belgilanadi, adminga nusxa, mijozga «qabul qilindi». xabarlar[0] — asosiy xabar
+    (3386: mijoz xabari dict — istalgan tur; eski chaqiruv — message_id), qolgani (albom) — «➕ qo'shimcha». Admin nusxasi
+    yetmasa — holat qaytariladi va mijozga rost aytiladi (jimgina «qabul» demaydi). Qabul qilingach 30 daqiqa keyingi xabarlar
+    shu buyurtmaga qo'shimcha (_CHEK_OYNA)."""
+    mids = xabarlar
     with _MIJOZ_LOCK:
         b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
         if not b:
@@ -9835,28 +11590,54 @@ def _chek_topshir(uid, user, order, mids, fid):
     if _chek_adminga(uid, b, mids[0]):
         for m in mids[1:]:
             _chek_adminga(uid, b, m, davomi=True)
+        with _CHEK_QULF:
+            _CHEK_OYNA[uid] = {'order': order, 't': time.time()}
         _chek_yubor(uid, _chek_matn(
-            til, f"✅ Chekingiz qabul qilindi. Buyurtmangiz №{o} qabul qilindi — admin siz bilan aloqaga chiqadi.",
-            f"✅ Ваш чек принят. Заказ №{o} принят — админ свяжется с вами."), {'inline_keyboard': [[_chek_admin_tugma()]]})
+            til, f"✅ <b>Chek yuborildi, admin tekshiryapti</b>\nBuyurtma №{o}. Tasdiqlangach shu yerga xabar keladi.",   # 3397: sayt / to'lov sahifasi bilan bir matn
+            f"✅ <b>Чек отправлен, админ проверяет</b>\nЗаказ №{o}. После подтверждения придёт сообщение сюда."),
+            {'inline_keyboard': [[_chek_admin_tugma()]]})
         return 'qabul'
+    # 3375: yetmasa — chek shu buyurtmani kutib qoladi (qayta yuborilgan fayl o'sha buyurtmaga bog'lanadi); adminga lichka yo'li yo'q
+    eski['chek'] = 'kut'
+    if not b.get('chek_ts'):
+        eski['chek_ts'] = int(time.time())
     _chek_belgi(uid, order, **eski)
     _chek_yubor(uid, _chek_matn(
-        til, f"⚠️ Chekni adminga yetkaza olmadim (buyurtma №{o}). Iltimos, «Adminga yozish» orqali chekni to'g'ridan-to'g'ri yuboring.",
-        f"⚠️ Не удалось передать чек админу (заказ №{o}). Пожалуйста, отправьте чек напрямую через «Написать админу»."),
-        {'inline_keyboard': [[_chek_admin_tugma()]]})
+        til, f"⚠️ Chekni hozir qabul qila olmadim (buyurtma №{o}). Bir daqiqadan so'ng chekni shu yerga qayta yuboring.",
+        f"⚠️ Не удалось принять чек (заказ №{o}). Через минуту отправьте чек сюда ещё раз."))
     return 'adminga_yetmadi'
 
 
-_CHEK_ILOVA_MAX = 900 * 1024   # 3259: ilovadan chek (sayt siqib yuboradi; aiohttp chegarasi 1 MB)
+_CHEK_ILOVA_MAX = 10 * 1024 * 1024   # admin «isbot» rasmi ≤ 10 MB. 3386: chekda o'lcham cheklanmaydi — Telegram rad etsa «katta»
 _CHEK_ILOVA_QULF = threading.Lock()
 _CHEK_ILOVA_OXIRGI = {}   # uid → oxirgi yuklash vaqti (ketma-ket bosish ikki chek yubormasin)
 
 
-def _chek_ilovadan(uid, user, order, rasm):
-    """3259: chek rasmi saytdan («Buyurtmalarim»). Rasm mijozning bot chatiga yuboriladi (o'zida ham qoladi), so'ng
-    bot chatidagi chek bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + «✅ To'lov keldi», mijozga «qabul qilindi»).
+def _chek_fayl_nomi(nom):
+    """3375: yuklangan fayl nomi — yo'l, boshqaruv belgisi olib tashlanadi, ≤ 60 belgi; bo'sh bo'lsa «chek»."""
+    nom = re.sub(r'[\x00-\x1f\\/:*?"<>|]+', '_', str(nom or '').replace('\\', '/').split('/')[-1]).strip(' ._')
+    if len(nom) > 60:
+        nuqta = nom.rfind('.')
+        kengaytma = nom[nuqta:][:10] if 0 < nuqta and len(nom) - nuqta <= 10 else ''
+        nom = nom[:60 - len(kengaytma)] + kengaytma
+    return nom or 'chek'
+
+
+def _chek_tg_katta(j):
+    """Telegram faylni o'lchami uchun rad etdimi (413 / «too big» / javob JSON emas)."""
+    j = j if isinstance(j, dict) else {}
+    t = str(j.get('description') or '').lower()
+    return not j or j.get('error_code') == 413 or 'too big' in t or 'too large' in t
+
+
+def _chek_ilovadan(uid, user, order, rasm=b'', nom='chek.jpg', mime='image/jpeg', izoh=''):
+    """3259: chek saytdan («Buyurtmalarim»). 3375: rasm (JPEG — sendPhoto) yoki istalgan fayl (PDF… — sendDocument).
+    3386: fayl ham, izoh ham ixtiyoriy. Fayl mijozning bot chatiga yuboriladi (o'zida ham qoladi), so'ng bot chatidagi chek
+    bilan AYNAN bir xil yo'l — _chek_topshir (adminga nusxa + izoh + «✅ To'lov keldi», mijozga «✅ Chek yuborildi, admin tekshiryapti» — 3397).
+    Faylsiz — adminga izoh matni, hech narsa bo'lmasa «Mijoz to'ladim dedi (chek yo'q)».
     Natija: 'qabul' · 'adminga_yetmadi' · 'topilmadi' · 'tolangan' · 'bekor' · 'bot_yoq' (yangi botda /start yo'q —
-    sayt botni ochadi) · 'xato'. Holat faqat 'kutilmoqda' bo'lsa qabul qilinadi."""
+    sayt botni ochadi) · 'katta' (Telegram faylni olmadi — boshqasi) · 'xato'. Holat faqat 'kutilmoqda' bo'lsa qabul qilinadi."""
+    soz = _chek_qisqa(izoh, _CHEK_MATN_SIG)
     with _MIJOZ_LOCK:
         b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
         b = dict(b) if b else None
@@ -9866,22 +11647,34 @@ def _chek_ilovadan(uid, user, order, rasm):
         return 'bekor'
     if b.get('holat') != 'kutilmoqda':
         return 'tolangan'
+    if not rasm:   # 3386: faylsiz — mijoz yozgan izoh yoki hech narsa (adminga «chek yo'q»)
+        return _chek_topshir(uid, user, order, [{'message_id': None, 'text': soz}], '')
     o = html_escape(order)
-    izoh = _chek_matn(_chek_tel_til(user, b), f"🧾 Chek — buyurtma №{o} (ilovadan)", f"🧾 Чек — заказ №{o} (из приложения)")
-    natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': izoh, 'parse_mode': 'HTML'},
-                       files={'photo': ('chek.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
+    yozuv = _chek_matn(_chek_tel_til(user, b), f"🧾 Chek — buyurtma №{o} (ilovadan)", f"🧾 Чек — заказ №{o} (из приложения)")
+    natija, j = 'xato', None
+    if rasm[:3] == bytes((0xFF, 0xD8, 0xFF)) and len(rasm) <= 5 * 1024 * 1024:   # JPEG — rasm bo'lib chiqadi
+        natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': yozuv, 'parse_mode': 'HTML'},
+                           files={'photo': (_chek_fayl_nomi(nom), rasm, 'image/jpeg')}, timeout=60, urinish=2)
+    if natija == 'xato':   # rasm emas yoki Telegram rasmni olmadi (o'lchami) — fayl bo'lib
+        natija, j = _kk_tg('sendDocument', {'chat_id': uid, 'caption': yozuv, 'parse_mode': 'HTML'},
+                           files={'document': (_chek_fayl_nomi(nom), rasm, str(mime or 'application/octet-stream')[:100])},
+                           timeout=180, urinish=2)
     if natija == 'bloklagan':
         return 'bot_yoq'
+    if natija == 'xato' and _chek_tg_katta(j):
+        return 'katta'
     r = (j or {}).get('result') or {}
     if natija != 'yuborildi' or not r.get('message_id'):
         return 'xato'
-    fid = ((r.get('photo') or [{}])[-1]).get('file_unique_id') or ''
-    return _chek_topshir(uid, user, order, [r['message_id']], fid)
+    fid = (((r.get('photo') or [{}])[-1]).get('file_unique_id') or (r.get('document') or {}).get('file_unique_id') or '')
+    return _chek_topshir(uid, user, order, [dict(r, caption=soz)], fid)   # nusxa izohi — mijoz so'zi (botning yozuvi emas)
 
 
 def _chek_qabul(uid, user, message):
-    """Mijozdan rasm / fayl keldi (fon oqimida). Qaytaradi — natija kodi: qabul · dup · tanla · yoq · davomi · adminga_yetmadi."""
-    mid, mgid, fid = message.get('message_id'), message.get('media_group_id'), _chek_fayl(message)
+    """Mijozdan chek keldi (fon oqimida): rasm / fayl, 3386 dan — har qanday xabar (matn, ovoz, video…; handler faqat «chek
+    kutilmoqda» / qo'shimcha oynasida yuboradi). Qaytaradi — natija kodi:
+    qabul · dup · tanla · yoq · davomi (albom) · qosh (qo'shimcha) · adminga_yetmadi."""
+    mid, mgid, fid = message.get('message_id'), message.get('media_group_id'), (_chek_fayl(message) or '')
     hozir = time.time()
     nishon, ochiq, holat, order, davomi = None, [], '', None, False
     with _CHEK_QULF:
@@ -9889,36 +11682,58 @@ def _chek_qabul(uid, user, message):
             _CHEK_ALBOM.pop(k, None)
         for k in [k for k, v in _CHEK_TANLASH.items() if hozir - v['t'] > 3600]:
             _CHEK_TANLASH.pop(k, None)
+        for k in [k for k, v in _CHEK_OYNA.items() if hozir - v['t'] > _CHEK_OYNA_S]:
+            _CHEK_OYNA.pop(k, None)
         alb = _CHEK_ALBOM.get((uid, mgid)) if mgid else None
         if alb:   # albomning 2-, 3-… rasmi — qaror birinchisiniki
             alb['mid'].append(mid)
+            alb.setdefault('xab', []).append(message)
             order, davomi = alb['order'], True
         else:
+            oy = _CHEK_OYNA.get(uid)
             with _MIJOZ_LOCK:
                 ochiq = [dict(b) for b in _chek_buyurtmalar(uid) if b.get('holat') == 'kutilmoqda']
             takror = next((b for b in ochiq if fid and fid in (b.get('chek_fid') or [])), None)
             kut = next((b for b in ochiq if b.get('chek') == 'kut'), None)
-            nishon = takror or kut or (ochiq[0] if len(ochiq) == 1 else None)
+            # yangi FAYL va bir nechta ochiq buyurtma — boshqa buyurtmaniki bo'lishi mumkin: qo'shimcha emas, so'raladi
+            qosh = (None if kut or (fid and len(ochiq) > 1)
+                    else next((b for b in ochiq if oy and b.get('order') == oy['order']), None))
+            nishon = takror or kut or qosh or (ochiq[0] if len(ochiq) == 1 else None)
             if takror:
                 order, holat = takror.get('order'), 'dup'
+            elif qosh is not None:   # chek qabul qilingach 30 daqiqa — keyingi xabar shu buyurtmaga «➕ qo'shimcha»
+                order, holat = qosh.get('order'), 'qosh'
+                _CHEK_OYNA[uid] = {'order': order, 't': hozir}
             elif nishon:
                 order, holat = nishon.get('order'), 'bor'
             else:
                 holat = 'yoq' if not ochiq else 'tanla'
-            if mgid and holat in ('bor', 'tanla'):
-                _CHEK_ALBOM[(uid, mgid)] = {'t': hozir, 'order': order, 'mid': [mid]}
+            if mgid and holat in ('bor', 'tanla', 'qosh'):
+                _CHEK_ALBOM[(uid, mgid)] = {'t': hozir, 'order': order, 'mid': [mid], 'xab': [message]}
             if holat == 'tanla':
-                _CHEK_TANLASH[(uid, mid)] = {'t': hozir, 'fid': fid, 'mgid': mgid}
+                _CHEK_TANLASH[(uid, mid)] = {'t': hozir, 'fid': fid, 'mgid': mgid, 'xabar': message}
     if davomi:
         if order:   # order yo'q — so'ralmoqda: tanlangach hammasi birga ketadi
             with _MIJOZ_LOCK:
                 b = next((dict(x) for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
             if b:
-                _chek_adminga(uid, b, mid, davomi=True)
+                _chek_adminga(uid, b, message, davomi=True)
                 if fid:
                     _chek_belgi(uid, order, chek_fid=([fid] + list(b.get('chek_fid') or []))[:10])
         return 'davomi'
     til = _chek_tel_til(user, nishon)
+    if holat == 'qosh':
+        o = html_escape(order)
+        if _chek_adminga(uid, nishon, message, davomi=True):
+            if fid:
+                _chek_belgi(uid, order, chek_fid=([fid] + list(nishon.get('chek_fid') or []))[:10])
+            _chek_yubor(uid, _chek_matn(til, f"➕ Qo'shildi — buyurtma №{o}. Admin ko'radi.",
+                                        f"➕ Добавлено — заказ №{o}. Админ увидит."))
+            return 'qosh'
+        _chek_yubor(uid, _chek_matn(
+            til, f"⚠️ Xabarni hozir yetkaza olmadim (buyurtma №{o}). Bir daqiqadan so'ng shu yerga qayta yuboring.",
+            f"⚠️ Не удалось передать сообщение (заказ №{o}). Через минуту отправьте сюда ещё раз."))
+        return 'adminga_yetmadi'
     if holat == 'yoq':
         _chek_yubor(uid, _chek_matn(
             til, "ℹ️ Sizda to'lov kutayotgan buyurtma topilmadi. Savolingiz bo'lsa — adminga yozing.",
@@ -9937,7 +11752,7 @@ def _chek_qabul(uid, user, message):
         _chek_yubor(uid, _chek_matn(til, "🧾 Bu chek qaysi buyurtma uchun?", "🧾 Для какого заказа этот чек?"),
                     {'inline_keyboard': qator})
         return 'tanla'
-    return _chek_topshir(uid, user, order, [mid], fid)
+    return _chek_topshir(uid, user, order, [message], fid)
 
 
 def _chek_tugma(uid, cq_data, user=None):
@@ -9959,10 +11774,11 @@ def _chek_tugma(uid, cq_data, user=None):
             if t is None:   # bot qayta yongan yoki tugma ikki marta bosilgan — chek allaqachon ishlangan yoki xotira yo'q
                 return _chek_boshla(uid, order, user)
             alb = _CHEK_ALBOM.get((uid, t.get('mgid'))) if t.get('mgid') else None
-            mids = list(alb['mid']) if alb else [mid]
+            xabarlar = (list(alb.get('xab') or [{'message_id': m} for m in alb['mid']]) if alb
+                        else [t.get('xabar') or {'message_id': mid}])
             if alb:
                 alb['order'] = order
-        return _chek_topshir(uid, user, order, mids, t.get('fid'))
+        return _chek_topshir(uid, user, order, xabarlar, t.get('fid'))
     return None
 
 
@@ -10115,7 +11931,7 @@ def _buyurtma_tayyorla(uid, num, order, ism, tel, joy, kurs, qolgan_nums=(), son
         qolgan.append((e, ms.get(str(e.get('specId', '') or ''), {})))
         bron.append(str(n))
     matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan, sonlar, ranglar, kel, kel_ogoh, ogoh, tel_ogoh)
-    t = {'matn': matn, 'bron': bron}
+    t = {'matn': matn, 'bron': bron, 'b': {'tur': joy.get('tur') or '', 'tolov': joy.get('tolov') or ''}}   # 3420: tugmalar uchun
     sovga, tasdiq = _sovga_holat([elon] + [e for e, _ in qolgan], sonlar, ranglar, kel, ogoh)
     if sovga:   # 3295: yozuvga _buyurtma_sovga_qoy o'tkazadi
         t.update(sovga=True, holat='tolandi' if tasdiq else 'kutilmoqda',
@@ -10154,7 +11970,7 @@ def _buyurtma_xabar_belgila(uid, order, qiymat):
 
 def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
     """Adminga buyurtma xabari — 3 urinish. HTML rad etilsa (400) — oddiy matn bilan. Yuborilsa — admin_xabar = vaqt. True/False."""
-    klava = _buyurtma_klava(uid, order, tayyor.get('holat') or 'kutilmoqda', tayyor.get('bron') or [])
+    klava = _buyurtma_klava(uid, order, tayyor.get('holat') or 'kutilmoqda', tayyor.get('bron') or [], tayyor.get('b'))
     matn = tayyor['matn']
     for k in kutish:
         if k:
@@ -10177,6 +11993,8 @@ def _buyurtma_tayyor_yozuvdan(uid, b):
     """Xabar matni saqlanmagan (bot qayta ishga tushgan / faqat sayt zaxirasi) — yozuvning o'zidan yasaladi."""
     joy = dict(b.get('joy') or {})
     joy['tur'] = b.get('tur') or joy.get('tur') or ''
+    if _naqdmi(b):   # 3420
+        joy['tolov'] = 'naqd'
     tovar = [x for x in (b.get('tovar') or []) if x.get('num')]
     nums = [str(x['num']) for x in tovar]
     if not nums:
@@ -10231,7 +12049,8 @@ def _buyurtma_zaxira_birlash(j):
                 'order': order, 'ts': float(z.get('ts') or time.time()), 'holat': z.get('holat') or 'kutilmoqda',
                 'tovar': [x for x in (z.get('tovar') or []) if isinstance(x, dict)], 'jami': z.get('jami'), 'tur': z.get('tur') or '',
                 'ism': z.get('ism') or '', 'tel': tel, 'til': z.get('til') if z.get('til') in ('uz', 'ru') else '',
-                'nik': str(joy.get('nik') or ''), 'joy': joy, 'manba': 'sayt', 'admin_xabar': 'kutilmoqda'})
+                'nik': str(joy.get('nik') or ''), 'joy': joy, 'manba': 'sayt', 'admin_xabar': 'kutilmoqda',
+                'tolov': 'naqd' if (z.get('tolov') == 'naqd' or joy.get('tolov') == 'naqd') else ''})   # 3420
             m['buyurtma'].sort(key=lambda x: x.get('ts') or 0, reverse=True)
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _BUYURTMA_KORILGAN[(int(uid), order)] = time.time()
@@ -10325,6 +12144,9 @@ async def buyurtma_endpoint(request):
         uid = check_init_data(data.get('initData', ''))
         if not uid:
             return web.json_response({'error': 'Imzo notogri'}, status=401)
+        # 3394: ADMIN sinov xaridi — imzodan olingan ID bo'yicha (brauzer belgisi emas). Butun oqim ishlaydi (adminga xabar «🧪 SINOV»,
+        # mijoz xabari, chek), lekin Sheets / Store'ga hech narsa yozilmaydi (_mijoz_sync_yubor, _sotuv_sheet_yoz), bron qo'yilmaydi
+        sinov = uid == ADMIN_ID
         num = str(data.get('num', '') or '').strip()
         order = str(data.get('order', '') or '').strip().upper()
         ism = re.sub(r'\s+', ' ', str(data.get('name', '') or '')).strip()
@@ -10337,6 +12159,8 @@ async def buyurtma_endpoint(request):
             tel_ogoh = not tel and tel_id in _MIJOZ_TEL_TURLAR   # BUGUN295: bot xotirasida yo'q (qayta ishga tushgan) — rad etilmaydi, adminga ⚠️
         tur = str(data.get('tur', '') or '').strip()
         joy = {'tur': tur if tur in _BUYURTMA_TUR else ''}
+        if str(data.get('tolov') or '') == 'naqd' and joy['tur'] in ('ozim', 'yandex'):   # 3420: naqd — olib ketish / Yandex kuryer
+            joy['tolov'] = 'naqd'
         if tur == 'yandex':
             # Koordinata (bo'lsa): faqat son, dunyo chegarasida — Yandex havolasini bot o'zi yasaydi (mijoz matni havolaga tushmaydi)
             if data.get('lat') is not None or data.get('lon') is not None:
@@ -10435,7 +12259,7 @@ async def buyurtma_endpoint(request):
         joy['kurs'] = kurs   # BUGUN296: mijozga «💳 To'lash» havolasi (so'm = $ × shu kurs) — sayt bilan bir xil summa
         hozir = time.time()
         if (uid, order) in _BUYURTMA_KORILGAN or (uid, order) in _BUYURTMA_JARAYON:
-            return web.json_response({'ok': True, 'takror': True})
+            return web.json_response({'ok': True, 'takror': True, 'ck': _chek_imzo(order)})
         oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
         if len(oxirgilar) >= 5:
             return web.json_response({'error': 'Juda ko\'p'}, status=429)
@@ -10451,10 +12275,12 @@ async def buyurtma_endpoint(request):
         try:
             tayyor = await loop.run_in_executor(None, _buyurtma_tayyorla, uid, num, order, ism, tel, joy, kurs, qolgan_nums,
                                                 sonlar, ranglar, kel, kel_ogoh, tel_ogoh)
+            if sinov:
+                tayyor['matn'] = _SINOV_BOSH + tayyor['matn']
             # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
             nik = ((_init_data_user(data.get('initData', '')) or {}).get('username') or '')   # BUGUN275: sotuv yozuvi uchun
             await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
-                                       _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor)
+                                       _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor, sinov)
             await loop.run_in_executor(None, _buyurtma_sovga_qoy, uid, order, tayyor)
             _BUYURTMA_KORILGAN[(uid, order)] = hozir
             yetdi, _ = await loop.run_in_executor(
@@ -10467,7 +12293,7 @@ async def buyurtma_endpoint(request):
         loop.run_in_executor(None, _chek_mijozga_xabar, uid, order)
         # BUGUN208: bron. Bo'sh e'lon — shu mijozga bron; allaqachon boshqa mijozda bo'lsa (poyga) — bron o'zgarmaydi,
         # adminga 2-buyurtma haqida ogohlantirish (1-mijoz olmasa 2-chisiga o'zi chiqadi).
-        for bn in [num] + qolgan_nums:   # BUGUN224: savatdagi har tovarga
+        for bn in ([] if sinov else [num] + qolgan_nums):   # BUGUN224: savatdagi har tovarga · 3394: sinovda bron yo'q
             b = _bron_olish(bn)
             if not b or b['uid'] == uid:
                 _bron_qoy(bn, uid, order)
@@ -10477,7 +12303,7 @@ async def buyurtma_endpoint(request):
                 loop.run_in_executor(None, _bron_ogoh_yubor, bn, ikkinchi, f"buyurtma berdi (№{order})")
         for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
             _BUYURTMA_KORILGAN.pop(k, None)
-        return web.json_response({'ok': True, 'xabar': yetdi})
+        return web.json_response({'ok': True, 'xabar': yetdi, 'ck': _chek_imzo(order), **({'sinov': True} if sinov else {})})   # 3397: to'lov sahifasi kaliti
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -10547,6 +12373,7 @@ def _buyurtma_sheet_dict(uid, b):
             'chek_ts': b.get('chek_ts'), 'chek_esl': b.get('chek_esl') or '',   # BUGUN305
             'yetkaz': json.dumps(b['yetkaz'], ensure_ascii=False) if b.get('yetkaz') else '',   # 3288
             'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
+            'tolov': 'naqd' if _naqdmi(b) else '',   # 3420
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
                        **({'chegirma': x['chegirma']} if x.get('chegirma') else {})} for x in (b.get('tovar') or [])]}   # 3306
 
@@ -10567,6 +12394,8 @@ def _mijoz_sync_yubor():
                 data = None
             else:
                 b = next((x for x in (m or {}).get('buyurtma', []) if x.get('order') == k[2]), None)
+                if b and b.get('sinov'):
+                    b = None   # 3394: admin sinov xaridi — Sheets'ga (Buyurtmalar / Sharhlar) yozilmaydi, navbatdan o'chadi
                 d = (_sharh_sheet_dict if k[0] == 's' else _buyurtma_sheet_dict)(k[1], b) if b else None   # 3262: 's' — «Sharhlar»
                 data = json.dumps(d, ensure_ascii=False) if d else None
                 par = None
@@ -10617,6 +12446,8 @@ def _mijoz_sheet_birlash(j):
                      'admin_xabar': b.get('admin_xabar') or ''}   # BUGUN295
             if 'chek' in b:   # BUGUN296: eski Apps Script ustunni bermaydi — shunda botdagi qiymat saqlanadi
                 yozuv['chek'] = b.get('chek') or ''
+            if 'tolov' in b:   # 3420: naqd belgisi
+                yozuv['tolov'] = 'naqd' if b.get('tolov') == 'naqd' else ''
             if 'chek_ts' in b:   # BUGUN305: «To'landim» vaqti va eslatma belgisi — bot qayta yonsa ham qoladi
                 yozuv['chek_ts'] = b.get('chek_ts')
                 yozuv['chek_esl'] = b.get('chek_esl') or ''
@@ -10755,18 +12586,23 @@ def _mijoz_tovarlar(num, qolgan_nums, sonlar=None, ranglar=None, kel=None):
     return res
 
 
-def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None, nik='', kel=None, xabar=None):
+def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None, nik='', kel=None, xabar=None,
+                        sinov=False):
     """/buyurtma (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi. BUGUN295: adminga xabar yuborilishidan OLDIN —
     admin_xabar 'kutilmoqda', _xabar — tayyor matn (yetmasa fon sikli shuni qayta yuboradi), joy — qayta yasash uchun.
     Sayt zaxirasidan (fon sikli) allaqachon qo'shilgan bo'lsa — matn qo'shiladi, xolos."""
     try:
-        _mijoz_tel_qosh(uid, tel, 'sotib')
+        if not sinov:   # 3394: sinov (admin) — raqam profilga qo'shilmaydi
+            _mijoz_tel_qosh(uid, tel, 'sotib')
         tovar = _mijoz_tovarlar(num, qolgan_nums, sonlar, ranglar, kel)
         narxlar = [None if x['narx'] is None else x['narx'] * x['soni'] for x in tovar]
         with _MIJOZ_LOCK:
             m = _mijoz_ochiq(uid)
             bor = next((b for b in m['buyurtma'] if b.get('order') == order), None)
             if bor:
+                if sinov and not bor.get('sinov'):   # 3394: zaxiradan oldin kelgan bo'lsa ham — sinov belgisi
+                    bor['sinov'] = True
+                    _mijoz_saqlash()
                 if xabar and bor.get('admin_xabar') == 'kutilmoqda':
                     bor['_xabar'] = xabar
                     _mijoz_saqlash()
@@ -10779,8 +12615,8 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                 'order': order, 'ts': time.time(), 'holat': 'kutilmoqda', 'tovar': tovar,
                 'jami': None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
                 'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else '',
-                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}), 'admin_xabar': 'kutilmoqda',
-                '_xabar': xabar})
+                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}), 'admin_xabar': 'kutilmoqda', **({'sinov': True} if sinov else {}),
+                '_xabar': xabar, 'tolov': 'naqd' if (joy or {}).get('tolov') == 'naqd' else ''})   # 3420
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _mijoz_saqlash()
             _mijoz_sync_belgila('b', uid, order)
@@ -10801,6 +12637,8 @@ async def mijoz_holat_endpoint(request):
             tels = _mijoz_tels_javob(m)
             buyurtma = [{'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'jami': b.get('jami'),
                          'tur': b.get('tur', ''), 'chek': b.get('chek') or '',   # 3259: chek holati (HH:MM · 'kut' · '')
+                         'tolov': 'naqd' if _naqdmi(b) else '',   # 3420
+                         'ck': _chek_imzo(b.get('order')),   # 3397: to'lov sahifasidan chek kaliti
                          'yetkaz': _yetkaz_javob(b),   # 3288: isbot · qabul · sharh
                          'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
                          'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1}
@@ -10813,7 +12651,9 @@ async def mijoz_holat_endpoint(request):
 
 
 async def chek_yukla_endpoint(request):
-    """3259: «Buyurtmalarim» dan chek rasmi. multipart: initData, order, rasm (JPEG, ≤ 900 KB — sayt siqadi).
+    """3259: «Buyurtmalarim» dan chek. multipart: initData, order, fayl, izoh. 3386: fayl ham, izoh ham ixtiyoriy (hech narsasiz —
+    adminga «chek yo'q»); fayl turi / o'lchami cheklanmaydi — Telegram olmasa natija 'katta' (forma > 60 MB — 413 'katta');
+    rasmni sayt JPEG ga siqadi; eski sayt 'rasm' maydoni bilan ham ishlaydi.
     Imzo shart (401), uid faqat imzodan — boshqa odamning buyurtmasiga chek bo'lmaydi. Ketma-ket 15 soniyada bir marta (429).
     Javob: {'ok': natija == 'qabul', 'natija': …} (_chek_ilovadan). Holat / to'lovni bu yerda hech kim o'zgartirmaydi."""
     try:
@@ -10828,12 +12668,13 @@ async def chek_yukla_endpoint(request):
         order = str(form.get('order') or '').strip().upper()
         if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
             return web.json_response({'error': 'order'}, status=400)
-        f = form.get('rasm')
-        rasm = f.file.read(_CHEK_ILOVA_MAX + 1) if hasattr(f, 'file') else b''
-        if not rasm or len(rasm) > _CHEK_ILOVA_MAX:
-            return web.json_response({'error': 'katta' if rasm else 'rasm'}, status=413 if rasm else 400)
-        if rasm[:3] != bytes((0xFF, 0xD8, 0xFF)):   # JPEG (sayt canvas'dan JPEG qiladi)
-            return web.json_response({'error': 'rasm'}, status=400)
+        f = form.get('fayl')
+        if not hasattr(f, 'file'):
+            f = form.get('rasm')
+        rasm = f.file.read() if hasattr(f, 'file') else b''
+        izoh = str(form.get('izoh') or '').strip()[:_CHEK_MATN_SIG]
+        nom = getattr(f, 'filename', '') or 'chek'
+        mime = getattr(f, 'content_type', '') or 'application/octet-stream'
         with _CHEK_ILOVA_QULF:
             hozir = time.time()
             if hozir - _CHEK_ILOVA_OXIRGI.get(uid, 0) < 15:
@@ -10843,13 +12684,140 @@ async def chek_yukla_endpoint(request):
             user = json.loads(dict(urllib.parse.parse_qsl(init)).get('user') or '{}')
         except Exception:
             user = {}
-        natija = await blok(_chek_ilovadan, uid, user if isinstance(user, dict) else {}, order, rasm)
+        natija = await blok(_chek_ilovadan, uid, user if isinstance(user, dict) else {}, order, rasm, nom, mime, izoh)
         if natija != 'qabul':
             with _CHEK_ILOVA_QULF:   # yetmagan chekni darhol qayta yuborsa bo'ladi
                 _CHEK_ILOVA_OXIRGI.pop(uid, None)
         return web.json_response({'ok': natija == 'qabul', 'natija': natija})
     except Exception as e:
         logger.error(f'chek_yukla_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+# ═══ 3397: chek TO'LOV SAHIFASIDAN (nuqta-tech-tolov — tashqi sahifa, initData yo'q). Kalit — buyurtma raqamining HMAC'i
+# (BOT_TOKEN dan): sayt /buyurtma va /mijoz_holat javobidan oladi, to'lov havolasiga &c= bo'lib qo'shadi. Kalitsiz birovning
+# buyurtmasiga chek yuborib / holatini ko'rib bo'lmaydi. Yo'l — «Buyurtmalarim» dagi bilan AYNAN bir (_chek_ilovadan):
+# mijoz bot chatiga fayl → adminga buyurtma sarlavhasi + «✅ To'lov keldi». Mijoz botni ochmagan bo'lsa (bot_yoq) — fayl
+# to'g'ridan-to'g'ri adminga, xuddi shu sarlavha va tugmalar bilan; holat baribir «chek yuborildi».
+def _chek_imzo(order):
+    k = hashlib.sha256(b'chek-tolov:' + BOT_TOKEN.encode()).digest()
+    return hmac.new(k, str(order or '').strip().upper().encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _chek_kalit_togri(order, c):
+    return bool(c) and hmac.compare_digest(_chek_imzo(order), str(c or '').strip().lower()[:16])
+
+
+def _chek_uid_top(order):
+    """Buyurtma raqami → (uid, yozuv nusxasi) | (None, None)."""
+    with _MIJOZ_LOCK:
+        for k, m in _MIJOZ.items():
+            for b in (m or {}).get('buyurtma') or []:
+                if b.get('order') == order:
+                    try:
+                        return int(k), dict(b)
+                    except Exception:
+                        return None, None
+    return None, None
+
+
+def _chek_tolovdan(uid, order, rasm=b'', nom='chek', mime='application/octet-stream', izoh=''):
+    """To'lov sahifasidan chek. Natija — _chek_ilovadan niki; 'bot_yoq' bo'lsa fayl adminga to'g'ridan-to'g'ri ('qabul')."""
+    natija = _chek_ilovadan(uid, {}, order, rasm, nom, mime, izoh)
+    if natija != 'bot_yoq':
+        return natija
+    with _MIJOZ_LOCK:
+        b = next((x for x in _chek_buyurtmalar(uid) if x.get('order') == order), None)
+        b = dict(b) if b else None
+    if not b:
+        return 'topilmadi'
+    matn = _chek_admin_matn(b, soz=_chek_qisqa(izoh, _CHEK_IZOH_SIG))
+    tolandi = _HOLAT_ADMIN['tolandi']
+    klava = {'inline_keyboard': [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}],
+                                 [{'text': f'{tolandi[0]} {tolandi[1]}', 'callback_data': f'bh:tolandi:{uid}:{order}'}]]}
+    p = {'chat_id': ADMIN_ID, 'caption': matn, 'parse_mode': 'HTML', 'reply_markup': klava}
+    j, r = None, 'xato'
+    if rasm[:3] == bytes((0xFF, 0xD8, 0xFF)) and len(rasm) <= 5 * 1024 * 1024:
+        r, j = _kk_tg('sendPhoto', p, files={'photo': (_chek_fayl_nomi(nom), rasm, 'image/jpeg')}, timeout=60, urinish=2)
+    if r == 'xato':
+        r, j = _kk_tg('sendDocument', p, files={'document': (_chek_fayl_nomi(nom), rasm,
+                                                              str(mime or 'application/octet-stream')[:100])},
+                      timeout=180, urinish=2)
+    if r == 'xato' and _chek_tg_katta(j):
+        return 'katta'
+    if r not in ('yuborildi', 'noaniq'):
+        return 'xato'
+    x = (j or {}).get('result') or {}
+    if r == 'yuborildi':
+        _admin_xb_yoz(uid, order, x.get('message_id'), True, *_html_b_ents(matn))
+    fid = (((x.get('photo') or [{}])[-1]).get('file_unique_id') or (x.get('document') or {}).get('file_unique_id') or '')
+    _chek_belgi(uid, order, chek=_kk_vaqt(time.time())[-5:],
+                chek_fid=(([fid] if fid else []) + list(b.get('chek_fid') or []))[:10])
+    return 'qabul'
+
+
+def _chek_tolov_holat(b):
+    """To'lov sahifasiga: '' (chek yo'q) · 'yuborildi' · 'tolandi' (admin tasdiqladi / yo'lda…) · 'bekor'."""
+    h = b.get('holat')
+    if h == 'bekor':
+        return 'bekor'
+    if h != 'kutilmoqda':
+        return 'tolandi'
+    return 'yuborildi' if b.get('chek') and b.get('chek') != 'kut' else ''
+
+
+async def chek_tolov_endpoint(request):
+    """3397: to'lov sahifasidan chek. multipart: order, c (kalit), fayl, izoh — fayl ham, izoh ham ixtiyoriy (3386 kabi).
+    Kalit noto'g'ri — 403; raqam topilmasa — 404; bir buyurtmaga 15 soniyada bir marta (429).
+    Javob: {'ok': natija == 'qabul', 'natija': …, 'holat': …}."""
+    try:
+        try:
+            form = await request.post()
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({'error': 'katta'}, status=413)
+        order = str(form.get('order') or '').strip().upper()
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
+            return web.json_response({'error': 'order'}, status=400)
+        if not _chek_kalit_togri(order, form.get('c')):
+            return web.json_response({'error': 'kalit'}, status=403)
+        uid, _ = _chek_uid_top(order)
+        if not uid:
+            return web.json_response({'ok': False, 'natija': 'topilmadi'}, status=404)
+        f = form.get('fayl')
+        rasm = f.file.read() if hasattr(f, 'file') else b''
+        izoh = str(form.get('izoh') or '').strip()[:_CHEK_MATN_SIG]
+        nom = getattr(f, 'filename', '') or 'chek'
+        mime = getattr(f, 'content_type', '') or 'application/octet-stream'
+        kalit = ('tolov', order)
+        with _CHEK_ILOVA_QULF:
+            hozir = time.time()
+            if hozir - _CHEK_ILOVA_OXIRGI.get(kalit, 0) < 15:
+                return web.json_response({'error': 'band'}, status=429)
+            _CHEK_ILOVA_OXIRGI[kalit] = hozir
+        natija = await blok(_chek_tolovdan, uid, order, rasm, nom, mime, izoh)
+        if natija != 'qabul':
+            with _CHEK_ILOVA_QULF:
+                _CHEK_ILOVA_OXIRGI.pop(kalit, None)
+        _, b = _chek_uid_top(order)
+        return web.json_response({'ok': natija == 'qabul', 'natija': natija, 'holat': _chek_tolov_holat(b or {})})
+    except Exception as e:
+        logger.error(f'chek_tolov_endpoint: {type(e).__name__}')
+        return web.json_response({'error': 'xato'}, status=500)
+
+
+async def chek_holat_endpoint(request):
+    """3397: to'lov sahifasi qayta ochilsa — chek holati. {order, c} → {'ok', 'holat'} (_chek_tolov_holat)."""
+    try:
+        data = await request.json()
+        order = str(data.get('order') or '').strip().upper()
+        if not re.fullmatch(r'[A-Z0-9]{4,12}', order) or not _chek_kalit_togri(order, data.get('c')):
+            return web.json_response({'error': 'kalit'}, status=403)
+        _, b = _chek_uid_top(order)
+        if not b:
+            return web.json_response({'ok': False, 'holat': ''}, status=404)
+        return web.json_response({'ok': True, 'holat': _chek_tolov_holat(b)})
+    except Exception as e:
+        logger.error(f'chek_holat_endpoint: {type(e).__name__}')
         return web.json_response({'error': 'xato'}, status=500)
 
 
@@ -11488,7 +13456,7 @@ async def admin_buyurtma_endpoint(request):
             return web.json_response({'error': 'Topilmadi'}, status=404)
         if kod in ('bekor', 'erta') or (kod == 'eski' and amal == 'isbot'):
             return web.json_response({'error': kod, 'holat': b.get('holat')}, status=409)
-        if b.get('holat') in _HOLAT_TASDIQ:
+        if _tasdiqlangan(b):
             asyncio.get_event_loop().run_in_executor(None, _sotuv_sheet_yoz, mid, b)
         return web.json_response({'ok': True, 'holat': b.get('holat'), 'mijozga': natija == 'yuborildi',
                                   'takror': kod == 'eski', 'yetkaz': _yetkaz_javob(b)})
@@ -11510,7 +13478,9 @@ def _admin_buyurtma_dict(u, b):
     return {'uid': u, 'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'holat_ts': b.get('holat_ts'),
             'jami': b.get('jami'), 'tur': b.get('tur', ''), 'ism': b.get('ism', ''), 'tel': b.get('tel', ''),
             'nik': b.get('nik', ''), 'chek': b.get('chek') or '', 'yetkaz': _yetkaz_javob(b), 'tahrir_ts': b.get('tahrir_ts'),
+            'tolov': 'naqd' if _naqdmi(b) else '',   # 3420
             'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
+            'sinov': bool(b.get('sinov')),   # 3394: 🧪 SINOV — saytda belgi, sanoqqa kirmaydi
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
                        'chegirma': x.get('chegirma') or 0} for x in (b.get('tovar') or [])]}
 
@@ -11707,7 +13677,7 @@ def _tahrir_holat_html(b):
     """Yangi admin xabari uchun holat qatori — _HOLAT_QATOR_RE taniydigan ko'rinishda (keyingi tugma zanjirni davom ettiradi)."""
     h = b.get('holat')
     if h in _HOLAT_QATOR:
-        e, nom = _HOLAT_QATOR[h]
+        e, nom = _holat_qator_nom(b, h)
         return f"{e} <b>{nom}</b> · {_kk_vaqt(b.get('holat_ts') or time.time())[-5:]}"
     return "⏳ <b>To'lov kutilmoqda</b>"
 
@@ -11716,7 +13686,7 @@ async def _tahrir_xabarlar(uid, order, b):
     """Admin xabarlari yangilanadi. Birortasi ham yangilanmasa (yozuvda xabar yo'q — bot qayta yongan) — yangi xabar.
     Qaytaradi: 'tahrir' · 'yangi' · 'xato'."""
     bron_nums = [str(x.get('num')) for x in (b.get('tovar') or []) if x.get('num')]
-    klava = _buyurtma_klava(uid, order, b.get('holat') or 'kutilmoqda', bron_nums)
+    klava = _buyurtma_klava(uid, order, b.get('holat') or 'kutilmoqda', bron_nums, b)
     bor = False
     for x in list(b.get('admin_xb') or []):
         ym = _tahrir_almash(x.get('t'), x.get('e'), b)
@@ -11740,6 +13710,8 @@ async def _tahrir_xabarlar(uid, order, b):
 
 def _tahrir_store(uid, eski, b):
     """Apps Script buyurtmaTahrir: Buyurtmalar qatori, to'langan bo'lsa Sotuvlar + qoldiq, AdminJurnal. True — Store qabul qildi."""
+    if (b or {}).get('sinov'):
+        return True   # 3394: admin sinov xaridi — Store'ga (Buyurtmalar / Sotuvlar / qoldiq) yozilmaydi
     d = {'order': b.get('order'), 'user_id': str(uid), 'holat': b.get('holat'), 'jami': b.get('jami'), 'kim': 'admin',
          'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
          'eski': [{'num': x.get('num'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1} for x in eski or []],
@@ -11788,6 +13760,8 @@ async def admin_buyurtma_tahrir_endpoint(request):
             await blok(_tahrir_bron, mid, order, nusxa, b)
             xabar = await _tahrir_xabarlar(mid, order, b)
         store = await blok(_tahrir_store, mid, nusxa, b)
+        if store and _tasdiqlangan(b):   # 3421: to'langan buyurtma tarkibi o'zgardi — kanal ham
+            _fonda(sotuv_kanal_yangila, [x.get('num') for x in (nusxa or []) + ((b or {}).get('tovar') or [])])
         return web.json_response({'ok': True, 'store': store, 'xabar': xabar, 'buyurtma': _admin_buyurtma_dict(mid, b)})
     except Exception as e:
         logger.error(f'admin_buyurtma_tahrir_endpoint: {type(e).__name__}')
@@ -11899,6 +13873,13 @@ async def kanal_post_endpoint(request):
                 qolgan_nums.append(n)
         amal = str(data.get('amal', 'post'))
         yon = str(data.get('yonalish', '') or '')[:20]   # ALOQA: sayt yuborgan bo'lim (bo'lmasa — e'lonning yo'nalishi)
+        if data.get('test') is True:   # 3346: «🧪 Test kanal» — test kanalga, id yozilmaydi, asl post o'chmaydi («yana» ham)
+            mid, xato = await blok(kanal_sinov_post, num, yon)
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato, 'test': True})
+            kanal = kanal_tanla('sinov')
+            await blok(send_msg, admin_joy('post'), f"🧪 №{num} TEST kanalga (saytdan, id {mid}) — {kanal}")
+            return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal, 'test': True})
         if amal == 'yana':
             mid, xato = await blok(kanal_yana_keldi, num, yon)
         else:
@@ -11907,9 +13888,10 @@ async def kanal_post_endpoint(request):
             return web.json_response({'ok': False, 'error': xato})
         # B28: kollaj tugmasi admin lichkasiga (saytdan yuborilgan post uchun ham)
         kanal = elon_kanali(num)
-        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {kanal}", kollaj_tugma(mid))
+        kanallar = [kanal_nomi(c) for c in elon_kanallari([num])] or [kanal_nomi(kanal)]   # 3403: «✅ Camera kanaliga chiqdi»
+        await blok(send_msg, admin_joy('post'), f"📣 №{num} kanalga chiqdi (saytdan, id {mid}) — {', '.join(kanallar)}", kollaj_tugma(mid))
         kollaj_nusxa_fonda(mid)
-        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal})
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal, 'kanallar': kanallar})
     except Exception as e:
         logger.error(f'kanal_post_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -11917,7 +13899,8 @@ async def kanal_post_endpoint(request):
 
 async def kanal_toplam_endpoint(request):
     """B29 (BUGUN31): saytda uzoq bosib belgilangan e'lonlar → «📣 Yuborish» → bitta to'plam posti.
-    Faqat admin (initData). {initData, nums: [248, 251, …]} → {ok, mid, kanal, nums, otkazildi}."""
+    Faqat admin (initData). {initData, nums: [248, 251, …]} → {ok, mid, kanal, kanallar, nums, otkazildi}.
+    3403: kanal — birinchi kanal, kanallar — chiqqan kanallar nomi (["Camera", "PC"])."""
     try:
         data = await request.json()
         uid = check_init_data(data.get('initData', ''))
@@ -11929,15 +13912,26 @@ async def kanal_toplam_endpoint(request):
         nums = [str(n).strip() for n in nums]
         if not all(re.fullmatch(r'\d{1,6}', n) for n in nums):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
+        if data.get('test') is True:   # 3346: «🧪 Test kanal»
+            mid, xato, yuborildi, otkazildi = await blok(kanal_sinov_toplam, nums)
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato, 'otkazildi': otkazildi, 'test': True})
+            kanal = kanal_tanla('sinov')
+            await blok(send_msg, admin_joy('post'), f"🧪 Saytdan to'plam TEST kanalga: {len(yuborildi)} ta e'lon "
+                                                     f"(№{', №'.join(str(n) for n in yuborildi)}, id {mid}) — {kanal}")
+            return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal, 'nums': yuborildi, 'otkazildi': otkazildi,
+                                      'test': True})
         mid, xato, yuborildi, otkazildi = await blok(kanal_toplam, nums)
         if not mid:
             return web.json_response({'ok': False, 'error': xato, 'otkazildi': otkazildi})
-        izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {kanal_tanla('toplam')}"
+        chatlar = elon_kanallari(yuborildi) or [kanal_tanla('toplam')]
+        kanallar = [kanal_nomi(c) for c in chatlar]
+        izoh = f"📣 Saytdan to'plam: {len(yuborildi)} ta e'lon (№{', №'.join(str(n) for n in yuborildi)}) kanalga chiqdi (id {mid}) — {', '.join(kanallar)}"
         if otkazildi:
             izoh += "\n⏭ O'tkazildi: " + ', '.join(f"№{o['num']} ({html_escape(o['sabab'])})" for o in otkazildi)
         await blok(send_msg, admin_joy('post'), izoh, kollaj_tugma(mid))
         kollaj_nusxa_fonda(mid)
-        return web.json_response({'ok': True, 'mid': mid, 'kanal': kanal_tanla('toplam'), 'nums': yuborildi, 'otkazildi': otkazildi})
+        return web.json_response({'ok': True, 'mid': mid, 'kanal': chatlar[0], 'kanallar': kanallar, 'nums': yuborildi, 'otkazildi': otkazildi})
     except Exception as e:
         logger.error(f'kanal_toplam_endpoint: {e}')
         return web.json_response({'error': str(e)}, status=500)
@@ -11957,6 +13951,14 @@ async def kanal_guruh_endpoint(request):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,20}', gid):
             return web.json_response({'error': 'Guruh id notogri'}, status=400)
         amal = str(data.get('amal', 'yubor'))
+        if data.get('test') is True and amal in ('yubor', 'alohida'):   # 3346: «🧪 Test kanal» — Guruhlar'ga yozilmaydi
+            if amal == 'alohida':
+                return web.json_response({'ok': False, 'error': "Test rejimida: «📣 Kanalga» → «Ha — har rang alohida»"})
+            mid, xato, havola = await blok(guruh_sinov_yubor, gid, bool(data.get('alohida')))
+            if not mid:
+                return web.json_response({'ok': False, 'error': xato})
+            return web.json_response({'ok': True, 'mid': mid, 'havola': havola, 'test': True, 'sinov': True,
+                                      'alohida': bool(data.get('alohida'))})
         if amal == 'yubor':
             mid, xato, havola = await blok(guruh_yubor, gid, bool(data.get('alohida')))
             if not mid:
@@ -12073,7 +14075,7 @@ async def main():
     _bron_yuklash()   # BUGUN208
     _mijoz_yuklash()  # BUGUN225
     _kk_navbat_yuklash()   # 3322
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application(middlewares=[cors_middleware], client_max_size=60 * 1024 * 1024)   # 3386: chek fayli — Telegram chegarasi (50 MB) + forma
     app.router.add_post('/webhook', webhook)
     app.router.add_post('/webhook-eski', eski_webhook)   # BUGUN145: eski bot → yangi bot havolasi
     app.router.add_post('/notify', notify_endpoint)
@@ -12085,6 +14087,8 @@ async def main():
     app.router.add_post('/bron_tekshir', bron_tekshir_endpoint)   # BUGUN208: «Sotib olish» — e'lon bronmi (faqat true/false)
     app.router.add_post('/buyurtma', buyurtma_endpoint)
     app.router.add_post('/mijoz_holat', mijoz_holat_endpoint)   # BUGUN225: profil — raqamlar (BUGUN271: to'liq, faqat egasiga) + Buyurtmalarim
+    app.router.add_post('/chek_tolov', chek_tolov_endpoint)   # 3397: to'lov sahifasidan chek (kalit — buyurtma HMAC)
+    app.router.add_post('/chek_holat', chek_holat_endpoint)   # 3397: to'lov sahifasi — chek holati
     app.router.add_post('/chek_yukla', chek_yukla_endpoint)   # 3259: «Buyurtmalarim» dan chek rasmi → bot chati → adminga (bot yo'li bilan bir xil)
     app.router.add_post('/mijoz_tel', mijoz_tel_endpoint)       # BUGUN271: profil — yetkazish raqamini o'zgartirish
     app.router.add_post('/buyurtma_bekor', buyurtma_bekor_endpoint)   # BUGUN225: mijoz buyurtmani bekor qildi
@@ -12100,6 +14104,8 @@ async def main():
     app.router.add_post('/konkurs/boshla', konkurs_boshla_endpoint)     # BUGUN233: eski Telegram — ?start= siz
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
+    app.router.add_post('/tashco/jasur', tashco_jasur_endpoint)   # 3428: Jasur skripti — ish olish / natija
+    app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashCo'ga» — TashkentComp bo'limi
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
     app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
     app.router.add_get('/health', health)
@@ -12140,6 +14146,8 @@ async def main():
     except (NotImplementedError, AttributeError, RuntimeError):
         pass
     asyncio.create_task(guruh_tiklash())   # 3110: /guruh mavzulari jadvaldan (qayta ishga tushsa ham qoladi)
+    asyncio.create_task(tashco_tiklash())   # 3428: TashkentComp tarqatish sozlamasi jadvaldan
+    asyncio.create_task(tashco_loop())      # 3428: vaqti kelsa — bitta e'lon (yoqilgan va sinov ko'rilgan bo'lsa)
     # Bot ishga tushganda: e'lon xotirasi (G10.3) + oxirgi elon raqami — BITTA yuklashdan
     try:
         if await blok(elon_cache_load) and _ELON_CACHE['by_num']:   # BUGUN232: alohida ipda — Sheets kechiksa webhook to'xtamaydi
@@ -12152,6 +14160,8 @@ async def main():
     if KANAL_TOMCHI_BOSHI:
         asyncio.create_task(tomchi_loop())   # 3184.5: 15 kunlik tomchi (env yo'q — o'chiq)
     # 3227: sozlama holati — faqat bor / yo'q (qiymat logga yozilmaydi)
+    # 3403: env o'qilganini ko'rish uchun — faqat yo'nalish nomlari, kanal manzili logga yozilmaydi
+    logger.info("sozlama: yo'nalish kanallari — %s", ', '.join(sorted(k for k in MAIN_KANALLAR if k != '*')) or 'alohida emas')
     logger.info('sozlama: asosiy kanal %s · tomchi %s · webhook kaliti %s', 'ulangan' if MAIN_KANALLAR else "yo'q",
                 'yoqilgan' if KANAL_TOMCHI_BOSHI else "o'chiq", 'bor' if WEBHOOK_SECRET else "yo'q")
     logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
