@@ -8521,6 +8521,190 @@ def webhook_sozlama(url, allowed_updates):
     return d
 
 
+# ══ 3248: Nuqta tech kanali posti → «🛒 Sotuvda» tugmasi (faqat YANGI postlar, faqat admin ✅ dan keyin) ══
+# Owner: kanalda model haqida post chiqsa, tagida Store'dagi shu modelga tugma bo'lsin. Avtomatik QO'YILMAYDI — yangilik postlariga
+# («Pixel 11 taqdim etildi») tushmasin: bot admin guruhining 📢 Postlar mavzusiga so'raydi, ✅ bosilsa post tagiga URL tugma
+# (editMessageReplyMarkup — post MATNI o'zgarmaydi). Model topilmasa — xabar yo'q. Tahrirlangan (edited_channel_post) va eski
+# postlarga tegilmaydi. Bot kanalda admin bo'lishi va «Xabarlarni tahrirlash» (can_edit_messages) huquqi bo'lishi shart — /nt_huquq.
+NT_SRC = 'nt'                 # Store'da manba belgisi: startapp=m_<model>__src_nt
+_NT_ESKI_S = 86400            # bundan eski post (webhook kechikib kelgan) — taklif yo'q
+_NT_TAKLIF = {}               # (kanal id, post id) → {'markup': postning o'z tugmalari, 't'} — ✅ da ular saqlanadi
+_NT_TAKLIF_MAX = 300
+_NT_HUQUQ = {'t': 0.0, 'v': None, 'izoh': ''}
+NT_HUQUQ_KORSATMA = ("Nuqta tech kanali → ⚙️ Boshqaruv → Administratorlar → bot (@{bot}) → "
+                     "«Xabarlarni tahrirlash» (Edit messages of others / can_edit_messages) ni yoqing.")
+
+
+def nt_kanalmi(chat):
+    """Update'dagi kanal — Nuqta tech (env TECH_KANAL_ID, bo'sh bo'lsa @nuqta_tech)."""
+    return _kanal_mos(chat, TECH_KANAL or TECH_SUKUT)
+
+
+def _nt_sotuvda():
+    """({model id: sotuvdagi (faol) e'lonlar soni}, models) — xotiradagi jadvaldan."""
+    with _elon_cache_lock:
+        items = list(_ELON_CACHE['by_num'].values())
+        models = dict(_ELON_CACHE['models'])
+    son = {}
+    for e in items:
+        k = str((e or {}).get('specId', '') or '')
+        if k in models and elon_status(e) == 'active':
+            son[k] = son.get(k, 0) + 1
+    return son, models
+
+
+def nt_model_top(matn, son=None, models=None):
+    """Post matnidagi Store'da sotuvda bor model → (model id, nom, N) yoki None.
+    Moslik — 3297 dagi kabi (_model_shakllar, _soz_re): nom brend bilan ham, brendsiz ham («Google Pixel 10 Pro» / «Pixel 10 Pro»),
+    so'z chegarasi bilan, katta-kichik harf farqsiz, uz va ru nomi. Uzunroq model nomi ichidagi qisqasi hisoblanmaydi
+    («Pixel 10 Pro XL» posti — «Pixel 10 Pro» emas). Bir so'zli nom («Nano») — hisoblanmaydi (tasodifiy so'z bo'lmasin).
+    Bir nechta model bo'lsa — matnda birinchi kelgani."""
+    if son is None:
+        son, models = _nt_sotuvda()
+    t = ' '.join(str(matn or '').lower().split())
+    if not son or not t:
+        return None
+    topildi = []
+    for k, m in (models or {}).items():
+        for s in {s for lang in ('uz', 'ru') for s in _model_shakllar(model_display_name(m, lang))}:
+            if len(s.split()) >= 2:
+                topildi += [(x.start(), x.end(), k) for x in re.finditer(_soz_re(s), t)]
+    qoldi = [a for a in topildi if son.get(a[2]) and not any(
+        b[0] <= a[0] and a[1] <= b[1] and b[1] - b[0] > a[1] - a[0] for b in topildi)]
+    if not qoldi:
+        return None
+    k = min(qoldi, key=lambda a: (a[0], a[0] - a[1]))[2]
+    return k, model_display_name(models[k], 'uz'), son[k]
+
+
+def nt_sotuvda_url(model_id):
+    """Store Mini App — shu model filtri bilan, manba belgisi src=nt. Telegram startapp: faqat A-Z a-z 0-9 _ - (≤ 64)."""
+    k = str(model_id or '')
+    if not re.fullmatch(r'[A-Za-z0-9-]{1,40}', k):
+        return None
+    return f'https://t.me/{BOT_USERNAME}?startapp=m_{k}__src_{NT_SRC}'
+
+
+def nt_tugma(model_id, nom, n):
+    """Kanal posti tagidagi URL tugma (uz + ru)."""
+    return {'text': f'🛒 Sotuvda — {nom} ({n} ta) / В продаже ({n} шт.)', 'url': nt_sotuvda_url(model_id)}
+
+
+def nt_huquq(majbur=False):
+    """Bot Nuqta tech kanalida admin va «Xabarlarni tahrirlash» huquqi bormi: True / False / None (tekshirib bo'lmadi).
+    Natija 1 soat eslab qolinadi; izoh — _NT_HUQUQ['izoh']."""
+    h = _NT_HUQUQ
+    if not majbur and h['t'] and time.time() - h['t'] < 3600:
+        return h['v']
+    bot_id = str(BOT_TOKEN or '').split(':')[0]
+    if not bot_id.isdigit():
+        h.update(t=0.0, v=None, izoh='BOT_TOKEN yo\'q')
+        return None
+    try:
+        j = req.get(f'{TG_API}/getChatMember', params={'chat_id': TECH_KANAL or TECH_SUKUT, 'user_id': int(bot_id)},
+                    timeout=6).json()
+    except Exception as e:
+        h.update(t=0.0, v=None, izoh=f'tarmoq: {type(e).__name__}')
+        return None
+    r = (j or {}).get('result') if isinstance(j, dict) and j.get('ok') else None
+    if not isinstance(r, dict):
+        h.update(t=0.0, v=None, izoh=str((j or {}).get('description', ''))[:120])
+        return None
+    s = r.get('status')
+    v = s == 'creator' or (s == 'administrator' and bool(r.get('can_edit_messages')))
+    izoh = ('admin, «Xabarlarni tahrirlash» bor' if v else
+            "admin, lekin «Xabarlarni tahrirlash» (can_edit_messages) YO'Q" if s == 'administrator' else f'admin emas ({s})')
+    h.update(t=time.time(), v=v, izoh=izoh)
+    return v
+
+
+def nt_huquq_matn(majbur=True):
+    """/nt_huquq javobi."""
+    v = nt_huquq(majbur)
+    kanal = html_escape(TECH_KANAL or TECH_SUKUT)
+    if v:
+        return f"✅ {kanal}: bot {_NT_HUQUQ['izoh']} — «🛒 Sotuvda» tugmasi qo'shiladi."
+    return (f"⚠️ {kanal}: {html_escape(_NT_HUQUQ['izoh'] or 'tekshirib bo‘lmadi')}.\n"
+            + html_escape(NT_HUQUQ_KORSATMA.format(bot=BOT_USERNAME)))
+
+
+def nt_post_keldi(post):
+    """Yangi channel_post: Nuqta tech posti bo'lsa va matnida sotuvdagi model topilsa — 📢 Postlar mavzusiga taklif.
+    Natija — topilgan model id yoki None (taklif yuborilmadi)."""
+    post = post or {}
+    chat = post.get('chat') or {}
+    cid, pid = chat.get('id'), post.get('message_id')
+    if not nt_kanalmi(chat) or not isinstance(cid, int) or not isinstance(pid, int):
+        return None
+    if post.get('date') and time.time() - float(post['date']) > _NT_ESKI_S:
+        return None
+    top = nt_model_top(post.get('text') or post.get('caption') or '')
+    if not top or not nt_sotuvda_url(top[0]):
+        return None
+    k, nom, n = top
+    ok_data = f'nts:ok:{cid}:{pid}:{k}'
+    if len(ok_data.encode()) > 64:
+        return None
+    _NT_TAKLIF[(cid, pid)] = {'markup': post.get('reply_markup'), 't': time.time()}
+    while len(_NT_TAKLIF) > _NT_TAKLIF_MAX:
+        _NT_TAKLIF.pop(next(iter(_NT_TAKLIF)))
+    havola = f"https://t.me/{chat['username']}/{pid}" if chat.get('username') else ''
+    matn = (f"📰 Nuqta tech posti: <b>{html_escape(nom)}</b> — tagiga \"🛒 Sotuvda ({n} ta)\" tugmasini qo'shaymi?"
+            + (f'\n<a href="{havola}">Postni ochish</a>' if havola else ''))
+    if nt_huquq() is False:
+        matn += '\n\n⚠️ ' + html_escape(f"Botda bu kanalda tahrirlash huquqi yo'q — ✅ ishlamaydi. "
+                                        + NT_HUQUQ_KORSATMA.format(bot=BOT_USERNAME))
+    send_msg(admin_joy('post'), matn, {'inline_keyboard': [[
+        {'text': "✅ Qo'sh", 'callback_data': ok_data}, {'text': '✖ Kerak emas', 'callback_data': f'nts:no:{cid}:{pid}'}]]})
+    return k
+
+
+def nt_tugma_bosildi(admin_chat, xabar_id, data):
+    """📢 Postlar mavzusidagi «✅ Qo'sh» / «✖ Kerak emas». ✅ — kanal postiga «🛒 Sotuvda» (N — HOZIRGI soni)."""
+    p = str(data).split(':')
+    if len(p) < 4 or p[1] not in ('ok', 'no') or not re.fullmatch(r'-100\d{5,15}', p[2]) or not p[3].isdigit():
+        return
+    cid, pid = int(p[2]), int(p[3])
+    holat = lambda t: req.post(f'{TG_API}/editMessageReplyMarkup', json={
+        'chat_id': admin_chat, 'message_id': xabar_id,
+        'reply_markup': {'inline_keyboard': [[{'text': t, 'callback_data': 'nts:-'}]]}}, timeout=10)
+    try:
+        if p[1] == 'no':
+            _NT_TAKLIF.pop((cid, pid), None)
+            holat("✖ Qo'shilmadi")
+            return
+        if len(p) != 5 or not nt_sotuvda_url(p[4]):
+            return
+        son, models = _nt_sotuvda()
+        k = p[4]
+        if not son.get(k):
+            send_msg(admin_joy('post'), "ℹ️ Bu model endi sotuvda yo'q — tugma qo'shilmadi.")
+            holat("ℹ️ Sotuvda yo'q — qo'shilmadi")
+            return
+        eski = (_NT_TAKLIF.get((cid, pid)) or {}).get('markup') or {}
+        qatorlar = [q for q in (eski.get('inline_keyboard') or []) if isinstance(q, list)
+                    and not any(str((t or {}).get('url', '')).endswith(f'__src_{NT_SRC}') for t in q)]
+        qatorlar.append([nt_tugma(k, model_display_name(models[k], 'uz'), son[k])])
+        try:
+            j = req.post(f'{TG_API}/editMessageReplyMarkup', json={
+                'chat_id': cid, 'message_id': pid, 'reply_markup': {'inline_keyboard': qatorlar}}, timeout=10).json()
+        except Exception as e:
+            j = {'ok': False, 'description': f'tarmoq: {type(e).__name__}'}
+        if (j or {}).get('ok') or 'not modified' in str((j or {}).get('description', '')):
+            _NT_TAKLIF.pop((cid, pid), None)
+            holat(f"✅ Qo'shildi ({son[k]} ta)")
+            return
+        desc = str((j or {}).get('description', ''))
+        huquqsiz = any(s in desc.lower() for s in ('not enough rights', 'have no rights', 'need administrator',
+                                                    "can't be edited", 'message_author_required', 'chat_admin_required'))
+        if huquqsiz:
+            _NT_HUQUQ.update(t=time.time(), v=False, izoh="«Xabarlarni tahrirlash» huquqi yo'q")
+        send_msg(admin_joy('post'), f"❌ Tugma qo'shilmadi: <code>{html_escape(desc[:150])}</code>"
+                 + ('\n' + html_escape(NT_HUQUQ_KORSATMA.format(bot=BOT_USERNAME)) if huquqsiz else ''))
+    except Exception as e:
+        logger.error(f'nt tugma: {type(e).__name__}')
+
+
 async def webhook(request):
     """🔴 QOIDALAR T1: Telegram'ga DARROV 200 qaytariladi.
 
@@ -9479,6 +9663,11 @@ async def handle_update(data):
             mijoz_kanal_qayd(data['chat_member'])   # 3176: Mijozlar.kanal_obuna (faqat navbatga — tarmoqsiz)
             return
 
+        # 3248: Nuqta tech kanalidagi YANGI post — sotuvdagi model topilsa adminga «🛒 Sotuvda» taklifi (fonda, T1)
+        if data.get('channel_post'):
+            asyncio.create_task(blok(nt_post_keldi, data['channel_post']))
+            return
+
         message = data.get('message', {})
         text = message.get('text', '')
         chat_id = message.get('chat', {}).get('id')
@@ -9572,6 +9761,9 @@ async def handle_update(data):
             # B28: «🖼 Kollajga o'tkazish» / «🎞 Slaydga qaytarish» (faqat admin); 3238: Kollajlar mavzusidagi «✅ Kanalda shunga o'tkazish» / «↩»
             if cq_data.startswith(('kollaj:', 'slayd:', 'kg:', 'kgq:')) and cq_adm:
                 asyncio.create_task(blok(kollaj_almashtir, cq_chat, cq.get('message', {}).get('message_id'), cq_data))
+            # 3248: Nuqta tech posti — «✅ Qo'sh» / «✖ Kerak emas» (📢 Postlar mavzusi)
+            if cq_data.startswith(('nts:ok:', 'nts:no:')) and cq_adm:
+                asyncio.create_task(blok(nt_tugma_bosildi, cq_chat, cq_msg.get('message_id'), cq_data))
             # BUGUN208: «🔓 Bronni bekor qilish» (faqat admin lichkasi)
             if cq_data.startswith('bron_och:') and cq_adm:
                 asyncio.create_task(bron_bekor_tugma(cq_chat, cq_data))
@@ -9705,6 +9897,11 @@ async def handle_update(data):
                 await blok(send_msg, chat_id, f"Foydalanish: {cmd} 248")
             else:
                 asyncio.create_task(kanal_buyruq(chat_id, cmd, m_num.group(0)))
+            return
+
+        # 3248: bot Nuqta tech kanalida admin va «Xabarlarni tahrirlash» huquqi bormi
+        if adm and text.split() and text.split()[0].split('@')[0] == '/nt_huquq':
+            asyncio.create_task(blok(lambda: send_msg(chat_id, nt_huquq_matn())))
             return
 
         # 3184.5: kanalga ommaviy yuborish (eski e'lonlar) va 15 kunlik tomchi holati — fonda
