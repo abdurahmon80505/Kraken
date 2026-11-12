@@ -12815,11 +12815,12 @@ def _buyurtma_zaxira_birlash(j):
             m['buyurtma'].sort(key=lambda x: x.get('ts') or 0, reverse=True)
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _BUYURTMA_KORILGAN[(int(uid), order)] = time.time()
-            for x in z.get('tovar') or []:   # bron — /buyurtma dagi kabi (faqat bo'sh e'lon)
+            for x in ([] if uid == str(ADMIN_ID) else z.get('tovar') or []):   # bron — /buyurtma dagi kabi · 3466: admin — yo'q
                 if isinstance(x, dict) and x.get('num') and not _bron_olish(x['num']):
                     _bron_qoy(str(x['num']), int(uid), order)
             yangi += 1
         if yangi:
+            _admin_sinov_belgila()   # 3466
             _mijoz_saqlash()
     return yangi
 
@@ -13087,6 +13088,25 @@ def _mijoz_yuklash():
         pass
     except Exception as e:
         logger.error(f'mijoz yuklash: {e}')
+    _admin_sinov_belgila()
+
+
+def _admin_sinov_belgila():
+    """3466: ADMIN_ID ning HAR buyurtmasi — sinov (3394 dan OLDIN yozilganlari ham: fayl / Sheets / sayt zaxirasidan kelgani).
+    Sinov yozuvi Sheets'ga qayta yozilmaydi (_mijoz_sync_yubor), Store'ga sotuv tushmaydi, admin ro'yxatida ko'rinmaydi; admin
+    nomidagi bronlar ochiladi (tovar yana sotuvda). NEGA: Owner 2026-11-13 03:33 — «admin buyurtmasi jadvalga / ro'yxatga /
+    bandlikka / Ombor'ga yozilmasin, faqat 🧪 sinov xabari». _MIJOZ_LOCK ostida yoki ishga tushishda chaqiriladi."""
+    n = 0
+    for b in (_MIJOZ.get(str(ADMIN_ID)) or {}).get('buyurtma') or []:
+        if not b.get('sinov'):
+            b['sinov'] = True
+            n += 1
+    bo = [k for k, v in _BRON.items() if str(v.get('uid')) == str(ADMIN_ID)]
+    for k in bo:
+        _BRON.pop(k, None)
+    if bo:
+        _bron_saqlash()
+    return n
 
 
 def _mijoz_saqlash():
@@ -13228,6 +13248,7 @@ def _mijoz_sheet_birlash(j):
             for x in m['buyurtma']:
                 if (uid, x.get('order')) not in sheet_buy:
                     _mijoz_sync_belgila('b', uid, x.get('order'))
+        _admin_sinov_belgila()   # 3466: Sheets'da qolgan eski admin qatori — sinov (ro'yxatda yo'q, bron yo'q)
         _mijoz_saqlash()
         return len(_MIJOZ), sum(len(m['buyurtma']) for m in _MIJOZ.values())
 
@@ -14154,7 +14175,8 @@ async def admin_buyurtmalar_endpoint(request):
         if not uid or uid != ADMIN_ID:
             return web.json_response({'error': 'Faqat admin'}, status=401)
         with _MIJOZ_LOCK:
-            r = [_admin_buyurtma_dict(u, b) for u, m in _MIJOZ.items() for b in m['buyurtma']]
+            # 3466: admin sinov xaridi ro'yxatga KIRMAYDI (Owner 2026-11-13: «faqat 🧪 sinov xabari botga»)
+            r = [_admin_buyurtma_dict(u, b) for u, m in _MIJOZ.items() for b in m['buyurtma'] if not b.get('sinov')]
         r.sort(key=lambda x: x.get('ts') or 0, reverse=True)
         return web.json_response({'ok': True, 'buyurtma': r[:_ADMIN_BUYURTMA_MAX]})
     except Exception as e:
