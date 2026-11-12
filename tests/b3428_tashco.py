@@ -140,7 +140,22 @@ bot.tashco_bir()
 assert 'allaqachon' in bot._TC_JOY['izoh'] and not h['ish'], 'Ko\'rdim\'siz ikkinchisi yo\'q'
 bot.tashco_tick()
 assert not h['ish'], "Ko'rdim'siz avtomat yo'q"
-assert bot._tc_amal('kor')[0] and bot._tc_amal('yoq')[0] and h['korildi'] and h['yoq']
+# 3452: avto navbat o'chiq — «Ko'rdim» dan keyin ham yoqilmaydi, tick hech narsa qo'ymaydi
+assert bot.TASHCO_AVTO is False
+assert bot._tc_amal('kor')[0] and h['korildi'] and bot._tc_amal('yoq') == (False, '') and not h['yoq']
+assert 'faqat «1 ta yuborish»' in bot._TC_JOY['izoh']
+h['yoq'] = True   # eski holatda yoqilgan qolgan bo'lsa ham
+bot._ELON_CACHE['by_num'] = {'15': by['15'], '10': by['10']}
+h['bosh'], h['oxir'] = 0, 24
+bot._tc_soniya = lambda: 86000
+h['oxirgi'][-1][0] -= 3600
+bot.tashco_tick()
+assert not h['ish'], "3452: avto o'chiq — Jasurga ish qo'yilmasin"
+h['oxirgi'][-1][0] += 3600
+# quyidagi avtomat kodi turibdi (TASHCO_AVTO=True qilinsa qaytadi) — shuni tekshiradi
+bot.TASHCO_AVTO = True
+h['yoq'] = False
+assert bot._tc_amal('yoq')[0] and h['korildi'] and h['yoq']
 # avtomat: 30 daqiqa oraliq, keyin Jasurga ish
 bot._ELON_CACHE['by_num'] = {'15': by['15'], '10': by['10']}
 h['bosh'], h['oxir'] = 0, 24

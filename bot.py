@@ -2456,6 +2456,19 @@ def kanal_postlar(elon, hammasi=False):
     return out
 
 
+# 3452 (Owner 2026-11-12): kanalga HECH NARSA o'zidan ketmaydi. Owner kanaldan o'chirgan post QAYTA CHIQMAYDI:
+# tahrir «post kanalda yo'q» desa — channel_message_id ga shu belgi yoziladi (kanal_postlar uni o'tkazib yuboradi → post
+# yo'q), yangi post yuborilmaydi. Avto-taklif / ommaviy / tomchi navbati belgili e'lonni chetlab o'tadi. Owner o'zi
+# «📣 Kanalga» / «Yana keldi» / /post bossa — yangi id yoziladi, belgi o'zi ketadi (qo'lda — mumkin).
+KANALDAN_OCHIRILGAN = 'ochirildi'
+
+
+def kanaldan_ochirilganmi(elon):
+    """E'lon «kanaldan o'chirilgan» deb belgilanganmi (3452)."""
+    v = str((elon or {}).get('channel_message_id', '') or '').strip().lower()
+    return KANALDAN_OCHIRILGAN in re.split(r'[\s,;]+', v)
+
+
 def kanal_id_matn(postlar):
     """[(yo'nalish, mid)] → Sheets qiymati: bitta post umumiy kanalda — 123 / a123 (eski ko'rinish), aks holda «mobile:123 pc:45»."""
     if len(postlar) == 1 and post_kanal(postlar[0][0]) == umumiy_kanal():
@@ -3430,7 +3443,8 @@ def kanal_tasdiq(admin_chat, key, ok):
 
 def kanal_sinxron(eski, yangi):
     """Sayt (admin) e'lonni saqlaganda: o'chirilgan → post o'chadi; post bor → tahrir;
-    yangi phone/camera (waited→active yoki yangi) → avto-post. Boshqa turlar — /toplam."""
+    yangi phone/camera (waited→active yoki yangi) → adminga «📣 Kanalga yuborish» TAKLIFI (3452: o'zi yubormaydi).
+    3452: tahrir rad etilsa — YANGI POST YO'Q; post kanalda yo'q bo'lsa e'lon «kanaldan o'chirilgan» deb belgilanadi."""
     try:
         num = int(yangi['num'])
         st = elon_status(yangi)
@@ -3447,16 +3461,15 @@ def kanal_sinxron(eski, yangi):
             ok, xato = kanal_tahrir(num)
             sabab = '' if ok else tahrir_sabab(xato)
             if sabab and not toplam_postmi(yangi, elon_cache_get(num)[1]):
-                # BUGUN251: post qo'lda o'chirilgan / boshqa bot yuborgan — tahrir bo'lmaydi
-                izoh = f"⚠️ №{num} kanal posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}."
-                if st == 'active':
-                    yangi_mid, x2 = kanal_yana_keldi(num)
-                    izoh += (f" Yangi post yuborildi (id {yangi_mid})." if yangi_mid
-                             else f" Yangi post ham ketmadi: <code>{html_escape(x2)}</code>")
-                else:
-                    izoh += " E'lon faol emas — yangi post yuborilmadi."
-                send_msg(admin_joy('post'), izoh)
-                return 'yana' if st == 'active' else 'tahrir'
+                # BUGUN251: post qo'lda o'chirilgan / boshqa bot yuborgan — tahrir bo'lmaydi.
+                # 3452: yangi post YUBORILMAYDI (Owner o'chirgan post qayta chiqmasin) — faqat xabar va belgi
+                if sabab == 'yoq':
+                    kanaldan_ochirildi_belgila(num)
+                    send_msg(admin_joy('post'), f"🚫 №{num} kanalda yo'q — qayta yuborilmadi.")
+                    return 'ochirildi'
+                send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
+                                            "Yangi post yuborilmadi.")
+                return 'tahrir'
             if not ok:
                 send_msg(admin_joy('post'), f"⚠️ №{num} kanal posti yangilanmadi: <code>{html_escape(xato)}</code>")
             elif eski is not None and _images_xom(eski) != _images_xom(yangi) and not toplam_postmi(yangi, elon_cache_get(num)[1]):
@@ -3467,18 +3480,63 @@ def kanal_sinxron(eski, yangi):
             return ''   # xotira yuklanmagan — eskisi noma'lum, ehtiyot: avto-post yo'q
         _, models = elon_cache_get(num)
         yangi_elon = eski is None or elon_status(eski) == 'waited'
-        if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR:
-            mid, xato = kanal_post(num)
-            if mid:
-                send_msg(admin_joy('post'), f"📣 №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}", kollaj_tugma(mid))
-                kollaj_nusxa_fonda(mid)
-            else:
-                send_msg(admin_joy('post'), f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
-            return 'post'
+        if st == 'active' and yangi_elon and elon_turi(yangi, models) in AVTO_POST_TURLAR and not kanaldan_ochirilganmi(yangi):
+            # 3452: avto-post YO'Q — faqat taklif; Owner «📣 Kanalga yuborish» ni bossa ketadi
+            send_msg(admin_joy('post'), f"🆕 №{num} saytga chiqdi. Kanalga o'zi yuborilmaydi — yuborasizmi?\nKanal: {elon_kanali(num)}",
+                     {"inline_keyboard": [[{"text": "📣 Kanalga yuborish", "callback_data": f"apost:{num}"},
+                                           {"text": "❌ Kerak emas", "callback_data": f"apost_no:{num}"}]]})
+            return 'taklif'
         return ''
     except Exception as e:
         logger.error(f'kanal_sinxron: {e}')
         return ''
+
+
+def kanaldan_ochirildi_belgila(num):
+    """3452: e'lon posti kanalda yo'q (Owner o'chirgan) — «kanaldan o'chirilgan» belgisi. Ikki kanalli e'londa tahrir
+    bo'ladigan (kanalda turgan) postlar id'da qoladi, yo'qlari olib tashlanadi."""
+    elon, models = elon_cache_get(num)
+    postlar = kanal_postlar(elon)
+    qoldi = []
+    if len(postlar) > 1:
+        for y, chat, m in postlar:
+            if post_toplammi(elon, models, y, chat, m):
+                qoldi.append((y, m))
+                continue
+            ok, x = kanal_rich_yubor(num, elon, models, chat, m, yonalish=y or post_yonalish(elon, models, mid=m))
+            if ok or tahrir_sabab(x) != 'yoq':
+                qoldi.append((y, m))
+    return kanal_id_yoz(num, ' '.join([KANALDAN_OCHIRILGAN] + [_tok(y, m) for y, m in qoldi]))
+
+
+def avto_post_tugma(chat, msg_id, data):
+    """3452: «📣 Kanalga yuborish» / «❌ Kerak emas» (kanal_sinxron taklifi). Owner bosdi — endi yuboriladi."""
+    ok = data.startswith('apost:')
+    try:
+        num = int(data.split(':', 1)[1])
+    except Exception:
+        return
+    try:   # tugma bir marta — ikkinchi bosish ikkinchi post yubormasin
+        req.post(f'{TG_API}/editMessageReplyMarkup', json={'chat_id': chat, 'message_id': msg_id,
+                                                           'reply_markup': {"inline_keyboard": []}}, timeout=10)
+    except Exception as e:
+        logger.error(f'avto_post_tugma: {type(e).__name__}')
+    if not ok:
+        send_msg(chat, f"❌ №{num} kanalga yuborilmadi (kerak emas).")
+        return
+    elon, _ = elon_cache_get(num)
+    if not elon or elon_status(elon) != 'active':
+        send_msg(chat, f"⚠️ №{num} hozir faol emas — yuborilmadi.")
+        return
+    if kanal_msg_id(elon):
+        send_msg(chat, f"ℹ️ №{num} kanalda allaqachon bor — qayta yuborilmadi.")
+        return
+    mid, xato = kanal_post(num)
+    if mid:
+        send_msg(chat, f"📣 №{num} kanalga chiqdi (id {mid}) — {elon_kanali(num)}")
+        kollaj_nusxa_fonda(mid)
+    else:
+        send_msg(chat, f"⚠️ №{num} kanalga chiqmadi: <code>{html_escape(xato)}</code>")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -3490,7 +3548,7 @@ def kanal_sinxron(eski, yangi):
 #    (orasi ≥3 s, 429 — kutib qayta), oxirida guruh posti tahrir: havolalar rang postlariga. Yo'q — faqat guruh posti.
 #  · Qayta yuborish: yangisi yuboriladi, eskisi o'chadi. O'chmasa (48 soatdan eski / boshqa bot) — bot tahrirlamaydi,
 #    adminga «eski postni qo'lda o'chiring» + havola (foydalanuvchi javobi 1B, 2026-10-17).
-#  · Tahrir rad etilsa (post qo'lda o'chirilgan / boshqa bot yuborgan) — yangi post + adminga sababi.
+#  · Tahrir rad etilsa (post qo'lda o'chirilgan / boshqa bot yuborgan) — 3452: yangi post YO'Q, adminga sababi.
 #  · Kanal: env GURUH_KANAL_ID — bo'sh / «test» → TEST_CHANNEL (sukut: merge'dan keyin ham asl kanalga sinov posti
 #    ketmasin); «asl» → e'lonning odatdagi kanali (post_kanal); boshqa qiymat — o'sha chat.
 #    Test rejimida rang postlarining id'si Elonlar'ga YOZILMAYDI (asl kanal posti deb o'ylanmasin) — guruh id'si ichida («r»).
@@ -3748,9 +3806,21 @@ def _guruh_havolalar(g, azolar, models, kd):
     return out
 
 
+def guruh_kanaldan_ochirilganmi(g):
+    """3452: guruh posti «kanaldan o'chirilgan» ({"o":1}) — navbat uni qayta chiqarmaydi."""
+    v = str((g or {}).get('kanal_message_id') or '').strip()
+    if not v.startswith('{'):
+        return False
+    try:
+        return bool(json.loads(v).get('o'))
+    except Exception:
+        return False
+
+
 def guruh_kanal_yoz(gid, kd, alohida=None):
-    """Guruh posti id'si (va «alohida») — Guruhlar varag'iga (Apps Script guruhKanal) va xotiraga. True — ok."""
-    payload = {'id': str(gid), 'kanal_message_id': json.dumps(kd, separators=(',', ':')) if kd and kd.get('m') else ''}
+    """Guruh posti id'si (va «alohida») — Guruhlar varag'iga (Apps Script guruhKanal) va xotiraga. True — ok.
+    3452: kd={'o': 1} — «kanaldan o'chirilgan» belgisi (post id'siz)."""
+    payload = {'id': str(gid), 'kanal_message_id': json.dumps(kd, separators=(',', ':')) if kd and (kd.get('m') or kd.get('o')) else ''}
     if alohida is not None:
         payload['alohida'] = bool(alohida)
     ok = False
@@ -4026,7 +4096,9 @@ OMMAVIY_XATO_KETMA_KET = 5                # shuncha ketma-ket xato — to'xtaydi
 # Yarim chegarasi — HAMMA faol telefonlar (kanalga chiqqani ham) raqam bo'yicha teng ikkiga: 1-yarim chiqqach 2-yarim siljimaydi.
 # (3184.5 da hamma tur: qism → g'ilof → aksessuar → kamera → telefon tartibida edi.)
 _OMMAVIY = {'ish': False, 'toxta': False}
-KANAL_TOMCHI_BOSHI = os.environ.get('KANAL_TOMCHI_BOSHI', '').strip()   # «2026-11-01» (Toshkent) — bo'sh: tomchi O'CHIQ
+# 3452 (Owner 2026-11-12): kanalga jadval bo'yicha o'zi yuborish YO'Q — env qo'yilsa ham tomchi ishlamaydi. Kod turibdi.
+TOMCHI_YOQIQ = False
+KANAL_TOMCHI_BOSHI = os.environ.get('KANAL_TOMCHI_BOSHI', '').strip() if TOMCHI_YOQIQ else ''   # «2026-11-01» (Toshkent) — bo'sh: tomchi O'CHIQ
 KANAL_TOMCHI_KUN = 15
 TOMCHI_SOAT = (10, 21)                    # Toshkent: kunlik postlar shu oraliqda teng taqsim
 _TOMCHI = {'sana': None, 'vaqtlar': [], 'yuborildi': 0, 'xato': set(), 'jim': False}
@@ -4060,12 +4132,13 @@ def kanal_navbat(tartib='ommaviy', yarim=None):
             turlar = {elon_turi(a, models) for a in azolar}
             if tartib == 'ommaviy' and 'phone' in turlar and len(turlar) > 1:
                 # 3189: juft guruh (telefon + g'ilof) — ommaviyda telefon o'z posti bilan, g'ilof chiqmaydi
-                out += [{'num': _gnum(a), 'tur': 'phone'} for a in azolar if elon_turi(a, models) == 'phone' and not kanal_msg_id(a)]
-            elif g and azolar and not guruh_kanal_oqi(g).get('m'):
+                out += [{'num': _gnum(a), 'tur': 'phone'} for a in azolar
+                        if elon_turi(a, models) == 'phone' and not kanal_msg_id(a) and not kanaldan_ochirilganmi(a)]
+            elif g and azolar and not guruh_kanal_oqi(g).get('m') and not guruh_kanaldan_ochirilganmi(g):
                 out.append({'gid': gid, 'num': min(_gnum(a) for a in azolar),
                             'tur': 'phone' if turlar == {'phone'} else elon_turi(azolar[0], models), 'soni': len(azolar)})
             continue
-        if not kanal_msg_id(e):
+        if not kanal_msg_id(e) and not kanaldan_ochirilganmi(e):   # 3452: Owner o'chirgani — navbatda yo'q
             out.append({'num': _gnum(e), 'tur': elon_turi(e, models)})
     if tartib == 'ommaviy':
         out = [x for x in out if x['tur'] == 'phone']
@@ -4236,6 +4309,9 @@ def tomchi_holat(hozir=None):
     navbat = [x for x in kanal_navbat('tomchi') if x['num'] not in _TOMCHI['xato']]
     r = tomchi_reja(hozir, len(navbat))
     if r['holat'] == 'ochiq':
+        if not TOMCHI_YOQIQ:
+            return (f"💧 Tomchi O'CHIRILGAN — kanalga o'zi hech narsa yubormaydi. Kanalga chiqmagan: {r['jami']} ta — "
+                    "qo'lda: saytdagi «📣 Kanalga» yoki /ommaviy boshla 1|2")
         return (f"💧 Tomchi O'CHIQ. Yoqilsa — kanal navbati: bugun {r['bugun']}, jami {r['jami']} "
                 f"({KANAL_TOMCHI_KUN} kunga, {TOMCHI_SOAT[0]}:00–{TOMCHI_SOAT[1]}:00). Yoqish — Render env KANAL_TOMCHI_BOSHI=YYYY-MM-DD")
     if r['holat'] == 'kutadi':
@@ -4249,7 +4325,7 @@ def tomchi_holat(hozir=None):
 
 def tomchi_qadam(hozir):
     """Fonda har daqiqa: vaqti kelgan bo'lsa navbatdagi BITTA narsa kanalga (eskisi birinchi). True — post yuborildi."""
-    if not _tomchi_boshi() or _OMMAVIY['ish']:
+    if not TOMCHI_YOQIQ or not _tomchi_boshi() or _OMMAVIY['ish']:
         return False
     navbat = [x for x in kanal_navbat('tomchi') if x['num'] not in _TOMCHI['xato']]
     r = tomchi_reja(hozir, len(navbat))
@@ -4303,7 +4379,8 @@ def kanal_navbat_buyruq(chat, text):
 
 def guruh_tahrir(gid, yangila=False):
     """Guruh postini hozirgi ma'lumotdan qayta yasab tahrirlaydi. Post yo'q — hech narsa; a'zo qolmasa — post o'chadi.
-    Tahrir rad etilsa (post o'chirilgan / boshqa bot) — yangi post + adminga sababi. Guruh tarqatilgan (Guruhlar'da
+    3452: tahrir rad etilsa (post o'chirilgan / boshqa bot) — YANGI POST YO'Q, adminga sababi; post kanalda yo'q bo'lsa
+    guruh «kanaldan o'chirilgan» ({"o":1}) — keyin ham qayta chiqmaydi. Guruh tarqatilgan (Guruhlar'da
     endi yo'q) — posti o'chadi. (True, '') / (False, xato)."""
     with _elon_cache_lock:
         oldin = (_ELON_CACHE.get('guruhlar') or {}).get(str(gid))
@@ -4333,20 +4410,11 @@ def guruh_tahrir(gid, yangila=False):
     if not sabab:
         return False, xato
     nom = html_escape(_guruh_nomi(g, azolar, models))
-    chat = guruh_kanali(azolar, models)
-    yangi = {'k': chat, 'm': None, 't': int(time.time()), 'r': kd['r'] if kd['k'] == chat else {}}
-    html = guruh_post_qur(g, azolar, models, _guruh_havolalar(g, azolar, models, yangi))
-    mid, x2 = _429_bilan(send_rich, chat, html)
-    if not mid:
-        send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
-                                    f"Yangi post ham ketmadi: <code>{html_escape(x2)}</code>")
-        return False, x2
-    yangi['m'] = int(mid)
-    guruh_kanal_yoz(gid, yangi)
-    if sabab == 'begona':
-        _eski_ochir([(None, kd['k'], kd['m'])], f'Guruh «{nom}»', kd.get('t'))
-    send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti tahrirlanmadi — {TAHRIR_SABAB_MATN[sabab]}. "
-                                f"Yangi post yuborildi: {post_havola(chat, mid) or mid}")
+    if sabab == 'yoq':
+        guruh_kanal_yoz(gid, {'o': 1})
+        send_msg(admin_joy('post'), f"🚫 Guruh «{nom}» kanalda yo'q — qayta yuborilmadi.")
+        return True, ''
+    send_msg(admin_joy('post'), f"⚠️ Guruh «{nom}» posti yangilanmadi — {TAHRIR_SABAB_MATN[sabab]}. Yangi post yuborilmadi.")
     return True, ''
 
 
@@ -8535,6 +8603,10 @@ def _tc_keyingi_vaqt(h):
     return _tc_soat(sl) if sl < h['oxir'] * 3600 else 'tugadi'
 
 
+# 3452 (Owner 2026-11-12): TashkentComp'ga kunlik avto navbat YO'Q — har e'lon faqat Owner «1 ta yuborish» bosganda.
+TASHCO_AVTO = False
+
+
 def tashco_tick():
     """Fon (har daqiqa): vaqti kelsa — Jasurga BITTA ish. Faqat yoqilgan va sinov e'loni ko'rilgan bo'lsa."""
     if not _TC_JOY['yuklandi']:
@@ -8548,7 +8620,7 @@ def tashco_tick():
         h = _TC_JOY['h']
         ozg = _tc_ish_eskir(h)
         tanlov = None
-        if h['yoq'] and h['korildi'] and not h.get('ish'):
+        if TASHCO_AVTO and h['yoq'] and h['korildi'] and not h.get('ish'):   # 3452: avto o'chiq
             kb = _tc_bugun(h)
             sek = _tc_soniya()
             oxirgi = max([x[0] for x in h['oxirgi']] or [0])
@@ -8725,6 +8797,9 @@ def _tc_amal(amal):
     with _tc_qulf:
         _TC_JOY['izoh'] = ''
         if amal == 'yoq':
+            if not TASHCO_AVTO and not h['yoq']:
+                _TC_JOY['izoh'] = "⏸ Avtomatik yuborish o'chirilgan — har e'lon faqat «1 ta yuborish» tugmasi bilan."
+                return False, ''
             if not h['yoq'] and not h['korildi']:
                 _TC_JOY['izoh'] = "⚠️ Avval «1 ta yuborish», TashkentComp'da ko'rib «👀 Ko'rdim» bosing."
                 return False, ''
@@ -9182,6 +9257,9 @@ async def handle_update(data):
                         {"inline_keyboard": azo_kanal_tugmalari(yet) + [
                             [{"text": "✅ A'zo bo'ldim", "callback_data": "check_member"}]
                         ]})
+            # 3452: yangi telefon / kamera — «📣 Kanalga yuborish» taklifi (faqat admin)
+            if cq_data.startswith(('apost:', 'apost_no:')) and cq_adm:
+                asyncio.create_task(blok(avto_post_tugma, cq_chat, cq_msg.get('message_id'), cq_data))
             # G11.2: /toplam va /katalog tasdiqi (faqat admin lichkasi)
             if cq_data.startswith(('kanal_ok:', 'kanal_no:')) and cq_adm:
                 asyncio.create_task(blok(kanal_tasdiq, cq_chat, cq_data.split(':', 1)[1], cq_data.startswith('kanal_ok:')))
