@@ -226,9 +226,9 @@ sinov("bold: «Yangi buyurtma» (oldin) va «To'landi» (surilgan) to'g'ri joyda
 sinov("bold: «O'zgartirildi», nomlar", "O'zgartirildi" in bl and 'Tovar 22' in bl and 'Tovar 55' in bl, repr(bl))
 lk = [(u16(t, x['offset'], x['length']), x['url']) for x in e if x['type'] == 'text_link']
 sinov('havola: nom → e\'lon (startapp=elon_55)', ('Tovar 55', f'https://t.me/{bot.BOT_USERNAME}?startapp=elon_55') in lk, repr(lk))
-sinov('tugmalar: keyingi bosqich (Yo\'lda) + bron 22 va 55, 21 yo\'q',
-      f'bh:yolda:{MIJOZ}:TT01' in str(m[0].get('reply_markup')) and 'bron_och:55:TT01' in str(m[0].get('reply_markup'))
-      and 'bron_och:21:' not in str(m[0].get('reply_markup')), repr(m[0].get('reply_markup'))[:300])
+sinov('tugmalar: keyingi bosqich (Yo\'lda); to\'langan — bron tugmasi yo\'q (3304)',
+      f'bh:yolda:{MIJOZ}:TT01' in str(m[0].get('reply_markup')) and 'bron_och' not in str(m[0].get('reply_markup')),
+      repr(m[0].get('reply_markup'))[:300])
 ct = c[0]['caption'] if c else ''
 sinov("chek caption: «💵 184$ ≈ 2 208 000 so'm ✏️», qolgani saqlangan",
       "\n💵 184$ ≈ 2 208 000 so'm ✏️\n" in ct and ct.startswith('🧾 Chek keldi — №TT01') and '560' not in ct, ct)
