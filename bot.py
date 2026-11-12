@@ -148,16 +148,22 @@ ADMIN_ID = int(os.environ.get('ADMIN_ID', '1058186533'))
 # Render env ADMIN_GURUH = "-1001234567890 post=12 olx=13 stat=14 mijoz=15 kollaj=16" — guruhda /guruh buyrug'i
 # mavzularni o'zi ochadi va shu qatorni yozib beradi. Env bo'sh — hammasi eskicha admin lichkasiga (ADMIN_ID).
 # Guruhdan faqat ADMIN_ID odamning xabari qabul qilinadi. Mijoz bilan yozishma o'zgarmaydi.
-GURUH_MAVZULAR = [('post', '📢 Postlar'), ('olx', '🛒 OLX'), ('stat', '📊 Statistika'),
-                  ('mijoz', '💬 Mijozlar'), ('kollaj', '🖼 Kollajlar'),
+# 3433 (2026-11-10): mavzu NOMIDA emoji yo'q — belgi Telegram'ning o'z mavzu belgisi (icon_custom_emoji_id, MAVZU_BELGI).
+GURUH_MAVZULAR = [('post', 'Postlar'), ('olx', 'OLX'), ('stat', 'Statistika'),
+                  ('mijoz', 'Mijozlar'), ('kollaj', 'Kollajlar'),
                   # MS3.2 (BUGUN56, 2026-10-08): rasm yuklash — har bo'limga o'z mavzusi. Shu mavzuga tashlangan rasm(lar)dan
                   # chala e'lon yaratiladi va javobdagi tugma saytni o'sha bo'limda ochadi. Lichkadan — avvalgidek (Mobile).
-                  ('rasm_mobile', '📱 Rasm · Mobile'), ('rasm_pc', '💻 Rasm · PC'), ('rasm_camera', '📷 Rasm · Camera'),
+                  ('rasm_mobile', 'Rasm · Mobile'), ('rasm_pc', 'Rasm · PC'), ('rasm_camera', 'Rasm · Camera'),
                   # BUGUN244 (2026-10-17): saytdagi AI yordamchi — har 5 soatda hisobot (ai_hisobot_loop). Claude / qul ishlari — bu yerga EMAS.
-                  ('ai', '🤖 AI yordamchi'),
+                  ('ai', 'AI yordamchi'),
                   # BUGUN252 §4 (2026-10-18): rasm ombori — e'lon OCHILMAYDI: rasm ImageKit /rasmlar ga, Store «Rasmlar»
                   # varag'iga; izohda e'lon raqami («213») — o'sha e'longa qo'shiladi. Saytda «🖼 Rasmlardan tanlash».
-                  ('rasmlar', '🖼 Rasmlar')]
+                  ('rasmlar', 'Rasmlar')]
+# 3433: har mavzuga belgi — getForumTopicIconStickers ro'yxatidan, istak tartibida birinchi topilgani (bir belgi — bir mavzu).
+# Telegram faqat o'z ro'yxatidagi belgini qo'yadi (ixtiyoriy emoji emas); ro'yxatda yo'q bo'lsa — keyingisi.
+MAVZU_BELGI = {'post': ('📣', '📰', '📝'), 'olx': ('🛒', '🛍', '💰'), 'stat': ('📈', '📊', '📉'), 'mijoz': ('🗣', '💬', '👀'),
+               'kollaj': ('🎨', '🖼', '🎬'), 'rasm_mobile': ('📱',), 'rasm_pc': ('💻', '🖥', '🖨'),
+               'rasm_camera': ('📷', '📸', '🎬', '🔭'), 'ai': ('🤖', '💡', '🧪'), 'rasmlar': ('🖼', '📁', '📚', '🗂')}
 
 
 def rasm_yonalish(joy):
@@ -366,6 +372,38 @@ def mavzu_bormi(chat, thread):
     return False if any(s in d for s in _MAVZU_YOQ) else None
 
 
+def _emoji_toza(e):
+    return str(e or '').replace('\ufe0f', '').replace('\ufe0e', '')
+
+
+def mavzu_belgilari():
+    """{kalit: custom_emoji_id} — Telegram mavzu belgilari ro'yxatidan (MAVZU_BELGI istagi bo'yicha); ro'yxat kelmasa — {}."""
+    j = _tg_j('getForumTopicIconStickers', {})
+    st = j.get('result') if j.get('ok') else None
+    if not isinstance(st, list):
+        return {}
+    band, natija = set(), {}
+    for k, _ in GURUH_MAVZULAR:
+        for e in MAVZU_BELGI.get(k, ()):
+            s = next((x for x in st if isinstance(x, dict) and x.get('custom_emoji_id')
+                      and _emoji_toza(x.get('emoji')) == _emoji_toza(e) and x['custom_emoji_id'] not in band), None)
+            if s:
+                band.add(s['custom_emoji_id'])
+                natija[k] = s['custom_emoji_id']
+                break
+    return natija
+
+
+def _belgi_sabab(d):
+    """editForumTopic / createForumTopic xatosi → oddiy so'z bilan sabab (Owner o'qiydi)."""
+    d = str(d or '').upper()
+    if 'RIGHT' in d or 'ADMIN' in d or 'FORBIDDEN' in d:
+        return "botda «Mavzularni boshqarish» huquqi yo'q"
+    if 'ICON' in d or 'EMOJI' in d or 'DOCUMENT_INVALID' in d:
+        return "Telegram bu belgini qabul qilmadi"
+    return "Telegram rad etdi"
+
+
 def guruh_sozla(chat, forum, xabar_chat, yangi=False):
     with _guruh_qulf:
         _guruh_sozla(chat, forum, xabar_chat, yangi)
@@ -385,6 +423,8 @@ def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
                              "1 daqiqadan keyin /guruh ni qayta yuboring.")
         return
     g = dict(GURUH) if GURUH.get('id') == chat and not noldan else {'id': chat}
+    belgi = mavzu_belgilari()          # 3433: {kalit: custom_emoji_id}; bo'sh — Telegram ro'yxat bermadi
+    belgisiz = []                      # 3433: belgi qo'yilmagan mavzular — (nom, sabab)
     ochirilgan, nomalum = [], []
     for k, nom in GURUH_MAVZULAR:
         if g.get(k):
@@ -394,13 +434,35 @@ def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
                 ochirilgan.append(k)
             elif bor is None:
                 nomalum.append(nom)
+            else:
+                # 3433: bor mavzu — nomdagi eski emoji olinadi, belgi qo'yiladi (o'zgarmagan bo'lsa — TOPIC_NOT_MODIFIED, xato emas)
+                e = {'chat_id': chat, 'message_thread_id': g[k], 'name': nom}
+                if belgi.get(k):
+                    e['icon_custom_emoji_id'] = belgi[k]
+                j = _tg_j('editForumTopic', e)
+                if not j.get('ok') and 'NOT_MODIFIED' not in str(j.get('description', '')).upper():
+                    belgisiz.append((nom, _belgi_sabab(j.get('description'))))
+                elif not belgi.get(k):
+                    belgisiz.append((nom, "Telegram belgilar ro'yxatini bermadi"))
     yangi = [(k, nom) for k, nom in GURUH_MAVZULAR if not g.get(k)]
     ochildi, xato = [], None
     for k, nom in yangi:
+        so = {'chat_id': chat, 'name': nom}
+        if belgi.get(k):
+            so['icon_custom_emoji_id'] = belgi[k]
         try:
-            j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
+            j = req.post(f'{TG_API}/createForumTopic', json=so, timeout=10).json()
         except Exception as e:
             j = {'description': str(e)}
+        if not j.get('ok') and belgi.get(k) and 'ICON' in str(j.get('description', '')).upper():
+            # 3433: belgi rad etildi — mavzu belgisiz ochiladi (mavzusiz qolgandan yaxshi)
+            belgisiz.append((nom, _belgi_sabab(j.get('description'))))
+            try:
+                j = req.post(f'{TG_API}/createForumTopic', json={'chat_id': chat, 'name': nom}, timeout=10).json()
+            except Exception as e:
+                j = {'description': str(e)}
+        elif j.get('ok') and not belgi.get(k):
+            belgisiz.append((nom, "Telegram belgilar ro'yxatini bermadi"))
         if not j.get('ok'):
             xato = (nom, str(j.get('description', '')))
             break
@@ -434,6 +496,10 @@ def _guruh_sozla(chat, forum, xabar_chat, noldan=False):
              f" ({len(ochirilgan)} tasi o'chirilgan edi — yangidan ochildi)." if ochirilgan else ".")
     if nomalum:
         bosh += f"\n⚠️ Tekshirib bo'lmadi, eskisi qoldi: {', '.join(nomalum)}. Hammasini noldan: /guruh yangi"
+    if belgisiz:
+        sab = sorted({s for _, s in belgisiz})
+        bosh += (f"\n⚠️ Belgi qo'yilmadi: {', '.join(n for n, _ in belgisiz)} — {'; '.join(sab)}. "
+                 "Belgini qo'lda ham qo'ysa bo'ladi: mavzu → Tahrirlash → belgi.")
     oxir = ("Doimiy saqlandi: bot qayta ishga tushsa ham <b>shu mavzular</b> ishlaydi (oxirgi /guruh)."
             if not _guruh_holat['saqlanmagan'] else
             "⚠️ Doimiy saqlab bo'lmadi — bot qayta ishga tushsa yo'qoladi. Birozdan keyin /guruh ni qayta yuboring.")
