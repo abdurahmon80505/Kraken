@@ -12798,12 +12798,24 @@ def _buyurtma_tayyor_yozuvdan(uid, b):
             sonlar[str(x['num'])] = max(1, min(99, int(x.get('soni') or 1)))
         except Exception:
             pass
+    # 3500: sayt zaxirasidagi ranglar — {num: [{r, n}]} bo'lishi kerak; ro'yxat / matn kelsa ilgari .items() xatosi bilan
+    # butun yozuv yiqilardi (adminga xabar ketmasdi). Endi faqat to'g'ri qismi olinadi (endpoint chegaralari bilan)
     ranglar = {}
-    for k, v in (joy.get('ranglar') or {}).items():
-        try:
-            ranglar[str(k)] = [(str(r.get('r') or ''), int(r.get('n'))) for r in v if r.get('r')]
-        except Exception:
-            pass
+    rg = joy.get('ranglar')
+    for k, v in (list(rg.items())[:10] if isinstance(rg, dict) else []):
+        if not isinstance(v, list):
+            continue
+        qator = []
+        for r in v[:10]:
+            try:
+                nom = re.sub(r'[\x00-\x1f\x7f\s]+', ' ', str(r.get('r') or '')).strip()
+                n = int(r.get('n'))
+            except Exception:
+                continue
+            if 1 <= len(nom) <= 40 and 1 <= n <= 99:
+                qator.append((nom, n))
+        if qator:
+            ranglar[str(k)] = qator
     num, qolgan = nums[0], nums[1:]
     kel, kel_ogoh = ({}, False)
     if joy.get('savat'):

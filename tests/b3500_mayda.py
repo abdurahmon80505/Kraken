@@ -6,6 +6,7 @@ Ishga tushirish:  python tests/b3500_mayda.py <bot papkasi>   (sukut — BOT_PAP
 Tekshiriladi:
   1) admin sinov xaridi — _BUYURTMA_SONI limitiga kirmaydi; 24 soatdan eski _BUYURTMA_KORILGAN admin tarmog'ida ham tozalanadi
   2) Yandex joyi (lat / lon) — matn, chegaradan tashqari, NaN — havolaga tushmaydi («joy belgilanmagan»); to'g'risi — 6 xona
+  3) sayt zaxirasidagi ranglar ro'yxat / matn / buzuq bo'lsa — yozuv yiqilmaydi, faqat to'g'ri qismi olinadi
 """
 import os
 import sys
@@ -206,9 +207,33 @@ def t_joy_chegara():
         assert 'joy belgilanmagan' in m and 'href' not in m, (joy, m)   # ilgari — havolaga xom matn / 95 tushardi
 
 
+
+# ── 3) zaxiradagi ranglar — dict bo'lmasa ham yiqilmaydi ──
+def t_ranglar_royxat():
+    olingan = []
+    eski = bot._buyurtma_tayyorla
+    bot._buyurtma_tayyorla = lambda *a, **k: (olingan.append(a[9]), {'matn': 'ok', 'bron': []})[1]
+    try:
+        def b(rg):
+            return {'order': 'RG0001', 'ism': 'Sinov', 'tel': '+998901234567', 'tur': 'emu',
+                    'joy': {'kurs': 12700, 'manzil': 'Toshkent', 'ranglar': rg},
+                    'tovar': [{'num': '261', 'narx': 25, 'soni': 2}]}
+        for rg in ([{'r': 'Qora', 'n': 1}], 'Qora', 5, None, {'261': 'Qora'}, {'261': {'r': 'Qora'}}):
+            olingan.clear()
+            t = bot._buyurtma_tayyor_yozuvdan(MIJOZ, b(rg))      # ilgari ro'yxat / matn / son — AttributeError
+            assert t and t['matn'] == 'ok' and olingan == [{}], (rg, t, olingan)
+        olingan.clear()
+        bot._buyurtma_tayyor_yozuvdan(MIJOZ, b({'261': [{'r': ' Qora\n ', 'n': '1'}, {'r': 'Oq', 'n': 0}, 'x',
+                                                         {'r': 'Y' * 41, 'n': 1}, {'r': 'Oq', 'n': 1}]}))
+        assert olingan == [{'261': [('Qora', 1), ('Oq', 1)]}], olingan   # buzuq elementlar tashlanadi, to'g'risi qoladi
+    finally:
+        bot._buyurtma_tayyorla = eski
+
+
 sinov("admin sinov xaridi — limitga kirmaydi (7 marta), mijozda 6-si — 429", t_admin_limit)
 sinov("admin sinov xaridida ham 24 soatdan eski «ko'rilgan» yozuvlar tozalanadi", t_admin_tozalash)
 sinov("Yandex joyi — yaroqsiz koordinata havolaga tushmaydi, to'g'risi 6 xonagacha", t_joy_chegara)
+sinov("sayt zaxirasidagi ranglar ro'yxat / matn / buzuq — yozuv yiqilmaydi, to'g'ri qismi olinadi", t_ranglar_royxat)
 
 print('3500 bot: %s' % ('0 xato' if not xato else f'{xato} XATO'))
 sys.exit(1 if xato else 0)
