@@ -11189,9 +11189,15 @@ def _buyurtma_joy_matn(joy):
     if tur == 'ozim':
         return f'{e} {nom}'
     if tur == 'yandex':
-        if joy.get('lat') is None:
+        # 3500: koordinata bu yerda ham tekshiriladi — sayt zaxirasidan (Apps Script) kelgan yozuvda endpoint tekshiruvi
+        # bo'lmagan: matn / chegaradan tashqari son havolaga tushardi. Yaroqsiz — «joy belgilanmagan» (mijozdan so'raladi)
+        try:
+            lat, lon = float(joy.get('lat')), float(joy.get('lon'))
+        except Exception:
+            lat = lon = None
+        if lat is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return f'{e} {nom} — joy belgilanmagan'
-        havola = f"https://yandex.uz/maps/?pt={joy['lon']},{joy['lat']}&z=17&l=map"
+        havola = f"https://yandex.uz/maps/?pt={round(lon, 6)},{round(lat, 6)}&z=17&l=map"
         return f'{e} {nom} — <a href="{havola}">Yandex xaritada ochish</a>'
     return f"{nom}: {html_escape(joy.get('manzil') or '—')}"
 
@@ -12792,12 +12798,24 @@ def _buyurtma_tayyor_yozuvdan(uid, b):
             sonlar[str(x['num'])] = max(1, min(99, int(x.get('soni') or 1)))
         except Exception:
             pass
+    # 3500: sayt zaxirasidagi ranglar — {num: [{r, n}]} bo'lishi kerak; ro'yxat / matn kelsa ilgari .items() xatosi bilan
+    # butun yozuv yiqilardi (adminga xabar ketmasdi). Endi faqat to'g'ri qismi olinadi (endpoint chegaralari bilan)
     ranglar = {}
-    for k, v in (joy.get('ranglar') or {}).items():
-        try:
-            ranglar[str(k)] = [(str(r.get('r') or ''), int(r.get('n'))) for r in v if r.get('r')]
-        except Exception:
-            pass
+    rg = joy.get('ranglar')
+    for k, v in (list(rg.items())[:10] if isinstance(rg, dict) else []):
+        if not isinstance(v, list):
+            continue
+        qator = []
+        for r in v[:10]:
+            try:
+                nom = re.sub(r'[\x00-\x1f\x7f\s]+', ' ', str(r.get('r') or '')).strip()
+                n = int(r.get('n'))
+            except Exception:
+                continue
+            if 1 <= len(nom) <= 40 and 1 <= n <= 99:
+                qator.append((nom, n))
+        if qator:
+            ranglar[str(k)] = qator
     num, qolgan = nums[0], nums[1:]
     kel, kel_ogoh = ({}, False)
     if joy.get('savat'):
@@ -13056,6 +13074,10 @@ async def buyurtma_endpoint(request):
             return web.json_response({'error': 'Kurs notogri'}, status=400)
         joy['kurs'] = kurs   # BUGUN296: mijozga «💳 To'lash» havolasi (so'm = $ × shu kurs) — sayt bilan bir xil summa
         hozir = time.time()
+        # 3500: 24 soatlik tozalash — eng boshida. Nega: ilgari oxirida edi, admin sinov tarmog'i undan oldin qaytib,
+        # sinov yozuvlari hech tozalanmasdi
+        for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
+            _BUYURTMA_KORILGAN.pop(k, None)
         if (uid, order) in _BUYURTMA_KORILGAN or (uid, order) in _BUYURTMA_JARAYON:
             return web.json_response({'ok': True, 'takror': True, 'ck': _chek_imzo(order)})
         # 3499: raqam BOSHQA mijozniki — rad (409). Nega: chek kaliti (ck) faqat raqamdan yasaladi va _chek_uid_top birinchi
@@ -13063,10 +13085,12 @@ async def buyurtma_endpoint(request):
         egasi, _ = _chek_uid_top(order)
         if egasi and egasi != uid:
             return web.json_response({'error': 'Raqam band'}, status=409)
-        oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
-        if len(oxirgilar) >= 5:
-            return web.json_response({'error': 'Juda ko\'p'}, status=429)
-        _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
+        # 3500: admin sinov xaridi — mijoz limitiga kirmaydi (sinov ketma-ket bir necha marta bosiladi)
+        if not sinov:
+            oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
+            if len(oxirgilar) >= 5:
+                return web.json_response({'error': 'Juda ko\'p'}, status=429)
+            _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
         loop = asyncio.get_event_loop()
         kel, kel_ogoh = ({}, False)
         # BUGUN295: avval yozuv (admin_xabar = 'kutilmoqda'), keyin xabar — 3 urinish; yetmasa fon sikli qayta yuboradi.
@@ -13108,8 +13132,6 @@ async def buyurtma_endpoint(request):
                 ikkinchi = {'id': uid, 'ism': ism,
                             'username': (_init_data_user(data.get('initData', '')) or {}).get('username', '')}
                 loop.run_in_executor(None, _bron_ogoh_yubor, bn, ikkinchi, f"buyurtma berdi (№{order})")
-        for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
-            _BUYURTMA_KORILGAN.pop(k, None)
         return web.json_response({'ok': True, 'xabar': yetdi, 'ck': _chek_imzo(order), **({'sinov': True} if sinov else {})})   # 3397: to'lov sahifasi kaliti
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
