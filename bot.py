@@ -12810,11 +12810,26 @@ def _buyurtma_tayyor_yozuvdan(uid, b):
     tel = b.get('tel') or ''
     if not tel and joy.get('tel_id') in _MIJOZ_TEL_TURLAR:
         tel = (_mijoz_ol(uid).get('tels') or {}).get(joy['tel_id'], '')
-    if kel.get('_farq'):   # 3301: sayt zaxirasidan kelgan yozuv — tarkib ham havoladagicha
+    if kel:   # 3301: sayt zaxirasidan kelgan yozuv — tarkib ham havoladagicha · 3499: havola narxi (kelishilgan) ham — jami serverdan
         _mijoz_buyurtma_yoz(uid, b.get('order'), num, qolgan, b.get('ism') or '', tel, joy, sonlar=sonlar, ranglar=ranglar, kel=kel)
     t = _buyurtma_tayyorla(uid, num, b.get('order'), b.get('ism') or '—', tel, joy, kurs if 1000 <= kurs <= 100000 else 0,
                            qolgan, sonlar, ranglar, kel, kel_ogoh, tel_ogoh=not tel)
     return t
+
+
+def _zaxira_jami(tovar):
+    """3499: sayt zaxirasidagi buyurtma jami $ — tovar narxi (Apps Script e'londan oladi) × soni. Saytdan kelgan 'jami' (mijoz
+    yuborgan usd) ishlatilmaydi: ilgari mijoz 1$ yozsa «💳 To'lash» havolasi 13 000 so'm chiqardi. Narx noma'lum bo'lsa — None."""
+    try:
+        s = 0.0
+        for x in tovar or []:
+            n, k = float(x.get('narx')), int(x.get('soni') or 1)
+            if not (0 <= n <= 1e6) or not (1 <= k <= 99):
+                return None
+            s += n * k
+        return round(s, 2) if tovar else None
+    except Exception:
+        return None
 
 
 def _buyurtma_zaxira_birlash(j):
@@ -12834,7 +12849,8 @@ def _buyurtma_zaxira_birlash(j):
                 tel = m['tels'].get(joy['tel_id'], '')
             m['buyurtma'].insert(0, {
                 'order': order, 'ts': float(z.get('ts') or time.time()), 'holat': z.get('holat') or 'kutilmoqda',
-                'tovar': [x for x in (z.get('tovar') or []) if isinstance(x, dict)], 'jami': z.get('jami'), 'tur': z.get('tur') or '',
+                'tovar': tovar, 'jami': _zaxira_jami(tovar), 'tur': z.get('tur') or '',   # 3499: jami — server narxidan
+            tovar = [x for x in (z.get('tovar') or []) if isinstance(x, dict)]
                 'ism': z.get('ism') or '', 'tel': tel, 'til': z.get('til') if z.get('til') in ('uz', 'ru') else '',
                 'nik': str(joy.get('nik') or ''), 'joy': joy, 'manba': 'sayt', 'admin_xabar': 'kutilmoqda',
                 'tolov': 'naqd' if (z.get('tolov') == 'naqd' or joy.get('tolov') == 'naqd') else ''})   # 3420
@@ -13419,8 +13435,12 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                 if xabar and bor.get('admin_xabar') == 'kutilmoqda':
                     bor['_xabar'] = xabar
                     _mijoz_saqlash()
-                if (kel or {}).get('_farq') and bor.get('holat') == 'kutilmoqda':   # 3301: zaxira — mijoz yuborgan tarkib edi
-                    bor.update(tovar=tovar, jami=None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2))
+                # 3301: zaxira — mijoz yuborgan tarkib edi · 3499: sayt zaxirasidan kelgan yozuv (manba 'sayt') — tarkib va jami
+                # server hisobidan bir marta (zaxiradagi jami / havola narxi mijoz tomonidan kelgan bo'lishi mumkin edi)
+                if (((kel or {}).get('_farq') or (bor.get('manba') == 'sayt' and not bor.get('jami_server')))
+                        and bor.get('holat') == 'kutilmoqda' and not bor.get('sovga')):
+                    bor.update(tovar=tovar, jami=None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
+                               jami_server=1)
                     _mijoz_saqlash()
                     _mijoz_sync_belgila('b', uid, order)
                 return
