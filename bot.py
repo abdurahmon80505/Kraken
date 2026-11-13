@@ -12843,6 +12843,9 @@ def _buyurtma_zaxira_birlash(j):
             _BUYURTMA_KORILGAN[(int(uid), order)] = time.time()
             for x in (z.get('tovar') or []):   # bron — /buyurtma dagi kabi (admin — yuqorida o'tkazib yuborilgan)
                 if isinstance(x, dict) and x.get('num') and not _bron_olish(x['num']):
+            if any(k != uid and any(x.get('order') == order for x in (mm or {}).get('buyurtma') or [])
+                   for k, mm in _MIJOZ.items()):   # 3499: raqam boshqa mijozda — olinmaydi (chek kaliti raqamdan)
+                continue
                     _bron_qoy(str(x['num']), int(uid), order)
             yangi += 1
         if yangi:
@@ -13055,6 +13058,11 @@ async def buyurtma_endpoint(request):
             tayyor = await loop.run_in_executor(None, _buyurtma_tayyorla, uid, num, order, ism, tel, joy, kurs, qolgan_nums,
                                                 sonlar, ranglar, kel, kel_ogoh, tel_ogoh)
             if sinov:   # 3490: admin — faqat «🧪 SINOV» xabari (tugmasiz); yozuv / bron / mijoz xabari / Sheets — YO'Q
+        # 3499: raqam BOSHQA mijozniki — rad (409). Nega: chek kaliti (ck) faqat raqamdan yasaladi va _chek_uid_top birinchi
+        # topilganini oladi — birovning raqami bilan buyurtma bergan odam uning to'lov sahifasi kalitini olib, chek yubora olardi
+        egasi, _ = _chek_uid_top(order)
+        if egasi and egasi != uid:
+            return web.json_response({'error': 'Raqam band'}, status=409)
                 _BUYURTMA_KORILGAN[(uid, order)] = hozir
                 yetdi = await loop.run_in_executor(None, _admin_sinov_xabar, _SINOV_BOSH + tayyor['matn'])
                 return web.json_response({'ok': True, 'sinov': True, 'xabar': yetdi})
