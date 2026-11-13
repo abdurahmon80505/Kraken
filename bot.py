@@ -13056,6 +13056,10 @@ async def buyurtma_endpoint(request):
             return web.json_response({'error': 'Kurs notogri'}, status=400)
         joy['kurs'] = kurs   # BUGUN296: mijozga «💳 To'lash» havolasi (so'm = $ × shu kurs) — sayt bilan bir xil summa
         hozir = time.time()
+        # 3500: 24 soatlik tozalash — eng boshida. Nega: ilgari oxirida edi, admin sinov tarmog'i undan oldin qaytib,
+        # sinov yozuvlari hech tozalanmasdi
+        for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
+            _BUYURTMA_KORILGAN.pop(k, None)
         if (uid, order) in _BUYURTMA_KORILGAN or (uid, order) in _BUYURTMA_JARAYON:
             return web.json_response({'ok': True, 'takror': True, 'ck': _chek_imzo(order)})
         # 3499: raqam BOSHQA mijozniki — rad (409). Nega: chek kaliti (ck) faqat raqamdan yasaladi va _chek_uid_top birinchi
@@ -13063,10 +13067,12 @@ async def buyurtma_endpoint(request):
         egasi, _ = _chek_uid_top(order)
         if egasi and egasi != uid:
             return web.json_response({'error': 'Raqam band'}, status=409)
-        oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
-        if len(oxirgilar) >= 5:
-            return web.json_response({'error': 'Juda ko\'p'}, status=429)
-        _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
+        # 3500: admin sinov xaridi — mijoz limitiga kirmaydi (sinov ketma-ket bir necha marta bosiladi)
+        if not sinov:
+            oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
+            if len(oxirgilar) >= 5:
+                return web.json_response({'error': 'Juda ko\'p'}, status=429)
+            _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
         loop = asyncio.get_event_loop()
         kel, kel_ogoh = ({}, False)
         # BUGUN295: avval yozuv (admin_xabar = 'kutilmoqda'), keyin xabar — 3 urinish; yetmasa fon sikli qayta yuboradi.
@@ -13108,8 +13114,6 @@ async def buyurtma_endpoint(request):
                 ikkinchi = {'id': uid, 'ism': ism,
                             'username': (_init_data_user(data.get('initData', '')) or {}).get('username', '')}
                 loop.run_in_executor(None, _bron_ogoh_yubor, bn, ikkinchi, f"buyurtma berdi (№{order})")
-        for k in [k for k, v in _BUYURTMA_KORILGAN.items() if hozir - v > 86400]:
-            _BUYURTMA_KORILGAN.pop(k, None)
         return web.json_response({'ok': True, 'xabar': yetdi, 'ck': _chek_imzo(order), **({'sinov': True} if sinov else {})})   # 3397: to'lov sahifasi kaliti
     except Exception as e:
         logger.error(f'buyurtma_endpoint: {e}')
