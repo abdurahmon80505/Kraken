@@ -5,6 +5,7 @@ Ishga tushirish:  python tests/b3500_mayda.py <bot papkasi>   (sukut — BOT_PAP
   Internetsiz — soxta Telegram / Sheets, soxta mijozlar 42, 43 va admin 777.
 Tekshiriladi:
   1) admin sinov xaridi — _BUYURTMA_SONI limitiga kirmaydi; 24 soatdan eski _BUYURTMA_KORILGAN admin tarmog'ida ham tozalanadi
+  2) Yandex joyi (lat / lon) — matn, chegaradan tashqari, NaN — havolaga tushmaydi («joy belgilanmagan»); to'g'risi — 6 xona
 """
 import os
 import sys
@@ -192,8 +193,22 @@ def t_admin_tozalash():
     assert kod == 200 and j.get('takror'), (kod, j)
 
 
+
+# ── 2) joy koordinatasi (sayt zaxirasidan kelgan yozuv ham shu matndan o'tadi) ──
+def t_joy_chegara():
+    jm = bot._buyurtma_joy_matn
+    yaxshi = jm({'tur': 'yandex', 'lat': 41.2995671234, 'lon': '69.2401'})
+    assert 'pt=69.2401,41.299567&' in yaxshi and 'Yandex' in yaxshi, yaxshi
+    for joy in ({'lat': 95, 'lon': 69}, {'lat': 41, 'lon': 200}, {'lat': '41"><script>', 'lon': 69},
+                {'lat': 'nan', 'lon': 69}, {'lat': 41, 'lon': 'inf'}, {'lat': 41}, {'lat': None, 'lon': None},
+                {'lat': [41], 'lon': 69}, {}):
+        m = jm(dict(joy, tur='yandex'))
+        assert 'joy belgilanmagan' in m and 'href' not in m, (joy, m)   # ilgari — havolaga xom matn / 95 tushardi
+
+
 sinov("admin sinov xaridi — limitga kirmaydi (7 marta), mijozda 6-si — 429", t_admin_limit)
 sinov("admin sinov xaridida ham 24 soatdan eski «ko'rilgan» yozuvlar tozalanadi", t_admin_tozalash)
+sinov("Yandex joyi — yaroqsiz koordinata havolaga tushmaydi, to'g'risi 6 xonagacha", t_joy_chegara)
 
 print('3500 bot: %s' % ('0 xato' if not xato else f'{xato} XATO'))
 sys.exit(1 if xato else 0)

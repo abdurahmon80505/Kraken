@@ -11189,9 +11189,15 @@ def _buyurtma_joy_matn(joy):
     if tur == 'ozim':
         return f'{e} {nom}'
     if tur == 'yandex':
-        if joy.get('lat') is None:
+        # 3500: koordinata bu yerda ham tekshiriladi — sayt zaxirasidan (Apps Script) kelgan yozuvda endpoint tekshiruvi
+        # bo'lmagan: matn / chegaradan tashqari son havolaga tushardi. Yaroqsiz — «joy belgilanmagan» (mijozdan so'raladi)
+        try:
+            lat, lon = float(joy.get('lat')), float(joy.get('lon'))
+        except Exception:
+            lat = lon = None
+        if lat is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return f'{e} {nom} — joy belgilanmagan'
-        havola = f"https://yandex.uz/maps/?pt={joy['lon']},{joy['lat']}&z=17&l=map"
+        havola = f"https://yandex.uz/maps/?pt={round(lon, 6)},{round(lat, 6)}&z=17&l=map"
         return f'{e} {nom} — <a href="{havola}">Yandex xaritada ochish</a>'
     return f"{nom}: {html_escape(joy.get('manzil') or '—')}"
 
