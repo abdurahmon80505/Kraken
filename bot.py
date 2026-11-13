@@ -12843,14 +12843,17 @@ def _buyurtma_zaxira_birlash(j):
             m = _mijoz_ochiq(uid)
             if any(x.get('order') == order for x in m['buyurtma']):
                 continue
+            if any(k != uid and any(x.get('order') == order for x in (mm or {}).get('buyurtma') or [])
+                   for k, mm in _MIJOZ.items()):   # 3499: raqam boshqa mijozda — olinmaydi (chek kaliti raqamdan)
+                continue
             joy = z.get('joy') if isinstance(z.get('joy'), dict) else {}
             tel = z.get('tel') or ''
             if not tel and joy.get('tel_id') in _MIJOZ_TEL_TURLAR:
                 tel = m['tels'].get(joy['tel_id'], '')
+            tovar = [x for x in (z.get('tovar') or []) if isinstance(x, dict)]
             m['buyurtma'].insert(0, {
                 'order': order, 'ts': float(z.get('ts') or time.time()), 'holat': z.get('holat') or 'kutilmoqda',
                 'tovar': tovar, 'jami': _zaxira_jami(tovar), 'tur': z.get('tur') or '',   # 3499: jami — server narxidan
-            tovar = [x for x in (z.get('tovar') or []) if isinstance(x, dict)]
                 'ism': z.get('ism') or '', 'tel': tel, 'til': z.get('til') if z.get('til') in ('uz', 'ru') else '',
                 'nik': str(joy.get('nik') or ''), 'joy': joy, 'manba': 'sayt', 'admin_xabar': 'kutilmoqda',
                 'tolov': 'naqd' if (z.get('tolov') == 'naqd' or joy.get('tolov') == 'naqd') else ''})   # 3420
@@ -12859,9 +12862,6 @@ def _buyurtma_zaxira_birlash(j):
             _BUYURTMA_KORILGAN[(int(uid), order)] = time.time()
             for x in (z.get('tovar') or []):   # bron — /buyurtma dagi kabi (admin — yuqorida o'tkazib yuborilgan)
                 if isinstance(x, dict) and x.get('num') and not _bron_olish(x['num']):
-            if any(k != uid and any(x.get('order') == order for x in (mm or {}).get('buyurtma') or [])
-                   for k, mm in _MIJOZ.items()):   # 3499: raqam boshqa mijozda — olinmaydi (chek kaliti raqamdan)
-                continue
                     _bron_qoy(str(x['num']), int(uid), order)
             yangi += 1
         if yangi:
@@ -13058,27 +13058,29 @@ async def buyurtma_endpoint(request):
         hozir = time.time()
         if (uid, order) in _BUYURTMA_KORILGAN or (uid, order) in _BUYURTMA_JARAYON:
             return web.json_response({'ok': True, 'takror': True, 'ck': _chek_imzo(order)})
+        # 3499: raqam BOSHQA mijozniki — rad (409). Nega: chek kaliti (ck) faqat raqamdan yasaladi va _chek_uid_top birinchi
+        # topilganini oladi — birovning raqami bilan buyurtma bergan odam uning to'lov sahifasi kalitini olib, chek yubora olardi
+        egasi, _ = _chek_uid_top(order)
+        if egasi and egasi != uid:
+            return web.json_response({'error': 'Raqam band'}, status=409)
         oxirgilar = [t for t in _BUYURTMA_SONI.get(uid, []) if hozir - t < 600]
         if len(oxirgilar) >= 5:
             return web.json_response({'error': 'Juda ko\'p'}, status=429)
         _BUYURTMA_SONI[uid] = oxirgilar + [hozir]
         loop = asyncio.get_event_loop()
         kel, kel_ogoh = ({}, False)
-        if savat_kodlar:
-            kel, kel_ogoh = await loop.run_in_executor(None, _savat_kel_narxlar, savat_kodlar)
-            num, qolgan_nums, sonlar, ranglar = await loop.run_in_executor(None, _havola_tenglash, num, qolgan_nums, sonlar, ranglar, kel)
         # BUGUN295: avval yozuv (admin_xabar = 'kutilmoqda'), keyin xabar — 3 urinish; yetmasa fon sikli qayta yuboradi.
         # Ilgari xabar ketmasa (yopiq tovar / tarmoq) — 502 va hech narsa saqlanmasdi (20:2x buyurtmasi shunday yo'qolgan).
+        # 3499: «jarayonda» belgisi tekshiruvdan KEYIN DARHOL (await dan oldin). Ilgari havola narxini kutish paytida (Apps Script,
+        # bir necha soniya) sayt 7 s da qayta yuborgan so'rov ham o'tib ketardi — adminga bir buyurtma ikki marta keldi.
         _BUYURTMA_JARAYON.add((uid, order))
         try:
+            if savat_kodlar:
+                kel, kel_ogoh = await loop.run_in_executor(None, _savat_kel_narxlar, savat_kodlar)
+                num, qolgan_nums, sonlar, ranglar = await loop.run_in_executor(None, _havola_tenglash, num, qolgan_nums, sonlar, ranglar, kel)
             tayyor = await loop.run_in_executor(None, _buyurtma_tayyorla, uid, num, order, ism, tel, joy, kurs, qolgan_nums,
                                                 sonlar, ranglar, kel, kel_ogoh, tel_ogoh)
             if sinov:   # 3490: admin — faqat «🧪 SINOV» xabari (tugmasiz); yozuv / bron / mijoz xabari / Sheets — YO'Q
-        # 3499: raqam BOSHQA mijozniki — rad (409). Nega: chek kaliti (ck) faqat raqamdan yasaladi va _chek_uid_top birinchi
-        # topilganini oladi — birovning raqami bilan buyurtma bergan odam uning to'lov sahifasi kalitini olib, chek yubora olardi
-        egasi, _ = _chek_uid_top(order)
-        if egasi and egasi != uid:
-            return web.json_response({'error': 'Raqam band'}, status=409)
                 _BUYURTMA_KORILGAN[(uid, order)] = hozir
                 yetdi = await loop.run_in_executor(None, _admin_sinov_xabar, _SINOV_BOSH + tayyor['matn'])
                 return web.json_response({'ok': True, 'sinov': True, 'xabar': yetdi})
