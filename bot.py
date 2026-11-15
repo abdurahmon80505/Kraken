@@ -796,12 +796,13 @@ def holati_matni(cond, cycle):
     # used
     return (f"Ishlatilgan{sikl_uz}", f"Б.у{sikl_ru}", "🔸")
 
-def send_msg(chat_id, text, keyboard=None):
+def send_msg(chat_id, text, keyboard=None, id_qaytar=False):
     """Oddiy xabar. parse_mode = HTML (E5).
 
     Ilgari Markdown edi: sovg'a nomida yoki username'da `_` yoki `*` bo'lsa
     Telegram butun xabarni RAD ETARDI va mijozga hech narsa kelmasdi.
     HTML'da faqat `<`, `>`, `&` xavfli — ular html_escape bilan yopiladi.
+    3598: id_qaytar=True — bool o'rniga yuborilgan xabarning message_id si (xato — None).
     """
     payload = {'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
     if keyboard:
@@ -810,11 +811,14 @@ def send_msg(chat_id, text, keyboard=None):
         r = req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
     except Exception as e:
         logger.error(f'sendMessage: {e}')
-        return False
+        return None if id_qaytar else False
     try:
-        return bool(r.json().get('ok'))   # BUGUN233: /konkurs/boshla — xabar mijozga yetdimi (botni boshlamagan — 403)
+        j = r.json()
+        if id_qaytar:
+            return (j.get('result') or {}).get('message_id') if j.get('ok') else None
+        return bool(j.get('ok'))   # BUGUN233: /konkurs/boshla — xabar mijozga yetdimi (botni boshlamagan — 403)
     except Exception:
-        return False
+        return None if id_qaytar else False
 
 
 # /start javobi. E7: animatsiya file_id kodga qotirilgan — u o'chib ketsa
@@ -1148,17 +1152,6 @@ _kirish = {'yozuv': {}}   # uid → {'kanal': 'tech'|'mobile', 'vaqt', 'timer', 
 _kirish_lock = threading.Lock()
 
 
-def _admin_xabar_id(chat, text):
-    """Admin xabari + message_id (keyin tahrirlash uchun). Xato — None (xabar baribir urinib ko'rilgan)."""
-    try:
-        r = req.post(f'{TG_API}/sendMessage', json={'chat_id': chat, 'text': text, 'parse_mode': 'HTML'}, timeout=8)
-        j = r.json()
-        return (j.get('result') or {}).get('message_id') if j.get('ok') else None
-    except Exception as e:
-        logger.error(f'sendMessage (kanal kirish): {e}')
-        return None
-
-
 def _admin_tahrir(chat, msg_id, text):
     try:
         r = req.post(f'{TG_API}/editMessageText', json={'chat_id': int(chat), 'message_id': msg_id, 'text': text,
@@ -1195,7 +1188,8 @@ def _kanal_kirdi(user, kanal, nomi, rejalash):
             send_msg(admin_joy('mijoz'), matn)
         return
     chat = admin_joy('mijoz')
-    msg_id = _admin_xabar_id(chat, f"✅ {nom} {nomi} kanalga kirdi")
+    msg_id = send_msg(chat, f"✅ {nom} {nomi} kanalga kirdi", id_qaytar=True)
+    msg_id = msg_id if isinstance(msg_id, int) and not isinstance(msg_id, bool) else None   # sinov soxtasi boshqa narsa qaytarsa
     yozuv = {'kanal': kanal, 'vaqt': time.time(), 'timer': None, 'msg_id': msg_id, 'chat': chat}
     with _kirish_lock:
         _kirish['yozuv'][user.get('id')] = yozuv
