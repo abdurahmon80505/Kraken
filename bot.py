@@ -549,9 +549,10 @@ def guruh_namunalar(hozir=None):
         ('olx', "saytda «Menga yuborish» bosilganda: OLX matni, keyin kanal e'loni va rasmlar albomi",
          html_escape(olx) if olx else "ELON RAQAMI: #0\n(e'lonlar hali yuklanmagan — haqiqiysida OLX matni shu yerda)", None),
         ('stat', "bot o'zi yubormaydi — shu mavzuda /stat yozsangiz, javob shu yerga", None, None),
-        ('mijoz', "kimdir tech yoki Mobile kanalga kirganda; 1 daqiqadan keyin ikkinchi kanal a'zoligi",
+        ('mijoz', "kimdir tech yoki Mobile kanalga kirganda; 1 daqiqadan keyin ikkinchi kanal a'zoligi (ikkalasiga kirsa — bitta xabar)",
          f"✅ {mijoz} tech kanalga kirdi\n📱 {mijoz} Mobile'da bor\n🔴 <b>{mijoz} Mobile'ga kirmadi</b>\n"
-         f"✅ {mijoz} Mobile kanalga kirdi\n💡 {mijoz} tech kanalda bor\n🔴 <b>{mijoz} tech kanalga o'tmadi</b>", None),
+         f"✅ {mijoz} Mobile kanalga kirdi\n💡 {mijoz} tech kanalda bor\n🔴 <b>{mijoz} tech kanalga o'tmadi</b>\n"
+         f"✅ {mijoz} ikkala kanalga kirdi", None),
         ('kollaj', "e'lon kanalga chiqqanda — postning kollaj ko'rinishi (kanalda oddiy qoladi); tugma bosilsa kanaldagi post shunga almashadi",
          f"🖼 №{n} kollaj ko'rinishi — haqiqiysida rasmlar kollaji + e'lon matni", _NAMUNA_KOLLAJ) if KOLLAJ_YOQIQ else
         ('kollaj', "hozircha o'chiq (3244) — bot yubormaydi", None, None),
@@ -1137,7 +1138,84 @@ def _kirgan_nom(user):
     return f'<a href="{havola}">{html_escape(ism)}</a>'
 
 
+# 3598 (Owner, 2026-11-15): odam IKKALA kanalga kirsa (bir vaqtda yoki ketma-ket) — o'zaro «… da bor» tekshiruvi va xabari
+# yo'q. Birinchi kirishdagi «✅ … tech/Mobile kanalga kirdi» xabari «✅ … ikkala kanalga kirdi» ga TAHRIRLANADI (Owner'da bitta
+# xabar), 1 daqiqalik tekshiruv bekor qilinadi. Tekshiruv allaqachon ketgan bo'lsa (1 daqiqadan keyin kirdi) yoki tahrir o'tmasa —
+# yangi «✅ … ikkala kanalga kirdi» yuboriladi, tekshiruvsiz. Yozuv xotirada, IKKI_KANAL_S (1 sutka) saqlanadi.
+# Faqat bitta kanalga kirgan odam — avvalgidek (3110).
+IKKI_KANAL_S = 24 * 3600
+_kirish = {'yozuv': {}}   # uid → {'kanal': 'tech'|'mobile', 'vaqt', 'timer', 'msg_id', 'chat', 'ikkala': bool}
+_kirish_lock = threading.Lock()
+
+
+def _admin_xabar_id(chat, text):
+    """Admin xabari + message_id (keyin tahrirlash uchun). Xato — None (xabar baribir urinib ko'rilgan)."""
+    try:
+        r = req.post(f'{TG_API}/sendMessage', json={'chat_id': chat, 'text': text, 'parse_mode': 'HTML'}, timeout=8)
+        j = r.json()
+        return (j.get('result') or {}).get('message_id') if j.get('ok') else None
+    except Exception as e:
+        logger.error(f'sendMessage (kanal kirish): {e}')
+        return None
+
+
+def _admin_tahrir(chat, msg_id, text):
+    try:
+        r = req.post(f'{TG_API}/editMessageText', json={'chat_id': int(chat), 'message_id': msg_id, 'text': text,
+                                                         'parse_mode': 'HTML'}, timeout=8)
+        return bool(r.json().get('ok'))
+    except Exception as e:
+        logger.error(f'editMessageText (kanal kirish): {e}')
+        return False
+
+
+def _ikkinchi_kanal_mi(user, kanal):
+    """Bu odam yaqinda BOSHQA kanalga kirganmi. Ha — yozuv «ikkala» deb belgilanadi, taymeri bekor qilinadi, yozuv qaytadi."""
+    hozir = time.time()
+    with _kirish_lock:
+        yoz = _kirish['yozuv']
+        if len(yoz) > 5000:
+            _kirish['yozuv'] = yoz = {k: v for k, v in yoz.items() if hozir - v['vaqt'] < IKKI_KANAL_S}
+        old = yoz.get(user.get('id'))
+        if not old or old['kanal'] == kanal or old.get('ikkala') or hozir - old['vaqt'] >= IKKI_KANAL_S:
+            return None
+        old['ikkala'] = True
+        t = old.get('timer')
+    if t is not None and hasattr(t, 'cancel'):
+        t.cancel()
+    return old
+
+
+def _kanal_kirdi(user, kanal, nomi, rejalash):
+    nom = _kirgan_nom(user)
+    old = _ikkinchi_kanal_mi(user, kanal)
+    if old is not None:
+        matn = f"✅ {nom} ikkala kanalga kirdi"
+        if not (not old.get('tekshirildi') and old.get('msg_id') and _admin_tahrir(old['chat'], old['msg_id'], matn)):
+            send_msg(admin_joy('mijoz'), matn)
+        return
+    chat = admin_joy('mijoz')
+    msg_id = _admin_xabar_id(chat, f"✅ {nom} {nomi} kanalga kirdi")
+    yozuv = {'kanal': kanal, 'vaqt': time.time(), 'timer': None, 'msg_id': msg_id, 'chat': chat}
+    with _kirish_lock:
+        _kirish['yozuv'][user.get('id')] = yozuv
+    yozuv['timer'] = rejalash(user)
+
+
+def _tekshiruv_kerakmi(user):
+    """3598: taymer vaqti keldi — odam ikkinchi kanalga ham kirgan bo'lsa, tekshiruv yo'q. Ha bo'lsa — «tekshirildi» belgisi."""
+    with _kirish_lock:
+        yoz = _kirish['yozuv'].get(user.get('id'))
+        if yoz and yoz.get('ikkala'):
+            return False
+        if yoz:
+            yoz['tekshirildi'] = True
+    return True
+
+
 def _mobile_tekshir(user):
+    if not _tekshiruv_kerakmi(user):
+        return
     azo = _kanal_azomi('@' + YON_KANAL['mobile'][1], user['id'], 'Mobile kanal')
     nom = _kirgan_nom(user)
     if azo is None:
@@ -1151,14 +1229,16 @@ def _mobile_rejalash(user):
     t = threading.Timer(MOBILE_KUTISH_S, _mobile_tekshir, args=(user,))
     t.daemon = True
     t.start()
+    return t
 
 
 def tech_kirdi(user):
-    send_msg(admin_joy('mijoz'), f"✅ {_kirgan_nom(user)} tech kanalga kirdi")
-    _mobile_rejalash(user)
+    _kanal_kirdi(user, 'tech', 'tech', _mobile_rejalash)
 
 
 def _tech_tekshir(user):
+    if not _tekshiruv_kerakmi(user):
+        return
     azo = _kanal_azomi(TECH_KANAL or TECH_SUKUT, user['id'], 'tech kanal')
     nom = _kirgan_nom(user)
     if azo is None:
@@ -1172,11 +1252,11 @@ def _tech_rejalash(user):
     t = threading.Timer(MOBILE_KUTISH_S, _tech_tekshir, args=(user,))
     t.daemon = True
     t.start()
+    return t
 
 
 def mobile_kirdi(user):
-    send_msg(admin_joy('mijoz'), f"✅ {_kirgan_nom(user)} Mobile kanalga kirdi")
-    _tech_rejalash(user)
+    _kanal_kirdi(user, 'mobile', 'Mobile', _tech_rejalash)
 
 
 def kanal_xush_kelibsiz(cm):
