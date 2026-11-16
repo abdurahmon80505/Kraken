@@ -11389,6 +11389,17 @@ def _savat_kel_narxlar(kodlar):
                 continue
             if x >= 0:   # 3295: 0 — 🎁 sovg'a
                 kel[str(n)] = min(x, kel.get(str(n), x))
+        if r.get('tur') == 'tanlov':   # 3637: tanlov — to'plam emas (tarkib majburlanmaydi), n tadan ortig'i — Store narxi
+            try:
+                tn = max(1, int(r.get('n') or 1))
+            except Exception:
+                tn = 1
+            g = [str(x) for x in r.get('nums') or []]
+            kel.setdefault('_tanlov', []).append((g, tn))
+            for n in g:
+                if kel.get(n) == 0:
+                    lim[n] = max(lim.get(n, 0), 1)
+            continue
         soni, qat = {}, {}
         for q in r.get('qatorlar') or []:
             try:
@@ -11418,6 +11429,7 @@ def _havola_tenglash(num, qolgan_nums, sonlar, ranglar, kel):
     narxida qoladi (sovg'a avtomatik tasdiqlanmaydi). Rad etilmaydi (buyurtma hech qachon rad etilmaydi — _buyurtma_tayyorla); farq —
     kel['_farq'], adminga ⚠️. Havola o'qilmasa _tarkib yo'q — eski xulq, _sovga_holat ogohlantirishi zaxira.
     Qaytaradi (num, qolgan_nums, sonlar, ranglar). Fon oqimida (elon_cache_get)."""
+    _tanlov_cheklash([str(num)] + [str(n) for n in qolgan_nums], sonlar, ranglar, kel)
     tarkib = (kel or {}).get('_tarkib')
     if not tarkib:
         return num, list(qolgan_nums), sonlar, ranglar
@@ -11443,8 +11455,80 @@ def _havola_tenglash(num, qolgan_nums, sonlar, ranglar, kel):
             farq.append(f"№{n}: rang")
     farq += [f"№{n} havolada yo'q — Store narxida" for n in nums if n not in tarkib]
     if farq:
-        kel['_farq'] = farq
+        kel['_farq'] = list(kel.get('_farq') or []) + farq
     return num, list(qolgan_nums) + [n for n in tarkib if n not in nums], son2, rang2
+
+
+def _tanlov_cheklash(nums, sonlar, ranglar, kel):
+    """3637: tanlov havolasi — kelishilgan narx (🎁 ham) faqat birinchi n donaga (savat tartibida). Ortig'i — Store narxida, adminga
+    ⚠️ (rad etilmaydi). Nega: mijoz sayt chegarasini aylanib o'tsa ham (eski sayt / qo'lda so'rov) n tadan ko'p arzon olmasin."""
+    for guruh, tn in (kel or {}).get('_tanlov') or []:
+        qoldi = tn
+        for n in nums:
+            if n not in guruh or n not in kel:
+                continue
+            d = _buyurtma_soni(elon_cache_get(n)[0] or {'num': n}, sonlar, ranglar)
+            if d <= qoldi:
+                qoldi -= d
+                continue
+            kel.pop(n, None)
+            kel['_farq'] = list(kel.get('_farq') or []) + [f"№{n}: tanlovdan ortiq ({tn} ta) — Store narxida"]
+
+
+# ══ 3637: vaucher — sayt faqat KODni yuboradi ('konkurs' yoki havola kodi); summa / tur / muddat / egasi — Apps Script'dan
+# (vaucherIshlat, API_KEY). Chegirma = min(summa, mos tovarlar narxi × dona); tur 'telefon' — faqat smartfonlar.
+_VAUCHER_SABAB = {'muddat': "muddati o'tgan", 'boshqa': "boshqa odamga bog'langan", 'ishlatilgan': 'allaqachon ishlatilgan',
+                  'yoq': 'topilmadi', 'mos': "mos tovar yo'q"}
+
+
+def _vkod_qoy(uid, order, joy, num, qolgan_nums, sonlar, ranglar, kel):
+    """Fon oqimida. Qaytaradi yangi kel: '_vkod' {kod, summa, chegirma, tur} yoki '_vkod_ogoh' (sabab). Takror chaqirish xavfsiz
+    (Apps Script bir buyurtmaga bir marta yozadi). Mos tovar umuman yo'q bo'lsa Apps Script chaqirilmaydi — vaucher yonmaydi."""
+    kod = str((joy or {}).get('vaucher') or '')
+    if not kod:
+        return kel
+    kel = dict(kel or {})
+    asos = {'telefon': 0.0, 'hammasi': 0.0}
+    for n in [str(num)] + [str(x) for x in qolgan_nums]:
+        e, ms = elon_cache_get(n)
+        if not e:
+            continue
+        narx, _ = _kel_narx(e, kel)
+        if not narx:
+            continue
+        s = narx * _buyurtma_soni(e, sonlar, ranglar)
+        asos['hammasi'] += s
+        if elon_turi(e, ms or {}) == 'phone':
+            asos['telefon'] += s
+    if not asos['hammasi'] or (kod == 'konkurs' and not asos['telefon']):
+        kel['_vkod_ogoh'] = 'mos'
+        return kel
+    if kod == 'konkurs' and _vaucher_ishlatganmi(uid):   # KONKURS10 (3638) bilan — konkurs vaucheri bir kishiga bir marta
+        kel['_vkod_ogoh'] = 'ishlatilgan'
+        return kel
+    r = _kk_sheet('vaucherIshlat', timeout=20, user_id=str(uid), kod=kod, order=order)
+    if not (r and r.get('ok')):
+        kel['_vkod_ogoh'] = (r or {}).get('msg') or "o'qilmadi"
+        return kel
+    try:
+        summa = max(0.0, min(500.0, float(r.get('summa') or 0)))
+    except Exception:
+        summa = 0.0
+    tur = 'hammasi' if r.get('tur') == 'hammasi' else 'telefon'
+    ch = round(min(summa, asos[tur]), 2)
+    if ch > 0:
+        kel['_vkod'] = {'kod': kod, 'summa': summa, 'chegirma': ch, 'tur': tur}
+    else:
+        kel['_vkod_ogoh'] = 'mos'
+    return kel
+
+
+def _vaucher_ch(kel):
+    """3637: vaucher chegirmasi $ (yo'q — 0)."""
+    try:
+        return float(((kel or {}).get('_vkod') or {}).get('chegirma') or 0)
+    except Exception:
+        return 0.0
 
 
 def _kel_narx(elon, kel):
@@ -11480,7 +11564,8 @@ def _vaucher_ishlatganmi(uid):
     if str(uid) in _VAUCHER_ISHLATGAN:
         return True
     with _MIJOZ_LOCK:
-        return any(b.get('vaucher') and b.get('holat') != 'bekor' for b in (_mijoz_ol(uid).get('buyurtma') or []))
+        return any((b.get('vaucher') or b.get('vch_kod') == 'konkurs') and b.get('holat') != 'bekor'   # 3637: konkurs vaucheri ham
+                   for b in (_mijoz_ol(uid).get('buyurtma') or []))
 
 
 def _vaucher_qoy(uid, num, qolgan_nums, sonlar, ranglar, kel):
@@ -11526,6 +11611,9 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     _vch_c = float((kel or {}).get('_vaucher') or 0)   # 3638: vaucher jami — har smartfonga −10$
     sovga, tasdiq = _sovga_holat([e for e, _ in qatorlar], sonlar, ranglar, kel, ogoh)
     usd = None if any(n is None for n in narxlar) else sum(n * d for n, d in zip(narxlar, donalar))
+    vch = _vaucher_ch(kel)   # 3637
+    if usd is not None and vch:
+        usd = round(max(0.0, usd - vch), 2)
     narx = f'{usd:g}$' if usd is not None else '—'
     # so'm — 1 000 gacha yaxlit (to'lov sahifasidagi summa bilan bir xil bo'lsin: mijoz ko'rgan = admin ko'rgan)
     som = (f"{int(round(usd * kurs / 1000.0)) * 1000:,}".replace(',', ' ') + " so'm") if (usd is not None and kurs) else '—'
@@ -11568,6 +11656,10 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
             + (f"🎟 <b>Konkurs vaucheri −{_vch_c:g}$</b>\n" if _vch_c > 0 else '')
             + (f"🎟 <b>Admin chegirmasi: −{round(cheg_jami - _vch_c, 2):g}$</b> (kelishilgan narx, havoladan)\n"
                if cheg_jami - _vch_c > 0.001 else '')
+            + (f"🎟 <b>Vaucher −{vch:g}$</b>" + (' (konkurs)' if (kel or {})['_vkod'].get('kod') == 'konkurs' else '') + "\n"
+               if vch else '')
+            + (f"⚠️ Vaucher qo'llanmadi — {html_escape(_VAUCHER_SABAB.get(kel['_vkod_ogoh'], kel['_vkod_ogoh']))}, "
+               "narx vauchersiz.\n" if (kel or {}).get('_vkod_ogoh') else '')
             + ("⚠️ Mijoz ulashilgan havoladan keldi, lekin havola o'qilmadi / muddati o'tgan — narx Store'dagicha.\n"
                if kel_ogoh else '')
             + (f"⚠️ Mijoz savati havoladan farq qildi — havoladagicha yozildi: {html_escape('; '.join((kel or {}).get('_farq') or ()))}\n"
@@ -12221,6 +12313,8 @@ def _chek_tovar_qator(b):
         qat += f"{i}. {html_escape(x.get('nom') or '—')}{f' × {soni}' if soni > 1 else ''}{narx}\n"
     if b.get('yetkazish'):   # 3312
         qat += f"🚚 Yetkazish / Доставка · {b['yetkazish']:g}$\n"
+    if b.get('vch'):   # 3637
+        qat += f"🎟 Vaucher / Ваучер −{b['vch']:g}$\n"
     return qat
 
 
@@ -12962,6 +13056,8 @@ def _buyurtma_tayyor_yozuvdan(uid, b):
     if joy.get('savat'):
         kel, kel_ogoh = _savat_kel_narxlar([str(k) for k in joy['savat']][:3])
         num, qolgan, sonlar, ranglar = _havola_tenglash(num, qolgan, sonlar, ranglar, kel)
+    if joy.get('vaucher'):   # 3637: sayt zaxirasidan / qayta yasash — vaucher ham (Apps Script shu buyurtmaga bir marta yozadi)
+        kel = _vkod_qoy(uid, b.get('order'), joy, num, qolgan, sonlar, ranglar, kel)
     try:
         kurs = int(float(joy.get('kurs') or 0))
     except Exception:
@@ -13208,6 +13304,9 @@ async def buyurtma_endpoint(request):
                 savat_kodlar.append(k)
         if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
             return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
+        vkod = str(data.get('vaucher', '') or '').strip().lower()   # 3637: faqat kod — summa / egasi Apps Script'dan
+        if re.fullmatch(r'[a-z0-9]{6,12}', vkod) and vkod.upper() != VAUCHER_KOD:   # KONKURS10 — 3638 yo'li
+            joy['vaucher'] = vkod
         if not (1 <= len(ism) <= 60):
             return web.json_response({'error': 'Maydon notogri'}, status=400)
         if not tel_ogoh and (len(re.sub(r'\D', '', tel)) < 9 or len(tel) > 25):
@@ -13246,6 +13345,8 @@ async def buyurtma_endpoint(request):
                 num, qolgan_nums, sonlar, ranglar = await loop.run_in_executor(None, _havola_tenglash, num, qolgan_nums, sonlar, ranglar, kel)
             if vaucher == VAUCHER_KOD:   # 3638: konkurs vaucheri — bot o'zi tekshiradi (muddat, bir marta, smartfon)
                 kel = await loop.run_in_executor(None, _vaucher_qoy, uid, num, qolgan_nums, sonlar, ranglar, kel)
+            elif joy.get('vaucher'):   # 3637: shaxsiy vaucher kodi (havola / konkurs ishtirokchisi) — Apps Script'dan
+                kel = await loop.run_in_executor(None, _vkod_qoy, uid, order, joy, num, qolgan_nums, sonlar, ranglar, kel)
             tayyor = await loop.run_in_executor(None, _buyurtma_tayyorla, uid, num, order, ism, tel, joy, kurs, qolgan_nums,
                                                 sonlar, ranglar, kel, kel_ogoh, tel_ogoh)
             if sinov:   # 3490: admin — faqat «🧪 SINOV» xabari (tugmasiz); yozuv / bron / mijoz xabari / Sheets — YO'Q
@@ -13593,6 +13694,9 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
         _mijoz_tel_qosh(uid, tel, 'sotib')
         tovar = _mijoz_tovarlar(num, qolgan_nums, sonlar, ranglar, kel)
         narxlar = [None if x['narx'] is None else x['narx'] * x['soni'] for x in tovar]
+        vch = _vaucher_ch(kel)   # 3637
+        if vch and narxlar:
+            narxlar.append(-min(vch, sum(n for n in narxlar if n is not None)))
         with _MIJOZ_LOCK:
             m = _mijoz_ochiq(uid)
             bor = next((b for b in m['buyurtma'] if b.get('order') == order), None)
@@ -13605,10 +13709,11 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                     _mijoz_saqlash()
                 # 3301: zaxira — mijoz yuborgan tarkib edi · 3499: sayt zaxirasidan kelgan yozuv (manba 'sayt') — tarkib va jami
                 # server hisobidan bir marta (zaxiradagi jami / havola narxi mijoz tomonidan kelgan bo'lishi mumkin edi)
-                if (((kel or {}).get('_farq') or (bor.get('manba') == 'sayt' and not bor.get('jami_server')))
+                if (((kel or {}).get('_farq') or (bor.get('manba') == 'sayt' and not bor.get('jami_server'))
+                     or (vch and not bor.get('vch')))
                         and bor.get('holat') == 'kutilmoqda' and not bor.get('sovga')):
                     bor.update(tovar=tovar, jami=None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
-                               jami_server=1)
+                               jami_server=1, **({'vch': vch, 'vch_kod': kel['_vkod']['kod']} if vch else {}))
                     _mijoz_saqlash()
                     _mijoz_sync_belgila('b', uid, order)
                 return
@@ -13620,7 +13725,8 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                 'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else '',
                 'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}), 'admin_xabar': 'kutilmoqda', **({'sinov': True} if sinov else {}),
                 **({'vaucher': 1} if (kel or {}).get('_vaucher') else {}),   # 3638
-                '_xabar': xabar, 'tolov': 'naqd' if (joy or {}).get('tolov') == 'naqd' else ''})   # 3420
+                '_xabar': xabar, 'tolov': 'naqd' if (joy or {}).get('tolov') == 'naqd' else '',   # 3420
+                **({'vch': vch, 'vch_kod': kel['_vkod']['kod']} if vch else {})})   # 3637: shaxsiy vaucher chegirmasi $ (jami ayirilgan)
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _mijoz_saqlash()
             _mijoz_sync_belgila('b', uid, order)
@@ -14583,7 +14689,8 @@ def _tahrir_qoy(uid, order, nusxa, tovar, yetk=None):
                 b[k] = v
             else:
                 b.pop(k, None)
-        b['jami'] = round(sum(x['narx'] * x['soni'] for x in tovar) + y, 2)
+        t = sum(x['narx'] * x['soni'] for x in tovar)
+        b['jami'] = round(t - min(float(b.get('vch') or 0), t) + y, 2)   # 3637: vaucher tahrirdan keyin ham ayiriladi
         if tovar and b['jami'] == 0:   # 3633: admin narxni 0 qildi — sovg'a (🎁 sarlavha, mijozga to'lov tugmasiz chek)
             b['sovga'] = True
         elif b.get('sovga') and b['jami'] > 0:
@@ -14635,6 +14742,8 @@ def _tahrir_bolak(b):
         q += [('🚚 ', False, ''), ('Yetkazish puli', True, ''), (f": {b['yetkazish']:g}$\n", False, '')]
     if b.get('jonatildi'):
         q += [("📦 Allaqachon jo'natilgan", True, ''), ('\n', False, '')]
+    if b.get('vch'):   # 3637
+        q += [(f"🎟 Vaucher −{float(b['vch']):g}$", True, ''), ('\n', False, '')]
     _, som, kurs = _chek_summa(b)
     q.append((f"💵 Jami {b.get('jami') or 0:g}$" + (f" ≈ {som:,} so'm (kurs {kurs:,})".replace(',', ' ') if som else ''), False, ''))
     if cheg_jami > 0:
