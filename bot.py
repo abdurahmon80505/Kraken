@@ -11484,7 +11484,7 @@ def _vaucher_ishlatganmi(uid):
 
 
 def _vaucher_qoy(uid, num, qolgan_nums, sonlar, ranglar, kel):
-    """Shartlar to'g'ri bo'lsa — birinchi smartfonga (1 dona, kelishilgan narxsiz) kel[num] = narx − 10$; kel qaytadi."""
+    """Shartlar to'g'ri bo'lsa — har bir smartfonga (kelishilgan narxsiz) kel[num] = narx − 10$; kel qaytadi."""
     kel = dict(kel or {})
     try:
         if time.time() >= VAUCHER_TUGASH or _vaucher_ishlatganmi(uid):
@@ -11497,11 +11497,11 @@ def _vaucher_qoy(uid, num, qolgan_nums, sonlar, ranglar, kel):
             if not e or not str(e.get('specId') or '').strip() or elon_turi(e, models) != 'phone':
                 continue
             asl = _narx_son(e)
-            if asl is None or asl <= VAUCHER_USD or _buyurtma_soni(e, sonlar, ranglar) != 1:
+            if asl is None or asl <= VAUCHER_USD:
                 continue
-            kel[n] = round(asl - VAUCHER_USD, 2)
-            kel['_vaucher'] = n
-            return kel
+            kel[n] = round(asl - VAUCHER_USD, 2)   # Owner 2026-11-16 19:50: har bir smartfonga −10$ (har donaga)
+            kel['_vaucher'] = round((kel.get('_vaucher') or 0) + VAUCHER_USD * max(1, _buyurtma_soni(e, sonlar, ranglar)), 2)
+        return kel
     except Exception as ex:
         logger.error(f'vaucher_qoy: {ex}')
     return kel
@@ -11523,7 +11523,7 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     narxlar = [n for n, _ in kn]
     cheg = [c for _, c in kn]
     cheg_jami = round(sum(c * d for c, d in zip(cheg, donalar)), 2)
-    _vch_c = VAUCHER_USD if (kel or {}).get('_vaucher') else 0   # 3638: vaucher alohida qatorda
+    _vch_c = float((kel or {}).get('_vaucher') or 0)   # 3638: vaucher jami — har smartfonga −10$
     sovga, tasdiq = _sovga_holat([e for e, _ in qatorlar], sonlar, ranglar, kel, ogoh)
     usd = None if any(n is None for n in narxlar) else sum(n * d for n, d in zip(narxlar, donalar))
     narx = f'{usd:g}$' if usd is not None else '—'
@@ -11565,7 +11565,7 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     return (("🎁 <b>Sovg'a — yangi buyurtma</b>" if sovga else "🛒 <b>Yangi buyurtma</b>") + f" №{html_escape(order)}\n\n"
             + tovar +
             ("💵 🎁 <b>Sovg'a — 0$</b>\n" if sovga else f"💵 {jami_s}{html_escape(narx)} ≈ {html_escape(som)} (kurs {kurs_s})\n")
-            + ("🎟 <b>Konkurs vaucheri −10$</b>\n" if (kel or {}).get('_vaucher') else '')
+            + (f"🎟 <b>Konkurs vaucheri −{_vch_c:g}$</b>\n" if _vch_c > 0 else '')
             + (f"🎟 <b>Admin chegirmasi: −{round(cheg_jami - _vch_c, 2):g}$</b> (kelishilgan narx, havoladan)\n"
                if cheg_jami - _vch_c > 0.001 else '')
             + ("⚠️ Mijoz ulashilgan havoladan keldi, lekin havola o'qilmadi / muddati o'tgan — narx Store'dagicha.\n"
