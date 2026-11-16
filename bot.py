@@ -11251,6 +11251,32 @@ async def bron_bekor_tugma(chat_id, cq_data):
 _BUYURTMA_TUR = {'yandex': ('🚕', 'Yandex Go'), 'ozim': ('🏪', "O'zim olib ketaman"), 'emu': ('📮', 'EMU'), 'bts': ('📦', 'BTS')}
 
 
+def _yandex_havola(joy):
+    """Yandex Go koordinatasi → Yandex xarita havolasi; yaroqsiz / yo'q — None (3500 tekshiruvi)."""
+    try:
+        lat, lon = float(joy.get('lat')), float(joy.get('lon'))
+    except Exception:
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return f"https://yandex.uz/maps/?pt={round(lon, 6)},{round(lat, 6)}&z=17&l=map"
+
+
+def _buyurtma_joy_tugma(joy):
+    """3633: manzil tugmalari (Owner 2026-11-16: «mijozning adresini beradigan joy yo'q … Yandex mapni ochish chiqsin»).
+    Yandex Go — «🗺 Yandex xaritada ochish» (havola emas, tugma) + «📋 Havolani nusxalash»; EMU / BTS — «📋 Filialni nusxalash»
+    (copy_text — bir bosishda nusxa). Yo'q bo'lsa — [] ."""
+    joy = joy or {}
+    tur = joy.get('tur')
+    if tur == 'yandex':
+        h = _yandex_havola(joy)
+        return [[{'text': '🗺 Yandex xaritada ochish', 'url': h}], [{'text': '📋 Havolani nusxalash', 'copy_text': {'text': h}}]] if h else []
+    if tur in ('emu', 'bts'):
+        m = str(joy.get('manzil') or '').strip()[:256]
+        return [[{'text': f'📋 {_BUYURTMA_TUR[tur][1]} filialini nusxalash', 'copy_text': {'text': m}}]] if m else []
+    return []
+
+
 def _buyurtma_joy_matn(joy):
     """📍 qatori. Yandex Go — Yandex xarita havolasi (koordinatadan bot o'zi yasaydi); EMU / BTS — mijoz yozgan filial matni
     («📍 EMU: Samarqand, Qo'shko'pir filiali»; BUGUN207 — oldin Yandex havolasi edi); 3316: o'zi olib ketadi — «🏪 O'zim olib ketaman».
@@ -11265,15 +11291,11 @@ def _buyurtma_joy_matn(joy):
     if tur == 'yandex':
         # 3500: koordinata bu yerda ham tekshiriladi — sayt zaxirasidan (Apps Script) kelgan yozuvda endpoint tekshiruvi
         # bo'lmagan: matn / chegaradan tashqari son havolaga tushardi. Yaroqsiz — «joy belgilanmagan» (mijozdan so'raladi)
-        try:
-            lat, lon = float(joy.get('lat')), float(joy.get('lon'))
-        except Exception:
-            lat = lon = None
-        if lat is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        havola = _yandex_havola(joy)
+        if not havola:
             return f'{e} {nom} — joy belgilanmagan'
-        havola = f"https://yandex.uz/maps/?pt={round(lon, 6)},{round(lat, 6)}&z=17&l=map"
         return f'{e} {nom} — <a href="{havola}">Yandex xaritada ochish</a>'
-    return f"{nom}: {html_escape(joy.get('manzil') or '—')}"
+    return f"{nom}: <code>{html_escape(joy.get('manzil') or '—')}</code>"   # 3633: bosilsa nusxa
 
 
 def elon_ranglar(elon):
@@ -11718,6 +11740,8 @@ def _buyurtma_klava(uid, order, holat, bron_nums, b=None):
                            'callback_data': f'bh:yolda:{uid}:{order}'}])
     else:   # bekor — tugma emas, holat
         qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
+    if holat in ('kutilmoqda', 'tolandi', 'yolda'):   # 3633: manzil tugmalari — yetkazilguncha
+        qator[1:1] = _buyurtma_joy_tugma((b or {}).get('joy'))
     if holat == 'kutilmoqda':
         qator += [[{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
                     'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]
@@ -12782,7 +12806,7 @@ def _buyurtma_tayyorla(uid, num, order, ism, tel, joy, kurs, qolgan_nums=(), son
         qolgan.append((e, ms.get(str(e.get('specId', '') or ''), {})))
         bron.append(str(n))
     matn = _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan, sonlar, ranglar, kel, kel_ogoh, ogoh, tel_ogoh)
-    t = {'matn': matn, 'bron': bron, 'b': {'tur': joy.get('tur') or '', 'tolov': joy.get('tolov') or ''}}   # 3420: tugmalar uchun
+    t = {'matn': matn, 'bron': bron, 'b': {'tur': joy.get('tur') or '', 'tolov': joy.get('tolov') or '', 'joy': dict(joy)}}   # 3420: tugmalar uchun
     sovga, tasdiq = _sovga_holat([elon] + [e for e, _ in qolgan], sonlar, ranglar, kel, ogoh)
     if sovga:   # 3295: yozuvga _buyurtma_sovga_qoy o'tkazadi
         t.update(sovga=True, holat='tolandi' if tasdiq else 'kutilmoqda',
@@ -12830,6 +12854,7 @@ def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
                                            'link_preview_options': {'is_disabled': True}}, timeout=15, urinish=2)
         if natija == 'xato':   # HTML buzuq bo'lsa ham xabar yetsin
             oddiy = _html.unescape(re.sub(r'<[^>]+>', '', matn))
+            klava = {'inline_keyboard': [r for r in klava['inline_keyboard'] if not any('copy_text' in t for t in r)]}   # 3633: zaxira
             natija, j = _kk_tg('sendMessage', {'chat_id': ADMIN_ID, 'text': oddiy, 'reply_markup': klava}, timeout=15, urinish=2)
         if natija == 'yuborildi':
             _buyurtma_xabar_belgila(uid, order, _kk_vaqt(time.time())[-5:])
@@ -14511,6 +14536,10 @@ def _tahrir_qoy(uid, order, nusxa, tovar, yetk=None):
             else:
                 b.pop(k, None)
         b['jami'] = round(sum(x['narx'] * x['soni'] for x in tovar) + y, 2)
+        if tovar and b['jami'] == 0:   # 3633: admin narxni 0 qildi — sovg'a (🎁 sarlavha, mijozga to'lov tugmasiz chek)
+            b['sovga'] = True
+        elif b.get('sovga') and b['jami'] > 0:
+            b.pop('sovga', None)
         b['tahrir_ts'] = time.time()
         _mijoz_saqlash()
         _mijoz_sync_belgila('b', uid, order)
@@ -14540,6 +14569,8 @@ def _tahrir_bolak(b):
     tovar = b.get('tovar') or []
     q = [("✏️ ", False, ''), ("O'zgartirildi", True, ''), (f" · {_kk_vaqt(b.get('tahrir_ts') or time.time())[-5:]} (admin)\n", False, ''),
          (f"🧺 {len(tovar)} ta tovar:", True, ''), ('\n', False, '')]
+    if b.get('sovga'):   # 3633: admin narxni 0 qildi
+        q[3:3] = [("🎁 Sovg'a — 0$", True, ''), ('\n', False, '')]
     cheg_jami = 0
     for i, x in enumerate(tovar, 1):
         n, d, c = x.get('narx') or 0, x.get('soni') or 1, x.get('chegirma') or 0
@@ -14636,7 +14667,8 @@ async def _tahrir_xabarlar(uid, order, b):
         return 'tahrir'
     joy = dict(b.get('joy') or {})
     joy['tur'] = b.get('tur') or joy.get('tur') or ''
-    matn = (f"✏️ <b>Buyurtma o'zgartirildi</b> №{html_escape(order)}\n\n" + _bolak_html(_tahrir_bolak(b)) + "\n\n"
+    matn = ((f"🎁 <b>Sovg'a — buyurtma o'zgartirildi</b>" if b.get('sovga') else "✏️ <b>Buyurtma o'zgartirildi</b>")
+            + f" №{html_escape(order)}\n\n" +_bolak_html(_tahrir_bolak(b)) + "\n\n"
             f"👤 {html_escape(b.get('ism') or '—')}\n📞 {html_escape(b.get('tel') or '—')}\n📍 {_buyurtma_joy_matn(joy)}\n\n"
             + _tahrir_holat_html(b) + f"\n🕒 Buyurtma: {_kk_vaqt(b.get('ts') or time.time())}")
     natija, j = await blok(_kk_tg, 'sendMessage', {'chat_id': ADMIN_ID, 'text': matn, 'parse_mode': 'HTML', 'reply_markup': klava,
