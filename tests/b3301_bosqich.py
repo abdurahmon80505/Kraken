@@ -222,8 +222,8 @@ sinov("yetkazildi (3420): «✅ Yakunlandi — baho ixtiyoriy» (holat) + «🔕
       [(t['text'], t['callback_data']) for t in tugma(kl) if 'callback_data' in t]
       == [('✅ Yakunlandi — baho ixtiyoriy', 'bh:-'), ("🔕 Baho so'ramay yopish", f'bh:yopildi:{MIJOZ}:TB00')], repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'yopildi', b2)
-sinov("yopildi (3420): «Mijozga yozish» + «✅ Yakunlandi» (holat, bosqich yo'q), bron yo'q",
-      len(tugma(kl)) == 2 and 'url' in tugma(kl)[0] and tugma(kl)[1] == {'text': '✅ Yakunlandi', 'callback_data': 'bh:-'}, repr(kl))
+sinov("yopildi (3420): «✅ Yakunlandi» (holat, bosqich yo'q) + «Mijozga yozish» eng pastda (3641), bron yo'q",
+      len(tugma(kl)) == 2 and 'url' in tugma(kl)[1] and tugma(kl)[0] == {'text': '✅ Yakunlandi', 'callback_data': 'bh:-'}, repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'bekor', b2)
 sinov('bekor: holat 📍 (bosqich tugmasi yo\'q)', not holat_cb(kl) or holat_cb(kl) == ['bh:-'], repr(kl))
 sinov('✔️ tugma yo\'q (bajarilgani — matnda)', not any('✔️' in t['text'] for h in bot._HOLAT_TARTIB for t in tugma(bot._buyurtma_klava(MIJOZ, 'TB00', h, b2))))

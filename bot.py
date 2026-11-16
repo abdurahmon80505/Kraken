@@ -11643,8 +11643,9 @@ def _buyurtma_matn(uid, elon, model, order, ism, tel, joy, kurs, qolgan=(), sonl
     if tasdiq:   # 3295: «\n\n✅ To'landi» — _buyurtma_holat_matn keyingi bosqichlarni shu qatorga ulaydi
         holat_s = f"✅ <b>To'landi</b> · {_kk_vaqt(time.time())[-5:]} — 🎁 sovg'a, to'lov yo'q\n"
     elif sovga:
-        holat_s = ("⏳ <b>To'lov kutilmoqda</b> — 🎁 sovg'a, lekin tekshiring (e'lon yopiq yoki dona havoladagidan ko'p). "
-                   "To'g'ri bo'lsa «✅ To'lov keldi» ni bosing.\n")
+        # 3641: sovg'ada «To'lov» so'zi / tugmasi yo'q (Owner 2026-11-16: «0$lik zakazga … to'lov kutilyapti chiqyapti»)
+        holat_s = ("⏳ <b>Sovg'a — tekshiring</b> (e'lon yopiq yoki dona havoladagidan ko'p). "
+                   "To'g'ri bo'lsa «✅ Sovg'a — tasdiqlash» ni bosing.\n")
     elif (joy or {}).get('tolov') == 'naqd':   # 3420: naqd — chek so'ralmaydi, pul topshirishda olinadi
         holat_s = "⏳ <b>To'lov kutilmoqda</b> — 💵 naqd: topshirishda olinadi, chek so'ralmaydi.\n"
     else:
@@ -11752,7 +11753,7 @@ _HOLAT_MIJOZ_TUGMA = {   # 3288: xabar tagidagi tugma — sayt «Buyurtmalarim»
 # «⏳ To'lov kutilmoqda — chek hali kelmagan…» qolib ketardi). Bosqichlar ketma-ket: «✅ To'landi · 20:31 → 🚚 Yo'lda · 21:05».
 _HOLAT_QATOR = {'tolandi': ('✅', "To'landi"), 'yolda': ('🚚', "Yo'lda"), 'yetkazildi': ('📦', 'Yetkazildi'),
                 'yopildi': ('✅', 'Yakunlandi')}   # 3420: «🔒 Yopildi» o'rniga (eski xabarlarda qoladi — RE taniydi)
-_HOLAT_QATOR_RE = re.compile("\n\n(?:⏳ To'lov kutilmoqda|✅ To'landi|🚚 Yo'lda|📦 Yetkazildi|🔒 Yopildi|✅ Yakunlandi"
+_HOLAT_QATOR_RE = re.compile("\n\n(?:⏳ To'lov kutilmoqda|⏳ Sovg'a|✅ To'landi|🚚 Yo'lda|📦 Yetkazildi|🔒 Yopildi|✅ Yakunlandi"
                              "|🏪 Tayyor|🤝 Topshirildi)")
 _BUYURTMA_VAQT_RE = re.compile(r'🕒 (?:Buyurtma: )?(\d\d\.\d\d\.\d{4} \d\d:\d\d)')
 
@@ -11849,13 +11850,17 @@ async def _admin_xb_tahrir(chat_id, message_id, caption, yangi_m, klava, uid, or
 
 
 def _buyurtma_klava(uid, order, holat, bron_nums, b=None):
-    """Adminga boradigan buyurtma xabarining tugmalari: Mijozga yozish · KEYINGI bosqich · bronni bekor qilish.
+    """Adminga boradigan buyurtma xabarining tugmalari: KEYINGI bosqich · bronni bekor qilish · manzil · Mijozga yozish (3641).
     3301: faqat keyingi bosqich tugmasi (bajarilgani — xabar matnidagi holat qatorida, BUGUN295). NEGA: Owner 2026-10-31 — «hamma tugma
     birdan turibdi, bosilgani ham bilinishi qiyin». Hozirgi qoida saqlangan: to'lovni kutmay ham jo'natish mumkin — «kutilmoqda» da
     ikkinchi tugma. Bosilgan bosqich orqaga qaytmaydi (_buyurtma_holat_qoy).
     3304: «🔓 Bronni bekor qilish» — FAQAT «⏳ To'lov kutilmoqda» da. NEGA: Owner 2026-10-31 — «to'lov keldidan keyin chiqmasin»:
     to'langan (yoki to'lovni kutmay jo'natilgan) buyurtmada bron ochilsa, e'lon yana hammaga sotuvga chiqib qoladi."""
-    qator = [[{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}]]
+    # 3641: tartib doim bir xil — KEYINGI qadam(lar) tepada → (kutilmoqda) bron → manzil → «Mijozga yozish» ENG PASTDA.
+    # NEGA: Owner 2026-11-16 — «adminga bosadigan tugmalarni normalniy ketma-ketlikda qilgin, vapshe kasha hammasi».
+    # Sovg'a (0$) — «To'lov keldi» / «To'lovni kutmay» yo'q: tasdiqlanmagan sovg'ada (e'lon yopiq / dona ko'p) — «✅ Sovg'a — tasdiqlash».
+    sovga = bool((b or {}).get('sovga'))
+    qator = []
     if holat in ('yetkazildi', 'yopildi'):
         # 3420: buyurtma YAKUNLANGAN — «Yopish» majburiy qadam emas (Owner 2026-11-10: «zakaz oxiriga yetmagandek, bosish shartdek
         # turibdi»). Baho — ixtiyoriy; xohlasa «Baho so'ramay yopish» (bot 3 kundan keyin baho so'ramaydi).
@@ -11868,17 +11873,21 @@ def _buyurtma_klava(uid, order, holat, bron_nums, b=None):
         keyingi = _HOLAT_TARTIB[i + 1:i + 2]
         if holat == 'kutilmoqda' and _naqdmi(b):   # 3420: naqd — to'lov topshirishda; «To'lov keldi» bosqichi yo'q
             keyingi = ('yolda',)
+        if holat == 'kutilmoqda' and sovga:   # 3641
+            qator.append([{'text': "✅ Sovg'a — tasdiqlash", 'callback_data': f'bh:tolandi:{uid}:{order}'}])
+            keyingi = ()
         qator += [[{'text': '{} {}'.format(*_holat_tugma(b, h)), 'callback_data': f'bh:{h}:{uid}:{order}'}] for h in keyingi]
-        if holat == 'kutilmoqda' and not _naqdmi(b):
+        if holat == 'kutilmoqda' and not _naqdmi(b) and not sovga:
             qator.append([{'text': "⏭ To'lovni kutmay — " + ('Tayyor' if _ozimmi(b) else "Yo'lda"),
                            'callback_data': f'bh:yolda:{uid}:{order}'}])
     else:   # bekor — tugma emas, holat
         qator.append([{'text': '📍 ' + _HOLAT_ADMIN_NOM.get(holat, holat), 'callback_data': 'bh:-'}])
-    if holat in ('kutilmoqda', 'tolandi', 'yolda'):   # 3633: manzil tugmalari — yetkazilguncha
-        qator[1:1] = _buyurtma_joy_tugma((b or {}).get('joy'))
     if holat == 'kutilmoqda':
         qator += [[{'text': '🔓 Bronni bekor qilish' + (f' №{n}' if len(bron_nums) > 1 else ''),
                     'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]
+    if holat in ('kutilmoqda', 'tolandi', 'yolda'):   # 3633: manzil tugmalari — yetkazilguncha
+        qator += _buyurtma_joy_tugma((b or {}).get('joy'))
+    qator.append([{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}])
     return {'inline_keyboard': qator}
 
 
@@ -12945,6 +12954,7 @@ def _buyurtma_tayyorla(uid, num, order, ism, tel, joy, kurs, qolgan_nums=(), son
     t = {'matn': matn, 'bron': bron, 'b': {'tur': joy.get('tur') or '', 'tolov': joy.get('tolov') or '', 'joy': dict(joy)}}   # 3420: tugmalar uchun
     sovga, tasdiq = _sovga_holat([elon] + [e for e, _ in qolgan], sonlar, ranglar, kel, ogoh)
     if sovga:   # 3295: yozuvga _buyurtma_sovga_qoy o'tkazadi
+        t['b']['sovga'] = True   # 3641: tugmalar — sovg'a (to'lov tugmasi yo'q)
         t.update(sovga=True, holat='tolandi' if tasdiq else 'kutilmoqda',
                  tovar=_mijoz_tovarlar(num, qolgan_nums, sonlar, ranglar, kel))
     return t
@@ -13101,7 +13111,9 @@ def _buyurtma_zaxira_birlash(j):
             if any(k != uid and any(x.get('order') == order for x in (mm or {}).get('buyurtma') or [])
                    for k, mm in _MIJOZ.items()):   # 3499: raqam boshqa mijozda — olinmaydi (chek kaliti raqamdan)
                 continue
-            joy = z.get('joy') if isinstance(z.get('joy'), dict) else {}
+            jy = {}
+            _buyurtma_joy_ol(z, jy)   # 3641: joy ichidagi _sovga / _vch — alohida
+            joy = jy.get('joy') or {}
             tel = z.get('tel') or ''
             if not tel and joy.get('tel_id') in _MIJOZ_TEL_TURLAR:
                 tel = m['tels'].get(joy['tel_id'], '')
@@ -13111,7 +13123,8 @@ def _buyurtma_zaxira_birlash(j):
                 'tovar': tovar, 'jami': _zaxira_jami(tovar), 'tur': z.get('tur') or '',   # 3499: jami — server narxidan
                 'ism': z.get('ism') or '', 'tel': tel, 'til': z.get('til') if z.get('til') in ('uz', 'ru') else '',
                 'nik': str(joy.get('nik') or ''), 'joy': joy, 'manba': 'sayt', 'admin_xabar': 'kutilmoqda',
-                'tolov': 'naqd' if (z.get('tolov') == 'naqd' or joy.get('tolov') == 'naqd') else ''})   # 3420
+                'tolov': 'naqd' if (z.get('tolov') == 'naqd' or joy.get('tolov') == 'naqd') else '',   # 3420
+                **({'sovga': True} if jy.get('sovga') else {}), **({k: jy[k] for k in ('vch', 'vch_kod') if jy.get(k)})})
             m['buyurtma'].sort(key=lambda x: x.get('ts') or 0, reverse=True)
             del m['buyurtma'][MIJOZ_BUYURTMA_MAX:]
             _BUYURTMA_KORILGAN[(int(uid), order)] = time.time()
@@ -13125,6 +13138,38 @@ def _buyurtma_zaxira_birlash(j):
 
 
 BUYURTMA_QAYTA_S = 150          # shuncha soniyadan keyin ham xabari chiqmagan buyurtma — fon sikli yuboradi
+BUYURTMA_QAYTA_BOT_MAX_S = 15 * 60   # 3641: bot o'zi qabul qilgan (manba 'bot'), matni yo'qolgan buyurtma — faqat shu yoshgacha
+
+
+def _buyurtma_qayta_shartmi(b, hozir):
+    """3641: '' — qayta yuborish kerak; aks holda — nega kerak emas (logga). NEGA: 2026-11-16 18:36 sovg'a buyurtmasi adminga yetgan,
+    18:51 deploy botni qayta yondirdi, xotira Sheets'dan tiklandi — u yerda belgi hali 'kutilmoqda' edi, manzil / sovg'a belgisi yo'q:
+    18:53 da «♻️ Qayta yuborildi» 15$, «To'lov kutilmoqda», BTS'siz ketdi. Endi faqat haqiqatan yetmaganlar qayta yuboriladi:
+    · `_xabar` bor — bot shu ishga tushishda o'zi yubora olmagan (har doim yuboriladi);
+    · holat 'kutilmoqda' dan o'tgan / admin xabari bor — admin ko'rgan (tugma bosilgan);
+    · bot o'zi qabul qilgan (manba 'bot') — faqat yangi (≤ 15 daq) va to'lanmagan bo'lsa; sayt zaxirasi ('sayt') — har doim."""
+    if b.get('_xabar'):
+        return ''
+    if b.get('admin_xb'):
+        return 'admin xabari bor'
+    if b.get('holat') not in (None, '', 'kutilmoqda'):
+        return f"holat {b.get('holat')} — admin ko'rgan"
+    if b.get('manba') == 'bot' and hozir - (b.get('ts') or 0) > BUYURTMA_QAYTA_BOT_MAX_S:
+        return "bot qabul qilgan, eski — Sheets belgisi yangilanmay qolgan"
+    return ''
+
+
+def _buyurtma_qayta_tayyor(uid, order, t):
+    """3641: qayta yuboriladigan xabar — tugmalar YOZUVNING joriy holati va sovg'a belgisidan (ilgari — yasalgan matndan:
+    sovg'a 'kutilmoqda' bo'lib, «To'lov keldi» chiqardi), bron — faqat to'lanmaganda."""
+    with _MIJOZ_LOCK:
+        b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None) or {}
+        holat, sovga = b.get('holat') or 'kutilmoqda', bool(b.get('sovga') or t.get('sovga'))
+    tb = dict(t.get('b') or {})
+    if sovga:
+        tb['sovga'] = True
+    return dict(t, matn=_BUYURTMA_QAYTA + t['matn'], holat=holat if holat in _HOLAT_TARTIB else 'kutilmoqda', b=tb,
+                bron=t.get('bron') if holat == 'kutilmoqda' else [])
 BUYURTMA_XABAR_ORALIQ_S = 120
 
 
@@ -13148,6 +13193,11 @@ def _buyurtma_xabar_ish():
         if b.get('holat') == 'bekor':   # mijoz o'zi bekor qilgan — xabar shart emas
             _buyurtma_xabar_belgila(uid, b.get('order'), 'bekor')
             continue
+        sabab = _buyurtma_qayta_shartmi(b, hozir)
+        if sabab:   # 3641
+            logger.warning(f"buyurtma №{b.get('order')}: qayta yuborilmadi — {sabab}")
+            _buyurtma_xabar_belgila(uid, b.get('order'), '-')
+            continue
         _BUYURTMA_JARAYON.add(k)
         try:
             t = b.get('_xabar') or _buyurtma_tayyor_yozuvdan(uid, b)
@@ -13155,7 +13205,7 @@ def _buyurtma_xabar_ish():
                 _buyurtma_xabar_belgila(uid, b.get('order'), '-')
                 continue
             _buyurtma_sovga_qoy(uid, b.get('order'), t)   # 3295: sayt zaxirasidan kelgan sovg'a ham
-            t = dict(t, matn=_BUYURTMA_QAYTA + t['matn'])
+            t = _buyurtma_qayta_tayyor(uid, b.get('order'), t)
             if _buyurtma_xabar_yubor(uid, b.get('order'), t, kutish=(0, 3)):
                 yuborildi += 1
                 _chek_mijozga_xabar(uid, b.get('order'))   # BUGUN296: sayt zaxirasidan tiklangan buyurtma — mijozga ham (bir marta)
@@ -13302,6 +13352,8 @@ async def buyurtma_endpoint(request):
                 return web.json_response({'error': 'Savat notogri'}, status=400)
             if k not in savat_kodlar:
                 savat_kodlar.append(k)
+        if savat_kodlar:   # 3641: yozuvda ham — qayta yasalgan xabar havola narxini (sovg'a 0$, chegirma) qayta oladi
+            joy['savat'] = savat_kodlar
         if not re.fullmatch(r'[A-Z0-9]{4,12}', order):
             return web.json_response({'error': 'Buyurtma raqami notogri'}, status=400)
         vkod = str(data.get('vaucher', '') or '').strip().lower()   # 3637: faqat kod — summa / egasi Apps Script'dan
@@ -13446,6 +13498,7 @@ def _mijoz_saqlash():
 # qayta uriniladi (webhook kutmaydi — T1). Raqamlar jadvalda: faqat egasi ko'radi, saytga hech qachon chiqmaydi.
 # SHEET_URL yoki API_KEY yo'q (sinov, mahalliy ishga tushirish) — sinxronlash umuman yurmaydi, faqat fayl.
 _MIJOZ_SYNC = set()           # navbat: ('t', uid) · ('b', uid, order)
+_MIJOZ_SYNC_RAD = {}          # 3641: Apps Script rad etgan kalitlar (log bir marta)
 _MIJOZ_SYNC_QULF = threading.Lock()
 MIJOZ_SYNC_ORALIQ_S = 5
 
@@ -13461,6 +13514,45 @@ def _mijoz_sync_belgila(*kalit):
             _MIJOZ_SYNC.add(tuple(str(x) for x in kalit))
 
 
+def _buyurtma_sheet_joy(b):
+    """3641: Sheets'ga joy (manzil, savat havolasi, vaucher …) + sovg'a / vaucher summasi (joy JSON ichida `_sovga`, `_vch`) + manba.
+    NEGA: bot qayta yonsa yozuv Sheets'dan tiklanadi — ilgari joy / sovg'a yo'qolardi, qayta yasalgan xabar 15$, kurs 0, BTS'siz chiqdi.
+    manba: 'bot' — bot o'zi qabul qilgan (sayt zaxirasi qatori 'sayt' edi); 'sayt' — faqat zaxiradan kelgan."""
+    joy = dict(b.get('joy') or {}) if isinstance(b.get('joy'), dict) else {}
+    joy.pop('tel', None)   # raqam — alohida ustunda; joy ichida takrorlanmaydi
+    if b.get('sovga'):
+        joy['_sovga'] = 1
+    if b.get('vch'):
+        joy['_vch'] = b.get('vch')
+    if b.get('vch_kod'):
+        joy['_vk'] = str(b.get('vch_kod'))[:20]
+    d = {'manba': 'sayt' if b.get('manba') == 'sayt' else 'bot'}
+    if joy:
+        d['joy'] = json.dumps(joy, ensure_ascii=False)
+    return d
+
+
+def _buyurtma_joy_ol(z, yozuv):
+    """3641: Sheets / zaxira qatoridagi joy (dict yoki JSON matn) → yozuvga joy, sovga, vch. Buzuq — tegilmaydi."""
+    j = z.get('joy')
+    try:
+        j = json.loads(j) if isinstance(j, str) and j else j
+    except ValueError:
+        j = None
+    if not isinstance(j, dict) or not j:
+        return
+    j = dict(j)
+    if j.pop('_sovga', None):
+        yozuv['sovga'] = True
+    v = j.pop('_vch', None)
+    if v:
+        yozuv['vch'] = v
+    vk = j.pop('_vk', None)
+    if vk:
+        yozuv['vch_kod'] = vk
+    yozuv['joy'] = j
+
+
 def _buyurtma_sheet_dict(uid, b):
     """Bitta buyurtma → Apps Script `buyurtmaYoz` ma'lumoti."""
     return {'order': b.get('order'), 'user_id': str(uid), 'ts': b.get('ts'), 'holat': b.get('holat'),
@@ -13470,6 +13562,7 @@ def _buyurtma_sheet_dict(uid, b):
             'yetkaz': json.dumps(b['yetkaz'], ensure_ascii=False) if b.get('yetkaz') else '',   # 3288
             'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
             'tolov': 'naqd' if _naqdmi(b) else '',   # 3420
+            **_buyurtma_sheet_joy(b),   # 3641
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
                        **({'chegirma': x['chegirma']} if x.get('chegirma') else {})} for x in (b.get('tovar') or [])]}   # 3306
 
@@ -13504,7 +13597,14 @@ def _mijoz_sync_yubor():
         if j and j.get('ok'):
             with _MIJOZ_SYNC_QULF:
                 _MIJOZ_SYNC.discard(k)
+            _MIJOZ_SYNC_RAD.pop(k, None)
             yozildi += 1
+        elif isinstance(j, dict):
+            # 3641: Apps Script RAD etdi ({ok:false}) — ilgari jim edi va navbat shu yerda to'xtardi (keyingi yozuvlar ham Sheets'ga
+            # yetmasdi). Endi logga (bir marta) va keyingisiga o'tiladi; o'zi navbatda qoladi (keyin yana urinadi).
+            if k not in _MIJOZ_SYNC_RAD:
+                logger.warning(f"mijoz sync: {k[0]} {k[2] if len(k) > 2 else ''} — Apps Script rad etdi: {str(j.get('msg') or '')[:60]}")
+            _MIJOZ_SYNC_RAD[k] = time.time()
         else:
             break   # Apps Script javob bermadi — qolganini keyingi urinishga (tartib buzilmasin)
     return yozildi
@@ -13558,6 +13658,9 @@ def _mijoz_sheet_birlash(j):
             if 'yetkazish' in b:   # 3312: eski Apps Script bermaydi — botdagi qiymat saqlanadi
                 yozuv['yetkazish'] = b.get('yetkazish') or 0
                 yozuv['jonatildi'] = bool(b.get('jonatildi'))
+            if b.get('manba') in ('bot', 'sayt'):   # 3641
+                yozuv['manba'] = b['manba']
+            _buyurtma_joy_ol(b, yozuv)   # 3641: manzil / sovg'a / vaucher — qayta yonganda ham
             i = next((n for n, x in enumerate(m['buyurtma']) if x.get('order') == order), -1)
             if i >= 0:
                 m['buyurtma'][i] = dict(m['buyurtma'][i], **yozuv)   # BUGUN295: faqat botdagi (nik, joy, _xabar) saqlanadi
