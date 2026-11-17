@@ -15111,6 +15111,36 @@ async def kanal_post_endpoint(request):
         return web.json_response({'error': str(e)}, status=500)
 
 
+async def konkurs_qayta_endpoint(request):
+    """3668 (Owner 2026-11-17): sayt Mijozlar → konkurs qatnashchisi javob bermagan → «Qayta yozish».
+    Faqat admin (initData). {initData, uid} → Apps Script konkursQaytaYoz (shu odamning oxirgi qatori qayta navbatga) →
+    yetkazish fonda (faqat unga, /konkursdavom kabi). Javob {ok, id} yoki {ok: False, error}."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        kim = str(data.get('uid') or '').strip()
+        if not re.fullmatch(r'\d{3,20}', kim):
+            return web.json_response({'error': 'uid notogri'}, status=400)
+        r = await _kk_sorov('konkursQaytaYoz', urinish=2, uid=kim)
+        if r is None:
+            return web.json_response({'ok': False, 'error': 'Apps Script javob bermadi'})
+        if not r.get('ok'):
+            m = r.get('msg') or 'xato'
+            if m == 'band':
+                m = f"bot hozir yubormoqda — {r.get('kut_s', '?')} s dan keyin"
+            return web.json_response({'ok': False, 'error': m})
+        kid = str(r.get('id') or '')
+        _konkurs_cache['data'] = None
+        _konkurs_cache['time'] = 0
+        asyncio.create_task(konkurs_tugat_va_yetkaz(kid, False, 'admin: qayta yoz (sayt)', 'buyruq', ADMIN_ID))
+        return web.json_response({'ok': True, 'id': kid})
+    except Exception as e:
+        logging.exception('konkurs_qayta')
+        return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
+
+
 async def kanal_toplam_endpoint(request):
     """B29 (BUGUN31): saytda uzoq bosib belgilangan e'lonlar → «📣 Yuborish» → bitta to'plam posti.
     Faqat admin (initData). {initData, nums: [248, 251, …]} → {ok, mid, kanal, kanallar, nums, otkazildi}.
@@ -15341,6 +15371,7 @@ async def main():
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_post('/tashco/jasur', tashco_jasur_endpoint)   # 3428: Jasur skripti — ish olish / natija
     app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashCo'ga» — TashkentComp bo'limi
+    app.router.add_post('/konkurs_qayta', konkurs_qayta_endpoint)   # 3668: Mijozlar → konkurs «Qayta yozish»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
     app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
     app.router.add_get('/health', health)
