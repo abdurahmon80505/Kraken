@@ -33,7 +33,7 @@ TEST_CHANNEL = os.environ.get('TEST_CHANNEL_ID', '@Kraken_mobile_test')
 # CHANNEL'dan username va link (a'zolik tugmalari uchun — test kanalga ham mos)
 CHANNEL_USERNAME = CHANNEL.lstrip('@')
 CHANNEL_LINK = f'https://t.me/{CHANNEL_USERNAME}'
-SAYT_URL = 'https://nuqtatech-store.netlify.app/'
+SAYT_URL = 'https://nuqtatech.uz/'
 # Bot manzili (@username) — BITTA joy, kodda boshqa joyda yozilmaydi (2026-10-07, R1.4 b: yangi bot «Nuqta tech Store»
 # @nuqta_tech_store_bot). Tartib: Render env BOT_USERNAME (qo'lda) → bo'lmasa — BOT_TOKEN egasi (Telegram getMe, ishga
 # tushganda bir marta) → bo'lmasa — yangi bot nomi (BUGUN137: eski bot faqat yangisiga yo'naltiradi, zaxira nom ham yangisi).
@@ -12249,8 +12249,9 @@ async def yolda_isbot_qabul(chat_id, message, k):
 # Bir xil rasm (file_unique_id) ikkinchi marta adminga bormaydi. Albom (bir nechta rasm) — bitta javob, hammasi adminga.
 # 3420: to'lov sahifasi Store ichida (eski nuqta-tech-tolov.netlify.app shu yerga yo'naltiradi). Env eski manzilni bersa ham — Store'niki.
 TOLOV_URL = os.environ.get('TOLOV_URL', '').strip()
-if not TOLOV_URL or 'nuqta-tech-tolov' in TOLOV_URL:
-    TOLOV_URL = 'https://nuqtatech-store.netlify.app/tolov-sotib/'
+# 3699: env'dagi vaqtinchalik nuqtatech-store.netlify.app ham eski — o'z domen (ikki sakrash bo'lmasin).
+if not TOLOV_URL or 'nuqta-tech-tolov' in TOLOV_URL or 'nuqtatech-store.netlify.app' in TOLOV_URL:
+    TOLOV_URL = 'https://nuqtatech.uz/tolov-sotib/'
 _CHEK_QULF = threading.Lock()
 _CHEK_ALBOM = {}      # (uid, media_group_id) → {'t', 'order' | None (so'ralmoqda), 'mid': [xabar id'lari]}
 _CHEK_TANLASH = {}    # (uid, message_id) → {'t', 'fid', 'mgid'} — «qaysi buyurtma?» deb so'ralgan chek
