@@ -11389,6 +11389,13 @@ def _savat_kel_narxlar(kodlar):
                 continue
             if x >= 0:   # 3295: 0 — 🎁 sovg'a
                 kel[str(n)] = min(x, kel.get(str(n), x))
+                try:   # 3740: havola yaratilgandagi Store narxidan katta — ustama (narx Store o'zgarsa ham o'sha)
+                    if x > float((v or {}).get('asl')):
+                        u = kel.setdefault('_ustama', [])   # ro'yxat (set emas) — JSON'ga yoziladi
+                        if str(n) not in u:
+                            u.append(str(n))
+                except Exception:
+                    pass
         if r.get('tur') == 'tanlov':   # 3637: tanlov — to'plam emas (tarkib majburlanmaydi), n tadan ortig'i — Store narxi
             try:
                 tn = max(1, int(r.get('n') or 1))
@@ -11532,9 +11539,13 @@ def _vaucher_ch(kel):
 
 
 def _kel_narx(elon, kel):
-    """(narx 1 dona, chegirma 1 dona) — kelishilgan narx bo'lsa va Store narxidan past bo'lsa — o'sha, aks holda Store narxi."""
+    """(narx 1 dona, chegirma 1 dona) — kelishilgan narx bo'lsa va Store narxidan past bo'lsa — o'sha, aks holda Store narxi.
+    3740: ustama havola (kel['_ustama'] — yaratilganda Store'dan yuqori edi) — narx o'sha, chegirma 0."""
     asl = _narx_son(elon)
-    k = (kel or {}).get(str(elon.get('num', '')))
+    num = str(elon.get('num', ''))
+    k = (kel or {}).get(num)
+    if asl is not None and k is not None and k >= 0 and num in ((kel or {}).get('_ustama') or ()):
+        return round(k, 2), max(0, round(asl - k, 2))
     if asl is None or k is None or not (0 <= k < asl):
         return asl, 0
     return round(k, 2), round(asl - k, 2)
