@@ -338,5 +338,79 @@ bot._mijoz_sync_yoqilgan, bot._kk_sheet = eski_y, eski_s
 with bot._MIJOZ_SYNC_QULF:
     bot._MIJOZ_SYNC.clear()
 
+print('— 3749: tugma maxfiylik xatosi; «yetmadi» belgisi; №S792WH bir marta')
+
+
+def mijozga():
+    return [x for x in SOROV if str(x.get('chat_id')) == str(MIJOZ)]
+
+
+eski_ts = time.time() - 3 * 3600
+qayta_yon([sheet_qator(b1, admin_xabar='yetmadi', ts=eski_ts)])
+n = ish()
+adm = (xabarlar(ADMIN) or [{}])[0]
+sinov("'yetmadi' + sovg'a (holat to'landi) + 3 soat eski — QAYTA yuboriladi (♻️), mijozga takror xabar yo'q",
+      n == 1 and '♻️' in adm.get('text', '') and not mijozga() and ':' in str(yozuv('TG01').get('admin_xabar')),
+      repr((n, yozuv('TG01').get('admin_xabar'), len(mijozga()))))
+sinov("yetgach — ikkinchi aylanishda yuborilmaydi", ish() == 0)
+qayta_yon([sheet_qator(b1, admin_xabar='12:30', ts=eski_ts)])
+sinov("to'landi + admin_xabar HH:MM — yuborilmaydi", ish() == 0 and yozuv('TG01').get('admin_xabar') == '12:30')
+
+qayta_yon([sheet_qator(b1, order='S792WH', admin_xabar='-', ts=eski_ts), sheet_qator(b2, admin_xabar='-', ts=eski_ts)])
+n = ish()
+sinov("№S792WH ('-') — bir marta qayta yuborildi; boshqa '-' buyurtma — yo'q",
+      n == 1 and len(xabarlar(ADMIN)) == 1 and 'S792WH' in xabarlar(ADMIN)[0].get('text', '')
+      and yozuv('TG02').get('admin_xabar') == '-', repr([x.get('text', '')[:80] for x in xabarlar(ADMIN)]))
+sinov("№S792WH — keyingi aylanishda takror yo'q", ish() == 0)
+
+# Haqiqiy _TgReq yo'li: soxta Telegram — tg://user tugmasi bo'lsa 400 BUTTON_USER_PRIVACY_RESTRICTED
+eski_post, eski_asl = bot.req.post, bot.req._asl
+del bot.req.post
+
+
+class J400:
+    status_code = 400
+
+    def __init__(self, d):
+        self.text = json.dumps({'ok': False, 'error_code': 400, 'description': d})
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class Soxta:
+    def __init__(self, hammasi_xato=False):
+        self.hammasi_xato = hammasi_xato
+
+    def post(self, url, **kw):
+        p = kw.get('json') or kw.get('data') or {}
+        if self.hammasi_xato:
+            return J400("Bad Request: can't parse entities")
+        if 'tg://user' in json.dumps(p.get('reply_markup') or {}):
+            return J400('Bad Request: BUTTON_USER_PRIVACY_RESTRICTED')
+        return _post(url, **kw)
+
+
+bot.req._asl = Soxta()
+qayta_yon([sheet_qator(b1, admin_xabar='yetmadi', ts=eski_ts)])
+SOROV.clear()
+n = bot._buyurtma_xabar_ish()
+adm = (xabarlar(ADMIN) or [{}])[-1]
+sinov("profil tugmasi rad etildi (privacy) — xabar adminga TUGMASIZ yetdi, boshqa tugmalar joyida",
+      n == 1 and 'tg://user' not in tugmalar(adm) and 'bh:' in tugmalar(adm), repr((n, tugmalar(adm)))[:300])
+SOROV.clear()
+h, _ = bot._kk_tg('sendMessage', {'chat_id': ADMIN, 'text': 'konkurs', 'reply_markup': {'inline_keyboard': [
+    [{'text': 'Yozish', 'url': f'tg://user?id={MIJOZ}'}], [{'text': 'X', 'callback_data': 'x'}]]}})
+sinov("konkurs (_kk_tg) — privacy xatosida ham 'yuborildi', tugmasiz", h == 'yuborildi' and 'tg://user' not in tugmalar(SOROV[-1]),
+      repr(h))
+
+bot.req._asl = Soxta(hammasi_xato=True)
+qayta_yon([sheet_qator(b2, admin_xabar='kutilmoqda', holat='kutilmoqda', ts=time.time() - 200)])
+n = bot._buyurtma_xabar_ish()
+sinov("Telegram aniq rad etsa — belgi 'yetmadi' (qayta yonishdan keyin ham yuboriladi)",
+      n == 0 and yozuv('TG02').get('admin_xabar') == 'yetmadi', repr(yozuv('TG02').get('admin_xabar')))
+bot.req._asl, bot.req.post = eski_asl, eski_post
+
+
 print(f'\n{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)

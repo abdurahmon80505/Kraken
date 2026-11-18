@@ -242,7 +242,9 @@ class _TgReq:
     Mavzu o'chirilgan bo'lsa (400 «thread») — mavzusiz qayta yuboriladi (xabar yo'qolmasin).
     3232: Telegram «Mijozga yozish» (tg://user?id=…) tugmasini rad etsa (400 BUTTON_USER_INVALID — mijoz profili botga
     ochiq emas) — xabar shu tugmasiz qayta yuboriladi. Ilgari butun xabar ketmasdi (№S3CZVC buyurtmasi 6 kun adminga
-    yetmadi, fon sikli har 2 daqiqada urinardi)."""
+    yetmadi, fon sikli har 2 daqiqada urinardi).
+    3749: mijoz maxfiylik sozlamasi tugmani taqiqlasa — 400 BUTTON_USER_PRIVACY_RESTRICTED (2026-11-18 sovg'a buyurtmasi
+    adminga yetmadi: faqat BUTTON_USER_INVALID tanilardi). Endi har «BUTTON_USER_…» xatosi — tugmasiz qayta (matnda telefon qoladi)."""
     def __init__(self, asl):
         self._asl = asl  # asl `requests` moduli (req = _TgReq(req) dan keyin global req — shu obyekt)
 
@@ -264,7 +266,8 @@ class _TgReq:
         return self._tugmasiz(url, kw, self._asl.post(url, **kw))
 
     def _tugmasiz(self, url, kw, r):
-        if getattr(r, 'status_code', 0) != 400 or 'button_user_invalid' not in str(getattr(r, 'text', '') or '').lower():
+        xato = str(getattr(r, 'text', '') or '').lower()
+        if getattr(r, 'status_code', 0) != 400 or 'button_user_' not in xato:   # 3749: _invalid · _privacy_restricted
             return r
         kalit = 'json' if isinstance(kw.get('json'), dict) else 'data' if isinstance(kw.get('data'), dict) else None
         if not kalit or 'reply_markup' not in kw[kalit]:
@@ -280,7 +283,8 @@ class _TgReq:
         p = {k: v for k, v in kw[kalit].items() if k != 'reply_markup'}
         if yangi:
             p['reply_markup'] = yangi if kalit == 'json' else json.dumps(yangi, ensure_ascii=False)
-        logger.info(f"{url.rsplit('/', 1)[-1]}: tg://user tugmasi rad etildi (button_user_invalid) — "
+        kod = re.search(r'button_user_\w+', xato)
+        logger.info(f"{url.rsplit('/', 1)[-1]}: tg://user tugmasi rad etildi ({kod.group(0) if kod else 'button_user'}) — "
                     f"{olindi} tugmasiz qayta yuborildi")
         return self._asl.post(url, **dict(kw, **{kalit: p}))
 
@@ -12987,14 +12991,21 @@ def _buyurtma_sovga_qoy(uid, order, tayyor):
         _buyurtma_holat_qoy(uid, order, 'tolandi')
 
 
+# 3749: 'yetmadi' — Telegram xabarni ANIQ rad etdi (adminga ketmagani aniq). 'kutilmoqda' dan farqi: bot qayta yonsa ham (xotira
+# Sheets'dan) fon sikli uni yoshi / holatidan qat'i nazar qayta yuboradi — 'kutilmoqda' esa noaniq (yetgan, belgi yangilanmagan
+# bo'lishi mumkin, 3641), u uchun eski shartlar qoladi. NEGA: №S792WH (sovg'a, holat 'tolandi') qayta yonishdan keyin «admin
+# ko'rgan» deb jim qoldi.
+_BUYURTMA_KUTADI = ('kutilmoqda', 'yetmadi')
+
+
 def _buyurtma_xabar_belgila(uid, order, qiymat):
-    """Yozuvda admin_xabar = qiymat ('kutilmoqda' | 'HH:MM' yuborilgan vaqt) → fayl + Sheets navbati."""
+    """Yozuvda admin_xabar = qiymat ('kutilmoqda' | 'yetmadi' | 'HH:MM' yuborilgan vaqt) → fayl + Sheets navbati."""
     with _MIJOZ_LOCK:
         b = next((x for x in _mijoz_ol(uid)['buyurtma'] if x.get('order') == order), None)
         if not b:
             return
         b['admin_xabar'] = qiymat
-        if qiymat != 'kutilmoqda':
+        if qiymat not in _BUYURTMA_KUTADI:
             b.pop('_xabar', None)
         _mijoz_saqlash()
         _mijoz_sync_belgila('b', uid, order)
@@ -13004,6 +13015,7 @@ def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
     """Adminga buyurtma xabari — 3 urinish. HTML rad etilsa (400) — oddiy matn bilan. Yuborilsa — admin_xabar = vaqt. True/False."""
     klava = _buyurtma_klava(uid, order, tayyor.get('holat') or 'kutilmoqda', tayyor.get('bron') or [], tayyor.get('b'))
     matn = tayyor['matn']
+    natija = ''
     for k in kutish:
         if k:
             time.sleep(k)
@@ -13019,6 +13031,8 @@ def _buyurtma_xabar_yubor(uid, order, tayyor, kutish=(0, 2, 5)):
             _admin_xb_yoz(uid, order, r.get('message_id'), False, r.get('text'), r.get('entities'))
             return True
     logger.error(f'buyurtma xabari: №{order} adminga yetmadi — fon sikli qayta yuboradi')
+    if natija == 'xato':   # 3749: Telegram aniq rad etdi — ketmagani aniq, qayta yonishdan keyin ham qayta yuboriladi
+        _buyurtma_xabar_belgila(uid, order, 'yetmadi')
     return False
 
 
@@ -13159,7 +13173,7 @@ def _buyurtma_qayta_shartmi(b, hozir):
     · `_xabar` bor — bot shu ishga tushishda o'zi yubora olmagan (har doim yuboriladi);
     · holat 'kutilmoqda' dan o'tgan / admin xabari bor — admin ko'rgan (tugma bosilgan);
     · bot o'zi qabul qilgan (manba 'bot') — faqat yangi (≤ 15 daq) va to'lanmagan bo'lsa; sayt zaxirasi ('sayt') — har doim."""
-    if b.get('_xabar'):
+    if b.get('_xabar') or b.get('admin_xabar') == 'yetmadi':   # 3749: yetmagani aniq — holat / yoshidan qat'i nazar
         return ''
     if b.get('admin_xb'):
         return 'admin xabari bor'
@@ -13182,6 +13196,7 @@ def _buyurtma_qayta_tayyor(uid, order, t):
     return dict(t, matn=_BUYURTMA_QAYTA + t['matn'], holat=holat if holat in _HOLAT_TARTIB else 'kutilmoqda', b=tb,
                 bron=t.get('bron') if holat == 'kutilmoqda' else [])
 BUYURTMA_XABAR_ORALIQ_S = 120
+_BUYURTMA_BIR_MARTA = ('S792WH',)   # 3749: 2026-11-18 tugma xatosi bilan adminga yetmagan, keyin «admin ko'rgan» deb '-' bo'lgan
 
 
 def _buyurtma_xabar_ish():
@@ -13195,7 +13210,10 @@ def _buyurtma_xabar_ish():
     with _MIJOZ_LOCK:
         for uid, m in _MIJOZ.items():
             for b in m['buyurtma']:
-                if (b.get('admin_xabar') == 'kutilmoqda' and hozir - (b.get('ts') or 0) > BUYURTMA_QAYTA_S
+                if (str(b.get('order') or '').lstrip('№') in _BUYURTMA_BIR_MARTA and b.get('admin_xabar') == '-'
+                        and not b.get('admin_xb')):   # 3749: yetmay jim qolgan — bir marta qayta (yetgach belgi HH:MM)
+                    b['admin_xabar'] = 'yetmadi'
+                if (b.get('admin_xabar') in _BUYURTMA_KUTADI and hozir - (b.get('ts') or 0) > BUYURTMA_QAYTA_S
                         and (int(uid), b.get('order')) not in _BUYURTMA_JARAYON):
                     ish.append((int(uid), dict(b)))
     yuborildi = 0
@@ -13219,7 +13237,9 @@ def _buyurtma_xabar_ish():
             t = _buyurtma_qayta_tayyor(uid, b.get('order'), t)
             if _buyurtma_xabar_yubor(uid, b.get('order'), t, kutish=(0, 3)):
                 yuborildi += 1
-                _chek_mijozga_xabar(uid, b.get('order'))   # BUGUN296: sayt zaxirasidan tiklangan buyurtma — mijozga ham (bir marta)
+                if b.get('manba') != 'bot':   # 3749: bot qabul qilgan buyurtmada mijoz xabari (sovg'ada $0 sotuv) o'shanda ketgan —
+                    # qayta yonishdan keyin «bir marta» belgisi yo'qoladi, takror ketmasin
+                    _chek_mijozga_xabar(uid, b.get('order'))   # BUGUN296: sayt zaxirasidan tiklangan — mijozga ham (bir marta)
         except Exception as e:
             logger.error(f'buyurtma xabar ish: {type(e).__name__}')
         finally:
@@ -13818,7 +13838,7 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                 if sinov and not bor.get('sinov'):   # 3394: zaxiradan oldin kelgan bo'lsa ham — sinov belgisi
                     bor['sinov'] = True
                     _mijoz_saqlash()
-                if xabar and bor.get('admin_xabar') == 'kutilmoqda':
+                if xabar and bor.get('admin_xabar') in _BUYURTMA_KUTADI:
                     bor['_xabar'] = xabar
                     _mijoz_saqlash()
                 # 3301: zaxira — mijoz yuborgan tarkib edi · 3499: sayt zaxirasidan kelgan yozuv (manba 'sayt') — tarkib va jami
