@@ -11965,11 +11965,33 @@ def _mijoz_matn_klava(b, yangi, havola=''):
     return matn, ({'inline_keyboard': qator} if qator else None)
 
 
+_YUB_HOLAT = {'buyurtma': 'Buyurtma', 'sovga': "Sovg'a", 'tolandi': "To'landi", 'yolda': "Yo'lda",
+              'yetkazildi': 'Yetkazildi', 'yopildi': 'Yopildi'}
+
+
+def _yuborilgan_yoz(b, holat, turi, natija, javob=None):
+    """3812 (Owner 2026-11-19): mijozga ketgan buyurtma xabari → jadval «Yuborilgan» varag'i (fonda, javob kutilmaydi):
+    buyurtma № · holat · til (buyurtmadagi — Telegram ilovasi tili; bo'sh — ikkala tilda ketgan) · turi (matn / havola / rasm) ·
+    natija. Nega: 3763 da 18-noyabr «Yo'lda» xabarlari nima bo'lib ketgani ko'rinmadi. 🔴 Ism, telefon, chat id — YOZILMAYDI."""
+    try:
+        b = b or {}
+        nat = {'yuborildi': 'ketdi', 'bloklagan': 'bloklagan', 'noaniq': 'noaniq (tarmoq)'}.get(natija)
+        if not nat:
+            nat = 'xato: ' + str((javob or {}).get('description') or natija or '')[:80]
+        if b.get('sinov'):
+            nat += ' · sinov'
+        _fonda(lambda: _kk_post('yuborilganYoz', timeout=20, buyurtma=str(b.get('order') or ''),
+                                holat=_YUB_HOLAT.get(holat, holat or ''), til=b.get('til') or 'uz+ru', turi=turi, natija=nat))
+    except Exception as e:
+        logger.error(f'yuborilgan_yoz: {type(e).__name__}')
+
+
 def _buyurtma_mijozga(uid, b, yangi, havola=''):
-    """Mijozga botda qisqa xabar. (natija) 'yuborildi' | boshqa."""
+    """Mijozga botda qisqa xabar. (natija) 'yuborildi' | boshqa. 3812: har urinish «Yuborilgan» jurnaliga."""
     matn, klava = _mijoz_matn_klava(b, yangi, havola)
-    natija, _ = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML',
+    natija, j = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML',
                                        **({'reply_markup': klava} if klava else {})}, urinish=2)
+    _yuborilgan_yoz(b, yangi, 'havola' if havola else 'matn', natija, j)
     return natija
 
 
@@ -12492,11 +12514,14 @@ def _chek_buyurtma_klava(b):
     return {'inline_keyboard': qator}
 
 
-def _chek_yubor(uid, matn, klava=None):
+def _chek_yubor(uid, matn, klava=None, b=None, holat=''):
+    """b + holat berilsa (3812) — «Yuborilgan» jurnaliga ham (buyurtma tushgandagi xabar)."""
     p = {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML', 'link_preview_options': {'is_disabled': True}}
     if klava:
         p['reply_markup'] = klava
-    natija, _ = _kk_tg('sendMessage', p, urinish=2)
+    natija, j = _kk_tg('sendMessage', p, urinish=2)
+    if b is not None:
+        _yuborilgan_yoz(b, holat, 'matn', natija, j)
     return natija
 
 
@@ -12520,7 +12545,8 @@ def _chek_mijozga_xabar(uid, order):
         b = dict(b)
     natija = None
     try:
-        natija = _chek_yubor(uid, _chek_sovga_matn(b)) if sovga else _chek_yubor(uid, _chek_buyurtma_matn(b), _chek_buyurtma_klava(b))
+        natija = (_chek_yubor(uid, _chek_sovga_matn(b), None, b, 'sovga') if sovga else
+                  _chek_yubor(uid, _chek_buyurtma_matn(b), _chek_buyurtma_klava(b), b, 'buyurtma'))
     except Exception as e:
         logger.error(f'chek mijozga xabar: {type(e).__name__}')
     if sovga and _tasdiqlangan(b) and not _sotuv_sheet_yoz(uid, b):
@@ -14627,12 +14653,14 @@ def _isbot_rasm_yubor(uid, b, rasm):
     o'ziga: file_id baribir kerak (sayt rasmni shu orqali ko'rsatadi). Qaytaradi (mijozga natija, file_id | '')."""
     matn, klava = _mijoz_matn_klava(b, 'yolda')
     if isinstance(rasm, str):   # 3301: botga yuborilgan rasm — Telegram'da bor, file_id o'zi isbot
-        natija, _ = _kk_tg('sendPhoto', {'chat_id': uid, 'photo': rasm, 'caption': matn, 'parse_mode': 'HTML',
+        natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'photo': rasm, 'caption': matn, 'parse_mode': 'HTML',
                                          **({'reply_markup': klava} if klava else {})}, timeout=40, urinish=2)
+        _yuborilgan_yoz(b, 'yolda', 'rasm', natija, j)   # 3812
         return natija, rasm
     natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': matn, 'parse_mode': 'HTML',
                                      **({'reply_markup': klava} if klava else {})},
                        files={'photo': ('isbot.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
+    _yuborilgan_yoz(b, 'yolda', 'rasm', natija, j)   # 3812
     if natija != 'yuborildi':
         _, j = _kk_tg('sendPhoto', {'chat_id': ADMIN_ID, 'caption': f"🚚 №{html_escape(b.get('order', ''))} — yetkazish "
                                     f"isboti (mijozga bormadi)"},
