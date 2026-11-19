@@ -9196,8 +9196,10 @@ def _tc_rich(chat, thread, elon, models, yon):
         if md:
             rich['media'] = md
         try:
-            return req.post(f'{TG_API}/sendRichMessage', json={'chat_id': chat, 'message_thread_id': thread,
-                                                                'rich_message': rich}, timeout=30).json()
+            j = {'chat_id': chat, 'rich_message': rich}
+            if thread:   # 3826: test kanal — mavzusiz
+                j['message_thread_id'] = thread
+            return req.post(f'{TG_API}/sendRichMessage', json=j, timeout=30).json()
         except Exception as ex:
             return {'ok': False, 'description': f'tarmoq: {type(ex).__name__}'}
     j = yub(html, media)
@@ -9208,15 +9210,15 @@ def _tc_rich(chat, thread, elon, models, yon):
     return None, str(j.get('description') or 'xato')[:200]
 
 
-def tashco_yubor(num, klonga=False, usul=None):
+def tashco_yubor(num, klonga=False, usul=None, kalit=None):
     """Bitta e'lonni yuboradi. (mid, usul 'f'|'b', kalit, xato). klonga=True — faqat klon guruhga (sinov).
-    usul: 'a' — kanal posti bo'lsa forward, 'b' — bot o'zi; None — bo'lim sozlamasi."""
+    usul: 'a' — kanal posti bo'lsa forward, 'b' — bot o'zi; None — bo'lim sozlamasi. kalit — bo'lim (3826: saytdan berilgan)."""
     elon, models = elon_cache_get(str(num))
     if not elon:
         return None, '', '', "e'lon topilmadi"
     if elon_status(elon) != 'active':
         return None, '', '', "e'lon faol emas (sotilgan / kutilmoqda)"
-    kalit = tashco_bolim(elon) or tashco_avto(elon, models)
+    kalit = kalit if kalit in TASHCO_NOM else (tashco_bolim(elon) or tashco_avto(elon, models))
     h = _TC_JOY['h'] or _tc_sukut()
     if klonga:
         chat = tashco_klon_id()
@@ -9239,6 +9241,14 @@ def tashco_yubor(num, klonga=False, usul=None):
     mid, x = _tc_rich(chat, thread, elon, models, post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc')))
     return (mid, 'b', kalit, '') if mid else (None, '', kalit, x or xato)
 
+
+def tashco_test_yubor(num, kalit):
+    """3826: klon guruh sozlanmagan / mavzusi yo'q va saytda «🧪 TEST kanal» yoqiq — TashComp posti test kanalga (bot o'zi).
+    Haqiqiy TashComp guruhiga hech qachon emas. (mid, xato)."""
+    elon, models = elon_cache_get(str(num))
+    if not elon or elon_status(elon) != 'active':
+        return None, "e'lon topilmadi / faol emas"
+    return _tc_rich(kanal_tanla('sinov'), None, elon, models, post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc')))
 
 def _tc_klonga_nusxa(kalit, mid):
     """Jonli yuborilgan xabar — klon guruhning o'sha mavzusiga (Owner ko'rib tursin). Bo'lmasa — jim."""
@@ -10110,14 +10120,37 @@ async def tashco_endpoint(request):
             if not elon:
                 return web.json_response({'ok': False, 'error': "E'lon topilmadi"})
             bolim = tashco_avto(elon, models)
-        ok = await blok(_sheets_update, {'num': int(num), 'tashco': bolim})
-        if not ok:
-            return web.json_response({'ok': False, 'error': 'Jadvalga yozilmadi'})
-        with _elon_cache_lock:
-            e = _ELON_CACHE['by_num'].get(num)
-            if e is not None:
-                e['tashco'] = bolim
-        return web.json_response({'ok': True, 'bolim': bolim, 'nom': TASHCO_NOM.get(bolim, '')})
+        # 3826 (Owner 2026-11-19): klon=true — post DARHOL o'zimizning klon guruhga (bo'lim mavzusiga). Haqiqiy TashComp'ga
+        # to'g'ridan-to'g'ri hech qachon — u yerga faqat navbat (Owner yoqqan tarqatish, dona-dona). test=true («🧪 TEST kanal»
+        # yoqiq) — jadvalga / navbatga yozilmaydi; klon sozlanmagan bo'lsa — test kanalga.
+        klon = data.get('klon') is True and bool(bolim)
+        test = data.get('test') is True
+        if test and not klon:
+            return web.json_response({'ok': False, 'error': 'Test rejimda faqat yuborish'})
+        if not test:
+            ok = await blok(_sheets_update, {'num': int(num), 'tashco': bolim})
+            if not ok:
+                return web.json_response({'ok': False, 'error': 'Jadvalga yozilmadi'})
+            with _elon_cache_lock:
+                e = _ELON_CACHE['by_num'].get(num)
+                if e is not None:
+                    e['tashco'] = bolim
+        javob = {'ok': True, 'bolim': bolim, 'nom': TASHCO_NOM.get(bolim, ''), 'test': test}
+        if klon:
+            if not _TC_JOY.get('yuklandi'):
+                await blok(tashco_yukla)
+            mid, _u, _k, xato = await blok(tashco_yubor, num, True, None, bolim)
+            joy = 'klon'
+            if not mid and test:
+                logger.warning(f'tashco №{num}: klonga ketmadi ({xato}) — test kanalga')
+                mid, xato = await blok(tashco_test_yubor, num, bolim)
+                joy = 'test'
+            javob.update({'mid': mid or 0, 'joy': joy if mid else '', 'xato': '' if mid else (xato or 'xato')[:150]})
+            logger.info(f"tashco №{num}: {'test ' if test else ''}{joy if mid else 'yuborilmadi'} → {bolim}"
+                        + ('' if mid else f' ({xato})'))
+            if test and not mid:
+                javob.update({'ok': False, 'error': (xato or 'yuborilmadi')[:150]})
+        return web.json_response(javob)
     except Exception as e:
         logger.error(f'tashco_endpoint: {type(e).__name__}: {_maxfiy(e)}')
         return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
