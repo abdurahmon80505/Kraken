@@ -8729,7 +8729,13 @@ async def inline_javob(iq):
     """inline_query → answerInlineQuery (sahifa 50 tadan, next_offset bilan)."""
     try:
         by_num, models = await blok(elon_cache_hammasi)
-        topildi = inline_topish(iq.get('query', ''), by_num, models)
+        # 3836: «!#331» — faqat karta (article + havola-ko'rinish), rich yo'q. Nega: Madina userbot'i (GramJS, LAYER 198)
+        # rich_message natijani o'qiy olmaydi — «Could not find a matching Constructor ID». Oddiy so'rov o'zgarmaydi.
+        sorov = str(iq.get('query', '') or '')
+        faqat_karta = sorov.lstrip().startswith('!')
+        if faqat_karta:
+            sorov = sorov.lstrip()[1:]
+        topildi = inline_topish(sorov, by_num, models)
         try:
             boshi = max(0, int(iq.get('offset') or 0))
         except ValueError:
@@ -8742,12 +8748,16 @@ async def inline_javob(iq):
         urls = [k for e in sahifa for k in inline_kalitlari(e)]
         rasm_navbatga(urls)
         # 9000: faqat birinchi ekrandagilar kutiladi (navbatda ular oldinda) — «telefon» 50 ta natijada 500 rasm kutilmaydi
-        kut = [k for e in sahifa[:INLINE_EKRAN] for k in inline_kalitlari(e)]
+        kut = [] if faqat_karta else [k for e in sahifa[:INLINE_EKRAN] for k in inline_kalitlari(e)]   # 3836: karta rasm kutmaydi
         oxiri = time.monotonic() + INLINE_KUTISH
         while any(u in _rasm_kutilmoqda for u in kut) and time.monotonic() < oxiri:
             await asyncio.sleep(0.25)
 
-        natijalar = [n for n in (inline_natija(e, models) for e in sahifa) if n]
+        if faqat_karta:
+            natijalar = [n for n in (_inline_karta(_num_int(e), e, (models or {}).get(str(e.get('specId', '') or ''), {}))
+                                     for e in sahifa) if n]
+        else:
+            natijalar = [n for n in (inline_natija(e, models) for e in sahifa) if n]
         hammasi_rich = all('rich_message' in n.get('input_message_content', {}) for n in natijalar)
         r = await blok(req.post, f'{TG_API}/answerInlineQuery', json={
             'inline_query_id': iq.get('id'),
