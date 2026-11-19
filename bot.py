@@ -5552,7 +5552,16 @@ def _kk_golib_xabari(place, prize):
         "text": "📩 Adminga yozish / Написать админу", "url": f"https://t.me/{ADMIN_USERNAME}"}]]}
 
 
-def _kk_maglub_xabari(prize, win_text):
+def _kk_belgi(e, tugma):
+    """3811: konkurs yakun tugmalari belgisi — `konkurs-<YYYYMMDD>-<tugma>` (sana — konkurs tugash kuni, Toshkent; jadvaldagi
+    end_time dan o'zi, qo'lda yozilmaydi). Sayt uni `startapp` / `?p=` dan o'qib Korishlar «kirish» qatoriga yozadi (trackUser),
+    admin «📊 Tahlil» da har tugma alohida: kirgan odam va keyin pullik xarid. NEGA: 3762 — yakun tugmalari belgisiz edi,
+    konkursdan kim kelgani ko'rinmadi. Telegram startapp: faqat A-Z a-z 0-9 _ - (≤ 64); sayt manbaTozala ≤ 30."""
+    ts = _parse_end_time((e or {}).get('end_time')) or time.time()
+    return 'konkurs-' + time.strftime('%Y%m%d', time.gmtime(ts + 5 * 3600)) + '-' + tugma
+
+
+def _kk_maglub_xabari(prize, win_text, belgi=''):
     cap = (
         f"🎁 <b>{html_escape(prize)}</b> konkursi yakunlandi!\n\n"
         f"🏆 <b>G'oliblar / Победители:</b>\n{win_text}\n\n"
@@ -5564,10 +5573,11 @@ def _kk_maglub_xabari(prize, win_text):
         f"❗️Ваучер действует только 1 день."
     )
     return cap, {"inline_keyboard": [[{
-        "text": "🛍 Smartfonlarni ko'rish / Смотреть смартфоны", "web_app": {"url": SAYT_URL}}]]}
+        "text": "🛍 Smartfonlarni ko'rish / Смотреть смартфоны",
+        "web_app": {"url": SAYT_URL + (f'?p={belgi}' if belgi else '')}}]]}   # 3811: web_app — startapp yo'q, ?p= o'qiladi
 
 
-def _kk_kanal_xabari(prize, win_text):
+def _kk_kanal_xabari(prize, win_text, belgi=''):
     matn = (
         f"🎊 <b>KONKURS YAKUNLANDI!</b> 🎊\n"
         f"🎁 <b>{html_escape(prize)}</b>\n\n"
@@ -5577,7 +5587,7 @@ def _kk_kanal_xabari(prize, win_text):
         f"📅 Har oy yangi konkurslar — kuzatib boring!"
     )
     return matn, {"inline_keyboard": [[{
-        "text": "🛍 Do'kon / Магазин", "url": f"https://t.me/{BOT_USERNAME}?startapp"}]]}
+        "text": "🛍 Do'kon / Магазин", "url": f"https://t.me/{BOT_USERNAME}?startapp" + (f'={belgi}' if belgi else '')}]]}
 
 
 def _kk_sovrinlar(k):
@@ -5983,7 +5993,7 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
     if korish:
         _kk_korildi.add(kid)
         # natija posti — TEST kanalga (asosiy kanalga o'zidan chiqmaydi), Owner g'olibni ko'radi
-        await blok(_kk_korish_post, kid, prize, win_text, fids, urls)
+        await blok(_kk_korish_post, kid, prize, win_text, fids, urls, _kk_belgi(e, 'kanal'))
     if korish or not e.get('already'):
         # BUGUN125: g'olib bir qurilmadan boshqa akkaunt bilan kirgan bo'lsa — faqat adminga ⚠️ (kanalga emas)
         ogoh = [f"⚠️ {_kk_medal(int(w.get('place') or 1))} {html_escape(str(w.get('ogohlantirish')))}"
@@ -6019,7 +6029,7 @@ async def _kk_ish(kid, tugat, sabab, manba, joy):
         elif x.get('obunasiz'):   # BUGUN147: g'olib edi, kanalga obuna emas — sovg'a berilmaydi
             cap, mk = _kk_obunasiz_xabari(prize)
         else:
-            cap, mk = _kk_maglub_xabari(prize, win_text)
+            cap, mk = _kk_maglub_xabari(prize, win_text, _kk_belgi(e, 'maglub'))
         return _kk_shaxsiy(x.get('user_id'), cap, mk, rasm=bir_rasm)
 
     sanoq, holat = await _kk_navbat(
@@ -6196,12 +6206,12 @@ def kk_qongiroq_natija(kid, ok, xato=''):
     return {'ok': True}
 
 
-def _kk_korish_post(kid, prize, win_text, fids, urls):
+def _kk_korish_post(kid, prize, win_text, fids, urls, belgi=''):
     """3452: konkurs natija posti — faqat TEST kanalga + tagida izoh. Asosiy kanalga hech qachon (kanal tekshiriladi)."""
     kanal = kanal_tanla('konkurs_sinov')
     if not kanal or str(kanal) == str(CHANNEL):
         return ''
-    matn, mk = _kk_kanal_xabari(prize, win_text)
+    matn, mk = _kk_kanal_xabari(prize, win_text, belgi)
     h = _kk_kanal_post(matn, [fids, urls], mk, kanal)
     _kk_tg('sendMessage', {'chat_id': kanal, 'parse_mode': 'HTML', 'text':
            f"🧪 <b>Oldindan ko'rish</b> — ish 3462, konkurs {html_escape(kid)}\n"
@@ -6241,7 +6251,7 @@ async def konkurs_kanal_elon(kid, joy=None, ichki=False):
             return 'xato'
         prize = str(e.get('prize') or '')
         fids, urls = _kk_rasmlar(e)
-        matn, mk = _kk_kanal_xabari(prize, _kk_goliblar_matni(e.get('winners') or []))
+        matn, mk = _kk_kanal_xabari(prize, _kk_goliblar_matni(e.get('winners') or []), _kk_belgi(e, 'kanal'))
         kanal = await blok(_kk_kanal_post, matn, [fids, urls], mk,
                            kanal_tanla('konkurs_sinov' if _kk_sinovmi(prize) else 'konkurs'))
         for n in range(3):
