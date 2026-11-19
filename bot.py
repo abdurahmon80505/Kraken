@@ -10288,7 +10288,8 @@ async def handle_update(data):
         if adm and user.get('id') == ADMIN_ID:
             yk = _yolda_javobmi(chat_id, message, text)
             if yk:
-                asyncio.create_task(yolda_isbot_qabul(chat_id, message, yk))
+                if yk is not _YOLDA_YUT:
+                    asyncio.create_task(yolda_isbot_qabul(chat_id, message, yk))
                 return
 
         # BUGUN10 §3b: admin «🔔 Yangi istak» xabariga reply qilsa — javob mijozga (rasm-e'lon yasashdan OLDIN
@@ -11892,6 +11893,8 @@ def _buyurtma_klava(uid, order, holat, bron_nums, b=None):
             qator.append([{'text': "✅ Sovg'a — tasdiqlash", 'callback_data': f'bh:tolandi:{uid}:{order}'}])
             keyingi = ()
         qator += [[{'text': '{} {}'.format(*_holat_tugma(b, h)), 'callback_data': f'bh:{h}:{uid}:{order}'}] for h in keyingi]
+        if holat == 'yolda' and not _ozimmi(b):   # 3761: yo'lga chiqqandan keyin ham chek / taksi havolasi (eskisi almashadi)
+            qator.append([{'text': '🧾 Chek / havola yuborish', 'callback_data': f'bh:yolda:{uid}:{order}'}])
         if holat == 'kutilmoqda' and not _naqdmi(b) and not sovga:
             qator.append([{'text': "⏭ To'lovni kutmay — " + ('Tayyor' if _ozimmi(b) else "Yo'lda"),
                            'callback_data': f'bh:yolda:{uid}:{order}'}])
@@ -12117,28 +12120,103 @@ async def buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar=None):
 # xil: _buyurtma_yetkaz, _isbot_rasm_yubor) · «O'tkazib yuborish» — eski yo'l (buyurtma_holat_tugma) · «Bekor» — hech narsa o'zgarmaydi.
 # Kutish xotirada (10 daqiqa; bot qayta yonsa yo'qoladi — tugmalar baribir ishlaydi, chunki asl xabar savolning reply'sida).
 # Albom, buyruq (/…) va boshqa xabarga reply — kutishga kirmaydi: e'lon rasmi tasodifan mijozga ketmasin.
-_YOLDA_KUT = {}       # chat_id → {'uid', 'order', 'asl' (buyurtma xabari), 'soroq' (savol xabari id), 't'}
+# 3761: kutish — HAR SAVOLGA alohida ((chat, savol id) → k). NEGA: Owner 2026-11-18 — «yo'lda tugmalari ishlamayapti, mijozlarga uchta
+# chekni yuborishim kerak»: ilgari chatda bitta kutish edi — 3 buyurtmada ketma-ket «Yo'lda» bosilsa faqat oxirgisi qolar, oldingi savolga
+# reply qilingan chek e'lon rasmiga aylanardi; bot qayta yonsa kutish yo'qolardi; yo'ldagi buyurtmaga chek yuborib bo'lmasdi. Endi:
+# savolga reply — o'sha buyurtma (bot qayta yongan bo'lsa ham — savol tugmasidan o'qiladi); buyurtma xabarining o'ziga chek / havola
+# reply qilinsa ham bo'ladi (eski xabarlar); reply'siz xabar — eng oxirgi savol; reply qilingan albom — birinchi rasmi, qolgani yutiladi.
+_YOLDA_KUT = {}       # (chat_id, soroq id) → {'uid', 'order', 'asl' (buyurtma xabari), 'soroq' (savol xabari id), 't'}
 _YOLDA_KUT_S = 600
+_YOLDA_ALBOM = {}     # media_group_id → vaqt (isbotga olingan albomning qolgan rasmlari e'lon bo'lib ketmasin)
+_YOLDA_YUT = {'yut': True}   # _yolda_javobmi: «olingan albom qoldig'i — jim yutiladi»
+_YOLDA_CB_RE = re.compile(r'^bhy:skip:(\d+):([A-Z0-9]{4,12})$')
+_BH_CB_RE = re.compile(r'^bh:[a-z]+:(\d+):([A-Z0-9]{4,12})$')
 
 
-def _yolda_kut_ol(chat_id):
-    k = _YOLDA_KUT.get(int(chat_id or 0))
-    if k and time.time() - k['t'] > _YOLDA_KUT_S:
-        _YOLDA_KUT.pop(int(chat_id), None)
-        return None
-    return k
+def _yolda_kut_ol(chat_id, soroq=None):
+    """soroq berilsa — o'sha savol kutishi; aks holda chatdagi eng oxirgi (muddati o'tganlar o'chiriladi)."""
+    hozir = time.time()
+    for kl, x in list(_YOLDA_KUT.items()):
+        if hozir - x['t'] > _YOLDA_KUT_S:
+            _YOLDA_KUT.pop(kl, None)
+    c = int(chat_id or 0)
+    if soroq is not None:
+        return _YOLDA_KUT.get((c, soroq))
+    ks = [x for (ch, _), x in _YOLDA_KUT.items() if ch == c]
+    return max(ks, key=lambda x: x['t']) if ks else None
+
+
+def _yolda_kut_qoy(chat_id, k):
+    """Bitta buyurtma — bitta kutish: shu buyurtmaning eski kutishi o'chadi, yangisi yoziladi."""
+    c = int(chat_id)
+    for kl, x in list(_YOLDA_KUT.items()):
+        if kl[0] == c and x['order'] == k['order']:
+            _YOLDA_KUT.pop(kl, None)
+    _YOLDA_KUT[(c, k['soroq'])] = k
+
+
+def _yolda_kut_ochir(chat_id, k):
+    kl = (int(chat_id), k.get('soroq'))
+    if _YOLDA_KUT.get(kl) is k:
+        _YOLDA_KUT.pop(kl, None)
+
+
+def _bot_xabarimi(r):
+    kim = r.get('from') or {}
+    return bool(kim.get('is_bot')) and str(kim.get('username') or '').lower() == str(BOT_USERNAME or '').lower()
+
+
+def _cb_top(r, rx):
+    """Xabar tugmalaridan (reply_markup) birinchi mos callback → (uid, order) | None."""
+    for q in ((r.get('reply_markup') or {}).get('inline_keyboard') or []):
+        for t in q or []:
+            m = rx.match(str((t or {}).get('callback_data') or ''))
+            if m:
+                return int(m.group(1)), m.group(2)
+    return None
+
+
+def _yolda_reply_kut(chat_id, r, message):
+    """Reply qilingan xabardan kutish: savol (bot qayta yongan bo'lsa ham) yoki buyurtma xabarining o'zi (faqat isbot bo'lsa)."""
+    k = _yolda_kut_ol(chat_id, r.get('message_id'))
+    if k or not _bot_xabarimi(r):
+        return k
+    t = _cb_top(r, _YOLDA_CB_RE)   # savol — hali yopilmagan («O'tkazib yuborish» tugmasi turibdi)
+    if t:
+        k = {'uid': t[0], 'order': t[1], 'asl': {}, 'soroq': r.get('message_id'), 't': time.time()}
+        _yolda_kut_qoy(chat_id, k)
+        return k
+    t = _cb_top(r, _BH_CB_RE)      # buyurtma xabari — chek / havola to'g'ridan-to'g'ri unga reply qilingan
+    if t and _yolda_isbot_oqi(message):
+        return {'uid': t[0], 'order': t[1], 'asl': r, 'soroq': None, 't': time.time(), 'bevosita': True}
+    return None
 
 
 def _yolda_javobmi(chat_id, message, text):
-    """Admin xabari kutilayotgan isbot javobimi (webhook'da, rasm-e'lon / istak javobidan OLDIN)."""
-    k = _yolda_kut_ol(chat_id)
-    if not k or text.startswith('/') or message.get('media_group_id'):
+    """Admin xabari kutilayotgan isbot javobimi (webhook'da, rasm-e'lon / istak javobidan OLDIN).
+    Qaytaradi: k · _YOLDA_YUT (olingan albom qoldig'i — jim) · None (isbot emas, eski yo'l)."""
+    if text.startswith('/'):
         return None
+    mg = message.get('media_group_id')
+    hozir = time.time()
+    for g, t in list(_YOLDA_ALBOM.items()):
+        if hozir - t > 120:
+            _YOLDA_ALBOM.pop(g, None)
+    if mg and mg in _YOLDA_ALBOM:
+        return _YOLDA_YUT
     r = message.get('reply_to_message')
-    if r and r.get('message_id') != k['soroq']:
+    if r:
+        k = _yolda_reply_kut(chat_id, r, message)
+    elif mg:   # reply'siz albom — e'lon rasmlari; isbot emas
+        return None
+    else:
+        k = _yolda_kut_ol(chat_id)
+    if not k:
         return None
     if _yolda_isbot_oqi(message) is None and chat_id in user_states:   # admin boshqa jarayonda (e'lon, konkurs) — xalaqit bermaymiz
         return None
+    if mg:
+        _YOLDA_ALBOM[mg] = hozir
     return k
 
 
@@ -12173,21 +12251,26 @@ async def buyurtma_yolda_soroq(chat_id, message_id, cq_data, xabar=None):
             return
         uid, order = int(p[2]), p[3]
         b = await blok(_yolda_buyurtma, uid, order)
-        if not b or b.get('holat') not in ('kutilmoqda', 'tolandi') or not message_id or _ozimmi(b):   # 3420: olib ketish — savolsiz
+        if not b or b.get('holat') not in ('kutilmoqda', 'tolandi', 'yolda') or not message_id or _ozimmi(b):   # 3420: olib ketish — savolsiz
             await buyurtma_holat_tugma(chat_id, message_id, cq_data, xabar)
             return
+        if b.get('holat') == 'yolda':   # 3761: allaqachon yo'lda — chek / havola qo'shiladi (eskisi almashadi), mijozga yana boradi
+            matn = (f"🧾 <b>№{html_escape(order)} — chek yoki taksi havolasini yuboring</b>\n"
+                    "Mijozga «Yo'lga chiqdi» xabari bilan boradi (oldingi isbot almashadi).")
+        else:
+            matn = (f"🚚 <b>№{html_escape(order)} — yo'lga chiqaryapsizmi?</b>\n"
+                    "🚕 taksi havolasi yoki 🧾 BTS cheki rasmini yuboring — mijozga «Yo'lga chiqdi» xabari bilan birga boradi.")
+        matn += "\n↩️ Bir nechta buyurtma bo'lsa — chekni shu xabarga reply qilib yuboring."
         natija, j = await blok(_kk_tg, 'sendMessage', {
-            'chat_id': chat_id, 'parse_mode': 'HTML',
-            'text': (f"🚚 <b>№{html_escape(order)} — yo'lga chiqaryapsizmi?</b>\n"
-                     "🚕 taksi havolasi yoki 🧾 BTS cheki rasmini yuboring — mijozga «Yo'lga chiqdi» xabari bilan birga boradi."),
+            'chat_id': chat_id, 'parse_mode': 'HTML', 'text': matn,
             'reply_parameters': {'message_id': message_id, 'allow_sending_without_reply': True},
             'reply_markup': {'inline_keyboard': [[{'text': "⏭ O'tkazib yuborish", 'callback_data': f'bhy:skip:{uid}:{order}'},
                                                   {'text': '↩️ Bekor', 'callback_data': f'bhy:yoq:{uid}:{order}'}]]}}, urinish=2)
         if natija != 'yuborildi':
             logger.error(f'yolda soroq: №{order} — {natija}')
             return
-        _YOLDA_KUT[int(chat_id)] = {'uid': uid, 'order': order, 'asl': xabar or {'message_id': message_id},
-                                    'soroq': ((j or {}).get('result') or {}).get('message_id'), 't': time.time()}
+        _yolda_kut_qoy(chat_id, {'uid': uid, 'order': order, 'asl': xabar or {'message_id': message_id},
+                                 'soroq': ((j or {}).get('result') or {}).get('message_id'), 't': time.time()})
     except Exception as e:
         logger.error(f'buyurtma_yolda_soroq: {type(e).__name__}')
 
@@ -12199,9 +12282,9 @@ async def buyurtma_yolda_tugma(chat_id, soroq_id, cq_data, soroq=None):
         if len(p) != 4 or p[1] not in ('skip', 'yoq') or not p[2].isdigit() or not re.fullmatch(r'[A-Z0-9]{4,12}', p[3]):
             return
         amal, uid, order = p[1], int(p[2]), p[3]
-        k = _yolda_kut_ol(chat_id)
+        k = _yolda_kut_ol(chat_id, soroq_id)
         if k and k['order'] == order:
-            _YOLDA_KUT.pop(int(chat_id), None)
+            _yolda_kut_ochir(chat_id, k)
         await _yolda_soroq_yop(chat_id, soroq_id, f"⏭ №{order} — isbotsiz." if amal == 'skip' else f"↩️ №{order} — holat o'zgarmadi.")
         if amal == 'skip':
             asl = (soroq or {}).get('reply_to_message') or (k or {}).get('asl') or {}
@@ -12219,13 +12302,22 @@ async def yolda_isbot_qabul(chat_id, message, k):
             await blok(send_msg, chat_id, f"🚕 №{html_escape(order)}: taksi havolasi (https://…) yoki chek rasmi kerak. "
                                           f"Isbot bo'lmasa — «O'tkazib yuborish» ni bosing.")
             return
-        if _YOLDA_KUT.get(int(chat_id)) is not k:   # ikkinchi xabar — birinchisi allaqachon ishlanmoqda
-            return
-        _YOLDA_KUT.pop(int(chat_id), None)
+        if not k.get('bevosita'):
+            if _YOLDA_KUT.get((int(chat_id), k['soroq'])) is not k:   # ikkinchi xabar — birinchisi allaqachon ishlanmoqda
+                return
+            _yolda_kut_ochir(chat_id, k)
         b = await blok(_yolda_buyurtma, uid, order)
-        if not b or b.get('holat') not in ('kutilmoqda', 'tolandi'):
-            await _yolda_soroq_yop(chat_id, k['soroq'], f"ℹ️ №{order} — holat allaqachon o'zgargan, isbot yozilmadi.")
+        if not b or b.get('holat') not in ('kutilmoqda', 'tolandi', 'yolda'):   # 3761: yo'lda — isbot almashadi
+            if k['soroq']:
+                await _yolda_soroq_yop(chat_id, k['soroq'], f"ℹ️ №{order} — holat allaqachon o'zgargan, isbot yozilmadi.")
+            else:
+                await blok(send_msg, chat_id, f"ℹ️ №{html_escape(order)} — holat allaqachon o'zgargan, isbot yozilmadi.")
             return
+        if not (k['asl'] or {}).get('message_id') and b.get('admin_xb'):   # bot qayta yongan — buyurtma xabari yozuvdan
+            x = b['admin_xb'][-1]
+            c = bool(x.get('c'))
+            k['asl'] = {'message_id': x.get('m'), ('caption' if c else 'text'): x.get('t'),
+                        ('caption_entities' if c else 'entities'): x.get('e')}
         tur, q = isb
         natija = ''
         if tur == 'havola':
@@ -12233,22 +12325,25 @@ async def yolda_isbot_qabul(chat_id, message, k):
         else:
             rasm = q if tur == 'rasm' else await blok(_isbot_rasm_ol, q)
             if not rasm:
-                _YOLDA_KUT[int(chat_id)] = k
+                if not k.get('bevosita'):
+                    _yolda_kut_qoy(chat_id, k)
                 await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: fayl olinmadi — rasm sifatida yuboring.")
                 return
             natija, fid = await blok(_isbot_rasm_yubor, uid, b, rasm)
             if not fid:
-                _YOLDA_KUT[int(chat_id)] = k
+                if not k.get('bevosita'):
+                    _yolda_kut_qoy(chat_id, k)
                 await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: rasm Telegram'ga yuklanmadi — qayta yuboring.")
                 return
             isbot = {'tur': 'rasm', 'fid': fid}
         kod, b = await blok(_buyurtma_yetkaz, uid, order, 'isbot', 'admin', isbot=isbot)
         if kod == 'ok' and tur == 'havola':
             natija = await blok(_buyurtma_mijozga, uid, b, 'yolda', q)
-        if b and k['asl'].get('message_id'):
+        if b and (k['asl'] or {}).get('message_id'):
             await _buyurtma_xabar_yangila(chat_id, k['asl']['message_id'], k['asl'], uid, order, b, b.get('holat'), kod)
-        await _yolda_soroq_yop(chat_id, k['soroq'], f"✅ №{order} — isbot qabul qilindi." if kod == 'ok'
-                               else f"ℹ️ №{order} — holat o'zgarmadi.")
+        if k['soroq']:
+            await _yolda_soroq_yop(chat_id, k['soroq'], f"✅ №{order} — isbot qabul qilindi." if kod == 'ok'
+                                   else f"ℹ️ №{order} — holat o'zgarmadi.")
         await _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija)
     except Exception as e:
         logger.error(f'yolda_isbot_qabul: {type(e).__name__}')

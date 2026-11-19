@@ -267,7 +267,7 @@ m = [x for x in sorov('editMessageText') if x.get('message_id') == 501]
 t = m[0]['text'] if m else ''
 sinov("zanjir: «✅ To'landi · HH:MM → 🚚 Yo'lda · HH:MM»", re.search(r"✅ To'landi · \d\d:\d\d → 🚚 Yo'lda · \d\d:\d\d", t) is not None, t)
 rm = str(m[0].get('reply_markup') if m else '')
-sinov("keyingi tugma — «Yetkazildi», «Yo'lda» tugmasi yo'q", f'bh:yetkazildi:{MIJOZ}:TY01' in rm and f'bh:yolda:{MIJOZ}:TY01' not in rm, rm[:300])
+sinov("keyingi tugma — «Yetkazildi» + «🧾 Chek» (3761), «🚚 Yo'lda» bosqich tugmasi yo'q", f'bh:yetkazildi:{MIJOZ}:TY01' in rm and rm.count('bh:yolda:') == 1 and '🧾 Chek' in rm, rm[:300])
 mj = [d for d in sorov('sendMessage') if str(d.get('chat_id')) == str(MIJOZ)]
 sinov("mijozga — to'lov qabul qilindi xabari (bitta)", len(mj) == 1, repr(SOROV)[:400])
 
