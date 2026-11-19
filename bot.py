@@ -10113,8 +10113,12 @@ async def tashco_endpoint(request):
         if not re.fullmatch(r'\d{1,6}', num):
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         bolim = str(data.get('bolim', '') or '').strip().lower()
-        if bolim and bolim != 'avto' and bolim not in TASHCO_NOM:
+        if bolim and bolim not in ('avto', 'yoq') and bolim not in TASHCO_NOM:
             return web.json_response({'error': "Bo'lim notogri"}, status=400)
+        # 3828 (Owner 2026-11-19 16:48): 3826 dan oldin ochilgan mini-ilova (eski JS) `klon` yubormasdi — bot faqat jadvalga yozib
+        # «ok» qaytarar, sayt «✅» ko'rsatar, post esa hech qayerga ketmasdi (jim «muvaffaqiyat»). Endi eski sahifa — ochiq xato.
+        if 'klon' not in data:
+            return web.json_response({'ok': False, 'error': "Sahifa eski — ilovani yopib, qayta oching"})
         elon, models = await blok(elon_cache_get, num)
         if bolim == 'avto':
             if not elon:
@@ -10123,7 +10127,8 @@ async def tashco_endpoint(request):
         # 3826 (Owner 2026-11-19): klon=true — post DARHOL o'zimizning klon guruhga (bo'lim mavzusiga). Haqiqiy TashComp'ga
         # to'g'ridan-to'g'ri hech qachon — u yerga faqat navbat (Owner yoqqan tarqatish, dona-dona). test=true («🧪 TEST kanal»
         # yoqiq) — jadvalga / navbatga yozilmaydi; klon sozlanmagan bo'lsa — test kanalga.
-        klon = data.get('klon') is True and bool(bolim)
+        # 3828: 'yoq' — «bu e'lonni TashComp'ga hech qachon yubormaslik» (jadvalda belgi; tashco_bolim uni navbatga olmaydi)
+        klon = data.get('klon') is True and bool(bolim) and bolim != 'yoq'
         test = data.get('test') is True
         if test and not klon:
             return web.json_response({'ok': False, 'error': 'Test rejimda faqat yuborish'})
@@ -10153,6 +10158,28 @@ async def tashco_endpoint(request):
         return web.json_response(javob)
     except Exception as e:
         logger.error(f'tashco_endpoint: {type(e).__name__}: {_maxfiy(e)}')
+        return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
+
+
+async def tashco_taxmin_endpoint(request):
+    """3828: «⭐ mos» — saytdagi bo'lim menyusi uchun har e'lonning taxminiy TashComp bo'limi (tashco_avto, hech narsa yozilmaydi).
+    {initData, nums: [..]} → {ok, taxmin: {num: kalit}}."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        nums = [str(n).strip() for n in (data.get('nums') or [])][:200]
+        taxmin = {}
+        for num in nums:
+            if not re.fullmatch(r'\d{1,6}', num):
+                continue
+            elon, models = await blok(elon_cache_get, num)
+            if elon:
+                taxmin[num] = tashco_avto(elon, models)
+        return web.json_response({'ok': True, 'taxmin': taxmin})
+    except Exception as e:
+        logger.error(f'tashco_taxmin: {type(e).__name__}: {_maxfiy(e)}')
         return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
 
 
@@ -15569,6 +15596,7 @@ async def main():
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_post('/tashco/jasur', tashco_jasur_endpoint)   # 3428: Jasur skripti — ish olish / natija
     app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashCo'ga» — TashkentComp bo'limi
+    app.router.add_post('/tashco_taxmin', tashco_taxmin_endpoint)   # 3828: «⭐ mos» bo'lim taxmini
     app.router.add_post('/konkurs_qayta', konkurs_qayta_endpoint)   # 3668: Mijozlar → konkurs «Qayta yozish»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
     app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
