@@ -216,7 +216,7 @@ sinov('kutilmoqda: bron tugmalari bor', sum(t.get('callback_data', '').startswit
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'tolandi', b2)
 sinov("to'landi: faqat 🚚 Yo'lda, bron tugmasi yo'q (3304)", holat_cb(kl) == [f'bh:yolda:{MIJOZ}:TB00'] and 'bron_och' not in json.dumps(kl), repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'yolda', b2)
-sinov("yo'lda: faqat 📦 Yetkazildi, bron tugmasi yo'q (3304)", holat_cb(kl) == [f'bh:yetkazildi:{MIJOZ}:TB00'] and 'bron_och' not in json.dumps(kl), repr(kl))
+sinov("yo'lda: 📦 Yetkazildi + 🧾 Chek (3761), bron tugmasi yo'q (3304)", holat_cb(kl) == [f'bh:yetkazildi:{MIJOZ}:TB00', f'bh:yolda:{MIJOZ}:TB00'] and 'bron_och' not in json.dumps(kl), repr(kl))
 kl = bot._buyurtma_klava(MIJOZ, 'TB00', 'yetkazildi', b2)
 sinov("yetkazildi (3420): «✅ Yakunlandi — baho ixtiyoriy» (holat) + «🔕 Baho so'ramay yopish», bron yo'q",
       [(t['text'], t['callback_data']) for t in tugma(kl) if 'callback_data' in t]

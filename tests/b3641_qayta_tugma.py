@@ -203,7 +203,7 @@ sinov("kutilmoqda + manzil: manzil tugmalari bron'dan keyin, Mijozga yozish — 
       klava('kutilmoqda', {'joy': {'tur': 'bts', 'manzil': 'Sinov', 'bts': 'Toshkent'}})[-1] == 'url'
       and klava('kutilmoqda', {})[:3] == ['bh:tolandi', 'bh:yolda', 'bron'])
 sinov("to'landi: faqat 🚚 Yo'lda (+ Mijozga yozish)", klava('tolandi', {}) == ['bh:yolda', 'url'], klava('tolandi', {}))
-sinov("yo'lda: faqat 📦 Yetkazildi (+ Mijozga yozish)", klava('yolda', {}) == ['bh:yetkazildi', 'url'], klava('yolda', {}))
+sinov("yo'lda: 📦 Yetkazildi + 🧾 Chek (3761) (+ Mijozga yozish)", klava('yolda', {}) == ['bh:yetkazildi', 'bh:yolda', 'url'], klava('yolda', {}))
 sinov("yetkazildi: Yakunlandi → Baho so'ramay yopish → Mijozga yozish", klava('yetkazildi', {}) == ['bh:-', 'bh:yopildi', 'url'],
       klava('yetkazildi', {}))
 sinov("bekor: 📍 holat → Mijozga yozish", klava('bekor', {}) == ['bh:-', 'url'], klava('bekor', {}))
