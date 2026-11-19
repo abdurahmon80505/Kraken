@@ -11347,6 +11347,15 @@ def _yandex_havola(joy):
     return f"https://yandex.uz/maps/?pt={round(lon, 6)},{round(lat, 6)}&z=17&l=map"
 
 
+def _yandex_go_havola(joy):
+    """3851: Yandex Go — mijoz nuqtasiga marshrut (AppMetrica umumiy havolasi: ilova bo'lsa ilovada, bo'lmasa veb). Yaroqsiz — None."""
+    if not _yandex_havola(joy):
+        return None
+    lat, lon = round(float(joy.get('lat')), 6), round(float(joy.get('lon')), 6)
+    return (f"https://3.redirect.appmetrica.yandex.com/route?end-lat={lat}&end-lon={lon}"
+            "&level=econom&appmetrica_tracking_id=1178268795219780156")
+
+
 def _buyurtma_joy_tugma(joy):
     """3633: manzil tugmalari (Owner 2026-11-16: «mijozning adresini beradigan joy yo'q … Yandex mapni ochish chiqsin»).
     Yandex Go — «🗺 Yandex xaritada ochish» (havola emas, tugma) + «📋 Havolani nusxalash»; EMU / BTS — «📋 Filialni nusxalash»
@@ -11355,7 +11364,8 @@ def _buyurtma_joy_tugma(joy):
     tur = joy.get('tur')
     if tur == 'yandex':
         h = _yandex_havola(joy)
-        return [[{'text': '🗺 Yandex xaritada ochish', 'url': h}], [{'text': '📋 Havolani nusxalash', 'copy_text': {'text': h}}]] if h else []
+        return [[{'text': '🗺 Yandex Maps', 'url': h}, {'text': '🚕 Yandex Go', 'url': _yandex_go_havola(joy)}],   # 3851
+                [{'text': '📋 Havolani nusxalash', 'copy_text': {'text': h}}]] if h else []
     if tur in ('emu', 'bts'):
         m = str(joy.get('manzil') or '').strip()[:256]
         return [[{'text': f'📋 {_BUYURTMA_TUR[tur][1]} filialini nusxalash', 'copy_text': {'text': m}}]] if m else []
@@ -11985,6 +11995,9 @@ def _buyurtma_klava(uid, order, holat, bron_nums, b=None):
                     'callback_data': f'bron_och:{n}:{order}'}] for n in bron_nums]
     if holat in ('kutilmoqda', 'tolandi', 'yolda'):   # 3633: manzil tugmalari — yetkazilguncha
         qator += _buyurtma_joy_tugma((b or {}).get('joy'))
+        tel = str((b or {}).get('tel') or '').strip()[:40]
+        if tel:   # 3851 (Owner: «raqam hama joyda bolsin»): matndagi raqam — bosilsa qo'ng'iroq, tugma — bir bosishda nusxa
+            qator.append([{'text': f'📋 {tel} — nusxalash', 'copy_text': {'text': tel}}])
     qator.append([{'text': 'Mijozga yozish', 'url': f'tg://user?id={uid}'}])
     return {'inline_keyboard': qator}
 
@@ -12014,10 +12027,18 @@ def _buyurtma_holat_qoy(uid, order, yangi):
         return 'ok', dict(b)
 
 
-def _mijoz_matn_klava(b, yangi, havola=''):
+_HAVOLA_ALMASH = ("🔁 <b>Buyurtma №{o}</b> — taksi almashdi.\nYangi kuzatish havolasi pastda 👇 (eskisi endi kerak emas).",
+                  "🔁 <b>Заказ №{o}</b> — такси заменено.\nНовая ссылка для отслеживания ниже 👇 (старая больше не нужна).")
+
+
+def _mijoz_matn_klava(b, yangi, havola='', almash=False):
     """(matn, reply_markup | None) — mijozga holat xabari. Til — buyurtma berilganda Telegram'dan olingan; bilinmasa ikkalasi.
-    3288: «yolda» / «yetkazildi» tagida sayt «Buyurtmalarim» tugmasi; havola — yetkazish isboti (Yandex …)."""
+    3288: «yolda» / «yetkazildi» tagida sayt «Buyurtmalarim» tugmasi; havola — yetkazish isboti (Yandex …).
+    3851: almash — yo'ldagi buyurtmada taksi havolasi almashdi: «🔁 taksi almashdi» matni (har doim YANGI alohida xabar — eski
+    xabarni mijoz qaytib ko'rmaydi; Owner 2026-11-19: «yangi habar alohida kelsin, biladi»)."""
     uz, ru = (_HOLAT_MIJOZ_OZIM if _ozimmi(b) and yangi in _HOLAT_MIJOZ_OZIM else _HOLAT_MIJOZ)[yangi]
+    if almash and havola and yangi == 'yolda':
+        uz, ru = _HAVOLA_ALMASH
     if yangi == 'yolda' and _naqdmi(b):   # 3420
         uz, ru = (uz + "\n💵 To'lov — naqd, " + ("olib ketayotganda." if _ozimmi(b) else "kuryerga."),
                   ru + "\n💵 Оплата — наличными, " + ("при получении." if _ozimmi(b) else "курьеру."))
@@ -12056,9 +12077,16 @@ def _yuborilgan_yoz(b, holat, turi, natija, javob=None):
         logger.error(f'yuborilgan_yoz: {type(e).__name__}')
 
 
-def _buyurtma_mijozga(uid, b, yangi, havola=''):
-    """Mijozga botda qisqa xabar. (natija) 'yuborildi' | boshqa. 3812: har urinish «Yuborilgan» jurnaliga."""
-    matn, klava = _mijoz_matn_klava(b, yangi, havola)
+def _havola_almashmi(b):
+    """3851: buyurtma allaqachon yo'lda va oldin taksi havolasi yuborilgan — yangi havola «🔁 taksi almashdi» bo'lib ketadi."""
+    b = b or {}
+    return b.get('holat') == 'yolda' and ((b.get('yetkaz') or {}).get('isbot') or {}).get('tur') == 'havola'
+
+
+def _buyurtma_mijozga(uid, b, yangi, havola='', almash=False):
+    """Mijozga botda qisqa xabar. (natija) 'yuborildi' | boshqa. 3812: har urinish «Yuborilgan» jurnaliga.
+    3851: almash — taksi havolasi almashdi (yangi alohida xabar, «🔁» matni)."""
+    matn, klava = _mijoz_matn_klava(b, yangi, havola, almash)
     natija, j = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML',
                                        **({'reply_markup': klava} if klava else {})}, urinish=2)
     _yuborilgan_yoz(b, yangi, 'havola' if havola else 'matn', natija, j)
@@ -12422,6 +12450,7 @@ async def yolda_isbot_qabul(chat_id, message, k):
                         ('caption_entities' if c else 'entities'): x.get('e')}
         tur, q = isb
         natija = ''
+        almash = _havola_almashmi(b)   # 3851
         if tur == 'havola':
             isbot = {'tur': 'havola', 'url': q}
         else:
@@ -12440,7 +12469,7 @@ async def yolda_isbot_qabul(chat_id, message, k):
             isbot = {'tur': 'rasm', 'fid': fid}
         kod, b = await blok(_buyurtma_yetkaz, uid, order, 'isbot', 'admin', isbot=isbot)
         if kod == 'ok' and tur == 'havola':
-            natija = await blok(_buyurtma_mijozga, uid, b, 'yolda', q)
+            natija = await blok(_buyurtma_mijozga, uid, b, 'yolda', q, almash)
         if b and (k['asl'] or {}).get('message_id'):
             await _buyurtma_xabar_yangila(chat_id, k['asl']['message_id'], k['asl'], uid, order, b, b.get('holat'), kod)
         if k['soroq']:
@@ -13639,9 +13668,11 @@ async def buyurtma_endpoint(request):
                 yetdi = await loop.run_in_executor(None, _admin_sinov_xabar, _SINOV_BOSH + tayyor['matn'])
                 return web.json_response({'ok': True, 'sinov': True, 'xabar': yetdi})
             # BUGUN225: raqam profilga (akkaunt / yetkazish) + «Buyurtmalarim» yozuvi
-            nik = ((_init_data_user(data.get('initData', '')) or {}).get('username') or '')   # BUGUN275: sotuv yozuvi uchun
+            _iu = _init_data_user(data.get('initData', '')) or {}
+            nik = (_iu.get('username') or '')   # BUGUN275: sotuv yozuvi uchun
             await loop.run_in_executor(None, _mijoz_buyurtma_yoz, uid, order, num, qolgan_nums, ism, tel, joy,
-                                       _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor, sinov)
+                                       _kk_init_til(data.get('initData', '')) or '', sonlar, ranglar, nik, kel, tayyor, sinov,
+                                       _iu.get('photo_url') or '')   # 3851: admin «Buyurtmalar» kartasida mijoz rasmi
             await loop.run_in_executor(None, _buyurtma_sovga_qoy, uid, order, tayyor)
             _BUYURTMA_KORILGAN[(uid, order)] = hozir
             yetdi, _ = await loop.run_in_executor(
@@ -14019,8 +14050,11 @@ def _mijoz_tovarlar(num, qolgan_nums, sonlar=None, ranglar=None, kel=None):
     return res
 
 
+_FOTO_RE = re.compile(r'https://([\w-]+\.)*(t\.me|telegram\.org)/\S+$')   # 3851: Telegram initData photo_url
+
+
 def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', sonlar=None, ranglar=None, nik='', kel=None, xabar=None,
-                        sinov=False):
+                        sinov=False, foto=''):
     """/buyurtma (fon oqimida): raqam profilga + «Buyurtmalarim» yozuvi. BUGUN295: adminga xabar yuborilishidan OLDIN —
     admin_xabar 'kutilmoqda', _xabar — tayyor matn (yetmasa fon sikli shuni qayta yuboradi), joy — qayta yasash uchun.
     Sayt zaxirasidan (fon sikli) allaqachon qo'shilgan bo'lsa — matn qo'shiladi, xolos."""
@@ -14059,7 +14093,9 @@ def _mijoz_buyurtma_yoz(uid, order, num, qolgan_nums, ism, tel, joy, til='', son
                 'order': order, 'ts': time.time(), 'holat': 'kutilmoqda', 'tovar': tovar,
                 'jami': None if (not narxlar or any(n is None for n in narxlar)) else round(sum(narxlar), 2),
                 'tur': joy.get('tur') or '', 'ism': ism, 'tel': tel, 'til': til if til in ('uz', 'ru') else '',
-                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}), 'admin_xabar': 'kutilmoqda', **({'sinov': True} if sinov else {}),
+                'nik': re.sub(r'[^\w.]', '', str(nik or ''))[:40], 'joy': dict(joy or {}),
+                **({'foto': str(foto)[:300]} if _FOTO_RE.match(str(foto or '')) else {}),   # 3851
+                'admin_xabar': 'kutilmoqda', **({'sinov': True} if sinov else {}),
                 **({'vaucher': 1} if (kel or {}).get('_vaucher') else {}),   # 3638
                 '_xabar': xabar, 'tolov': 'naqd' if (joy or {}).get('tolov') == 'naqd' else '',   # 3420
                 **({'vch': vch, 'vch_kod': kel['_vkod']['kod']} if vch else {})})   # 3637: shaxsiy vaucher chegirmasi $ (jami ayirilgan)
@@ -14890,6 +14926,7 @@ async def admin_buyurtma_endpoint(request):
                 b = dict(b) if b else None
             if not b:
                 return web.json_response({'error': 'Topilmadi'}, status=404)
+            almash = _havola_almashmi(b)   # 3851
             if b.get('holat') == 'bekor' or b.get('holat') in ('yetkazildi', 'yopildi'):
                 return web.json_response({'error': 'bekor' if b.get('holat') == 'bekor' else 'eski', 'holat': b.get('holat')},
                                          status=409)
@@ -14902,7 +14939,7 @@ async def admin_buyurtma_endpoint(request):
                 isbot = {'tur': 'havola', 'url': havola}
             kod, b = _buyurtma_yetkaz(mid, order, 'isbot', 'admin', isbot=isbot)
             if kod == 'ok' and not rasm:
-                natija = await blok(_buyurtma_mijozga, mid, b, 'yolda', havola)
+                natija = await blok(_buyurtma_mijozga, mid, b, 'yolda', havola, almash)
         else:
             kod, b = _buyurtma_yetkaz(mid, order, amal, 'admin')
             if kod == 'ok':
@@ -14930,6 +14967,16 @@ async def admin_buyurtma_endpoint(request):
 _TAHRIR_MAX = 10
 
 
+def _admin_joy(b):
+    """3851: admin oynasi uchun manzil — tur, matn (filial), Yandex nuqta (yaroqli bo'lsa). Faqat admin endpoint'iga chiqadi."""
+    j = dict(b.get('joy') or {})
+    tur = b.get('tur') or j.get('tur') or ''
+    r = {'tur': tur, 'manzil': str(j.get('manzil') or '')[:300]}
+    if tur == 'yandex' and _yandex_havola(j):
+        r['lat'], r['lon'] = round(float(j['lat']), 6), round(float(j['lon']), 6)
+    return r
+
+
 def _admin_buyurtma_dict(u, b):
     """Admin ro'yxatidagi bitta buyurtma (sayt «Buyurtmalar» bo'limi). 3306: tovarda chegirma (1 donaga) ham."""
     return {'uid': u, 'order': b.get('order'), 'ts': b.get('ts'), 'holat': b.get('holat'), 'holat_ts': b.get('holat_ts'),
@@ -14938,6 +14985,7 @@ def _admin_buyurtma_dict(u, b):
             'tolov': 'naqd' if _naqdmi(b) else '',   # 3420
             'yetkazish': b.get('yetkazish') or 0, 'jonatildi': bool(b.get('jonatildi')),   # 3312
             'sinov': bool(b.get('sinov')),   # 3394: 🧪 SINOV — saytda belgi, sanoqqa kirmaydi
+            'joy': _admin_joy(b), 'foto': b.get('foto') or '',   # 3851: manzil (BTS / EMU matni, Yandex nuqta) · mijoz rasmi
             'tovar': [{'num': x.get('num'), 'nom': x.get('nom'), 'narx': x.get('narx'), 'soni': x.get('soni') or 1,
                        'chegirma': x.get('chegirma') or 0} for x in (b.get('tovar') or [])]}
 
