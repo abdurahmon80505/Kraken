@@ -8794,6 +8794,30 @@ def webhook_begona(request):
     return not hmac.compare_digest(kelgan.encode(), WEBHOOK_SECRET.encode())
 
 
+def sozlama_yetishmaydi():
+    """4081: xavfsizlik uchun shart env'lar — yo'qlari nomi (qiymat hech qayerga yozilmaydi).
+    WEBHOOK_SECRET yo'q — begona odam /webhook ga soxta admin xabari yubora oladi; IK_PRIVATE_KEY yo'q — rasm yuklanmaydi."""
+    yoq = []
+    if not WEBHOOK_SECRET:
+        yoq.append("WEBHOOK_SECRET (webhook himoyasi yo'q)")
+    if not IK_PRIVATE_KEY:
+        yoq.append('IK_PRIVATE_KEY (rasm yuklash ishlamaydi)')
+    return yoq
+
+
+async def sozlama_ogohlantir():
+    """4081: shart env yo'q bo'lsa — log + adminga bitta xabar (faqat nomlar). Hammasi bor — jim."""
+    yoq = sozlama_yetishmaydi()
+    if not yoq:
+        return False
+    logger.warning('sozlama yetishmaydi: %s', ', '.join(yoq))
+    try:
+        await blok(send_msg, ADMIN_ID, '⚠️ Bot sozlamasi yetishmaydi (Render env):\n• ' + '\n• '.join(yoq))
+    except Exception as e:
+        logger.error(f'sozlama ogohlantirish: {type(e).__name__}')
+    return True
+
+
 def webhook_sozlama(url, allowed_updates):
     """setWebhook so'rovi tanasi (kalit bo'lsa — secret_token bilan)."""
     d = {'url': url, 'allowed_updates': allowed_updates}
@@ -15704,6 +15728,7 @@ async def main():
     logger.info("sozlama: yo'nalish kanallari — %s", ', '.join(sorted(k for k in MAIN_KANALLAR if k != '*')) or 'alohida emas')
     logger.info('sozlama: asosiy kanal %s · tomchi %s · webhook kaliti %s', 'ulangan' if MAIN_KANALLAR else "yo'q",
                 'yoqilgan' if KANAL_TOMCHI_BOSHI else "o'chiq", 'bor' if WEBHOOK_SECRET else "yo'q")
+    await sozlama_ogohlantir()   # 4081: ilgari faqat logda edi — endi adminga ham (bir marta, ishga tushganda)
     logger.info(f'Started on port {PORT} · bot @{BOT_USERNAME}')
     while True:
         await asyncio.sleep(3600)
