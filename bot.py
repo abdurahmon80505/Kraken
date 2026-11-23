@@ -1041,7 +1041,7 @@ XUSH_KB = {"inline_keyboard": [[{
 }]]}
 # `chat_member` sukut bo'yicha KELMAYDI — setWebhook'da aniq aytilishi shart. Qolganlari — ilgari sukut bo'yicha
 # kelayotgan asosiy turlar (bot hozir faqat message, callback_query va chat_member'ni o'qiydi).
-ALLOWED_UPDATES = ['widget_query', 'message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query',
+ALLOWED_UPDATES = ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query',
                    'inline_query', 'chosen_inline_result', 'my_chat_member', 'chat_member', 'chat_join_request']
 _xush = {'file_id': '', 'yuborilgan': {}, 'xato_vaqt': {}, 'ishladi': False, 'toxtatildi': False}
 _xush_lock = threading.Lock()
@@ -9034,8 +9034,8 @@ async def webhook(request):
 # ═══ 3428 (Owner 2026-11-11): TashkentComp ochiq guruhiga e'lonlarni bot tarqatadi (kuniga ~5 ta, hafta davomida) ═══
 # Saytda e'longa «🏷 TashCo'ga» belgisi (jadval `tashco` ustuni — TashkentComp bo'limi kaliti). Kanalda posti bor bo'lsa —
 # o'sha post forward qilinadi, yo'q bo'lsa (aksessuar va h.k.) bot o'zi rich post yuboradi. Bir e'lon — haftada ko'pi bilan
-# bir marta, sotilgani — hech qachon. Boshqaruv — klon forum-guruh (shu 7 mavzu) General'idagi panel (tugmalar; HTML panel
-# widget'i faqat lichkada ishlaydi). Holat — Apps Script «Script Properties» (TASHCO_HOLAT, action tashcoHolat).
+# bir marta, sotilgani — hech qachon. Boshqaruv — Owner lichkasida /tashco matn buyruqlari (4242: panellar yo'q; klon
+# forum-guruh — faqat sinov uchun). Holat — Apps Script «Script Properties» (TASHCO_HOLAT, action tashcoHolat).
 # 🔴 Klon guruh id'si logga / xabarga yozilmaydi (faqat holat ichida). Avtomat yoqilishi uchun avval 1 ta jonli e'lon
 #    yuboriladi va Owner «👀 Ko'rdim» bosadi.
 TASHCO_NISHON = (os.environ.get('TASHCO_NISHON', '') or '@TashkentComp').strip()
@@ -9147,7 +9147,8 @@ def tashco_saqla():
 
 async def tashco_tiklash():
     try:
-        await blok(tashco_yukla)
+        if await blok(tashco_yukla):
+            await blok(tashco_eski_panel_ochir)   # 4242: eski panel xabarlari
     except Exception as e:
         logger.error(f'tashco_tiklash: {type(e).__name__}')
 
@@ -9429,7 +9430,6 @@ def tashco_tick():
                     ozg = True
     if ozg:
         tashco_saqla()
-        tashco_panel()
     if tanlov:
         logger.info(f'tashco: №{tanlov[0]} → Jasur navbatiga ({TASHCO_NOM[tanlov[1]]})')
 
@@ -9450,210 +9450,8 @@ def _tc_soat(sek):
     return f'{sek // 3600:02d}:{sek % 3600 // 60:02d}'
 
 
-# ── Panel — Owner lichkasidagi HTML vidjet (Owner 2026-11-11 23:20; vidjet faqat shaxsiy chatda ishlaydi) ──
-# Bitta ekran: holat, bugun N/5, keyingisi, Jasur; ▶️/⏸, «1 ta yuborish», ⚙️ Sozlamalar (jadval, bo'limlar — ichkarida).
-# Holat vidjetga chat_data (JSON ≤1024 B) bo'lib boradi; tugma → widget_query → bot o'zgartiradi → editMessageWidgetData.
-TASHCO_BOLIM_QISQA = ['Jihoz', 'Periferiya', 'Telefon', 'Foto/Video', 'Aksessuar', 'Noutbuk', 'Monitor']
-TASHCO_VIDJET = r'''<style>
-:root{--t:var(--tg-theme-text-color,#000);--h:var(--tg-theme-hint-color,#888);--a:var(--tg-theme-button-color,#2a8bf2);
---at:var(--tg-theme-button-text-color,#fff);--s:var(--tg-theme-secondary-bg-color,rgba(127,127,127,.12));
---g:#2fb15a;--r:var(--tg-theme-destructive-text-color,#e5533d)}
-*{box-sizing:border-box}body{margin:0;font:15px/1.35 system-ui;color:var(--t);user-select:none}
-#w{padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
-.r{display:flex;align-items:center;gap:8px}.sp{flex:1}.h{color:var(--h);font-size:13px}
-.pl{padding:3px 10px;border-radius:99px;font-size:13px;font-weight:600;background:var(--s)}
-.on{color:var(--g)}.of{color:var(--h)}
-.big{font-size:44px;font-weight:700;line-height:1;margin:14px 0 4px;font-variant-numeric:tabular-nums}
-.big small{font-size:22px;color:var(--h);font-weight:600}
-.cd{background:var(--s);border-radius:12px;padding:10px 12px;margin-top:10px}
-button{font:inherit;border:0;border-radius:12px;padding:12px;width:100%;margin-top:8px;background:var(--s);color:var(--t);font-weight:600}
-.p{background:var(--a);color:var(--at);font-size:17px;padding:14px}.st{background:var(--r);color:#fff}
-.gr{background:var(--g);color:#fff}.b{opacity:.5}
-.m{width:auto;margin:0;padding:6px 12px;border-radius:9px}
-.k{font-weight:600}.ln{color:var(--tg-theme-link-color,var(--a))}
-.x{display:flex;align-items:center;gap:6px;padding:7px 0;border-top:1px solid rgba(127,127,127,.15)}
-.x:first-child{border-top:0}.n{min-width:22px;text-align:center;font-weight:600}
-.iz{margin-top:10px;font-size:13px;white-space:pre-wrap;color:var(--h)}
-</style><div id="w"></div><script>
-var W=window.TelegramWidget,S=null,V='m',B=0,P='',E='',N=['Jihoz','Periferiya','Telefon','Foto/Video','Aksessuar','Noutbuk','Monitor'];
-function g(){try{S=JSON.parse(W&&W.chatData||'null')}catch(e){}}
-function q(d){if(!W)return;if(B){if(d!='h')P=d;return}B=1;E='';r();W.request(d).then(function(a){B=0;try{var x=JSON.parse(a.result);if(x&&x.n)S=x}catch(e){}k()},function(e){B=0;if(d!='h')E=e&&e.code||'FAILED';k()})}
-function k(){if(P){var d=P;P='';q(d)}else r()}
-function bt(t,d,c){return '<button class="'+(c||'')+(B?' b':'')+'" onclick="q(\''+d+'\')">'+t+'</button>'}
-function ago(t){if(t<0)return 'hali ulanmagan';var m=Math.round((Date.now()/1e3-t)/60);return m<1?'hozirgina':m<60?m+' daq oldin':Math.round(m/60)+' soat oldin'}
-function lk(m){if(W)W.openTelegramLink('https://t.me/TashkentComp/'+m)}
-function r(){var s=S,h='';if(!s){document.getElementById('w').innerHTML='<div class="h">Yuklanmoqda…</div>';return}
-if(V=='m'){var on=s.y&&s.k;
-h+='<div class="r"><b>TashkentComp</b><span class="sp"></span><span class="pl '+(on?'on':'of')+'">'+(on?'● Ishlayapti':'⏸ To‘xtagan')+'</span></div>';
-h+='<div class="big">'+s.s+'<small> / '+s.n+'</small></div><div class="h">bugun yuborildi'+(s.ky=='tugadi'?' · bugungisi tugadi':s.ky?' · keyingisi ≈ '+s.ky:'')+'</div>';
-h+='<div class="cd"><div class="r"><span>👤 Jasur</span><span class="sp"></span><span class="h">'+ago(s.j)+'</span></div>'+(s.q?'<div class="h" style="margin-top:4px">⏳ '+s.q+'</div>':'')+'</div>';
-if(!s.k)h+='<div class="iz">'+(s.t?'Sinov e‘loni chiqdi — ko‘rib «Ko‘rdim» bosing.':'Avval 1 ta yuboring, TashkentComp’da ko‘ring.')+'</div>';
-h+=on?bt('⏸ To‘xtatish','yoq','p st'):bt('▶️ Yoqish','yoq','p');
-h+=bt('1️⃣ Hozir 1 ta yuborish','bir');
-if(s.t&&!s.k)h+=bt('👀 Ko‘rdim — davom','kor','gr');
-h+=bt('⚙️ Sozlamalar','v');
-if(s.l&&s.l.length){h+='<div class="cd">';s.l.forEach(function(x){h+='<div class="x"><span class="h">'+x[0]+'</span><span class="sp">№'+x[1]+' '+(N[x[2]]||'')+(x[4]=='f'?' 🔁':' 🤖')+'</span><span class="ln" onclick="lk('+x[3]+')">ochish ›</span></div>'});h+='</div>'}
-}else{
-h+='<div class="r"><button class="m" onclick="V=\'m\';r()">‹ Orqaga</button><span class="sp"></span><b>Sozlamalar</b></div>';
-h+='<div class="h" style="margin-top:12px">JADVAL (Toshkent vaqti)</div><div class="cd">';
-[['Kuniga',s.n+' ta','kun'],['Boshi',s.bo+':00','bosh'],['Oxiri',s.ox+':00','oxir']].forEach(function(x){h+='<div class="x"><span class="sp">'+x[0]+'</span>'+bt('−',x[2]+'-','m')+'<span class="n" style="min-width:52px">'+x[1]+'</span>'+bt('+',x[2]+'+','m')+'</div>'});
-h+='</div><div class="h" style="margin-top:12px">BO‘LIMLAR · navbatda · kuniga · usul</div><div class="cd">';
-s.b.forEach(function(x,i){h+='<div class="x"><button class="m '+(x[0]?'gr':'')+'" style="min-width:104px" onclick="q(\'b'+i+'o\')">'+(x[0]?'✓ ':'')+N[i]+'</button><span class="h sp">'+x[3]+' ta</span>'+bt('−','b'+i+'-','m')+'<span class="n">'+(x[1]||'∞')+'</span>'+bt('+','b'+i+'+','m')+bt(x[2]?'🤖':'🔁','b'+i+'u','m')+'</div>'});
-h+='</div><div class="h" style="margin-top:6px">🔁 — kanal postidan forward, 🤖 — Jasur o‘zi yozadi</div>';
-h+=bt('🧪 Klon guruhga sinov','sinov')}
-if(s.i||E)h+='<div class="iz">'+(E?'⚠️ '+E+'\n':'')+(s.i||'')+'</div>';
-document.getElementById('w').innerHTML=h}
-window.q=function(d){if(d=='v'){V='s';r();return}q(d)};
-g();r();if(W){W.onEvent('chatDataChanged',function(){g();r()});W.ready();q('h');setInterval(function(){if(!document.hidden)q('h')},60000)}
-</script>'''
-
-
-# ── 3475: panel ko'rinishi — A (bitta ekran) va B (bo'limli) NAMUNA vidjetlari, Owner tanlashi uchun ──
-# Owner lichkasiga /panelab bilan ikkalasi keladi. Tugmalar haqiqiy (widget_query → bot), lekin holat — bot xotirasidagi
-# NAMUNA: haqiqiy TashkentComp'ga hech narsa ketmaydi, sozlama jadvalga yozilmaydi. So'rov «dA:…» / «dB:…».
-# Owner tanlagach — tanlanmagani o'chiriladi, tanlangani TASHCO_VIDJET o'rniga haqiqiy holatga ulanadi (alohida ish).
-_TCN_CSS = r'''<style>
-:root{--t:var(--tg-theme-text-color,#000);--h:var(--tg-theme-hint-color,#888);--a:var(--tg-theme-button-color,#2a8bf2);
---at:var(--tg-theme-button-text-color,#fff);--s:var(--tg-theme-secondary-bg-color,rgba(127,127,127,.12));
---bg:var(--tg-theme-bg-color,#fff);--g:#2fb15a;--r:var(--tg-theme-destructive-text-color,#e5533d)}
-*{box-sizing:border-box}body{margin:0;font:15px/1.35 system-ui;color:var(--t);user-select:none}
-#w{padding:12px 14px calc(14px + env(safe-area-inset-bottom))}
-.r{display:flex;align-items:center;gap:8px}.sp{flex:1}.h{color:var(--h);font-size:13px}
-.v{font-size:13px;font-weight:800;padding:2px 9px;border-radius:7px;background:var(--a);color:var(--at)}
-.pl{padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700;background:var(--s)}
-.on{color:var(--g)}.of{color:var(--h)}
-.big{font-size:44px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}.big small{font-size:20px;color:var(--h);font-weight:600}
-.bar{height:8px;border-radius:99px;background:var(--s);overflow:hidden;margin:10px 0 4px}.bar i{display:block;height:100%;background:var(--a)}
-.cd{background:var(--s);border-radius:12px;padding:6px 12px;margin-top:10px}
-button{font:inherit;font-weight:700;border:0;border-radius:12px;padding:12px;width:100%;margin-top:8px;background:var(--s);color:var(--t)}
-.p{background:var(--a);color:var(--at)}.st{background:var(--r);color:#fff}.gr{background:var(--g);color:#fff}.b{opacity:.5}
-.m{width:auto;margin:0;padding:5px 12px;border-radius:9px;background:var(--bg)}.m.gr{background:var(--g);color:#fff}
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.x{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(127,127,127,.18)}.x:first-child{border-top:0}
-.ln{color:var(--tg-theme-link-color,var(--a));font-weight:600}.n{min-width:50px;text-align:center;font-weight:700}
-.iz{margin-top:8px;font-size:13px;white-space:pre-wrap;color:var(--h)}.lb{margin-top:10px;font-size:12px;font-weight:700;color:var(--h)}
-.seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--s);border-radius:10px;padding:3px;margin-top:10px}
-.seg button{margin:0;padding:7px 0;border-radius:8px;font-size:13px;background:transparent;color:var(--h)}
-.seg .ak{background:var(--bg);color:var(--t)}
-.sw{position:relative;width:40px;height:22px;padding:0;margin:0;border-radius:99px;background:var(--h);flex:none}
-.sw i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff}
-.sw.y{background:var(--g)}.sw.y i{left:21px}
-</style><div id="w"></div><script>'''
-_TCN_JS = r'''var W=window.TelegramWidget,S=null,B=0,P='',E='',V=0,T=0,N=['Jihoz','Periferiya','Telefon','Foto/Video','Aksessuar','Noutbuk','Monitor'];
-function g(){try{var x=JSON.parse(W&&W.chatData||'null');if(x)S=x}catch(e){}}
-function q(d){if(!W)return;if(B){if(d!='h')P=d;return}B=1;E='';r();W.request(X+':'+d).then(function(a){B=0;try{var x=JSON.parse(a.result);if(x&&x.n)S=x}catch(e){}k()},function(e){B=0;if(d!='h')E=e&&e.code||'FAILED';k()})}
-function k(){if(P){var d=P;P='';q(d)}else r()}
-function bt(t,d,c){return '<button class="'+(c||'')+(B?' b':'')+'" onclick="q(\''+d+'\')">'+t+'</button>'}
-function ago(t){var m=Math.round((Date.now()/1e3-t)/60);return m<1?'hozirgina':m<60?m+' daq oldin':Math.round(m/60)+' soat oldin'}
-function lk(m){if(W)W.openTelegramLink('https://t.me/TashkentComp'+(m>0?'/'+m:''))}
-function hd(){return '<div class="r"><span class="v">'+X[1]+'</span><b>TashkentComp</b><span class="sp"></span><span class="pl '+(S.y?'on':'of')+'">'+(S.y?'● Ishlayapti':'⏸ To‘xtagan')+'</span></div>'}
-function nav(){var t=0;S.b.forEach(function(x){if(x[0])t+=x[1]});return t}
-function hol(){var s=S;return '<div class="r" style="margin-top:12px;align-items:flex-end"><div class="big">'+s.s+'<small> / '+s.n+'</small></div><span class="sp"></span><div style="text-align:right"><div class="h">keyingisi</div><b>'+(s.ky=='tugadi'?'bugun tugadi':s.ky?'≈ '+s.ky:'—')+'</b></div></div><div class="bar"><i style="width:'+Math.min(100,Math.round(s.s*100/s.n))+'%"></i></div><div class="h">bugun yuborildi · navbatda '+nav()+' ta</div><div class="cd r" style="padding:10px 12px"><span>👤 Jasur</span><span class="sp"></span><span class="h">'+ago(s.j)+'</span></div><div class="g2">'+(s.y?bt('⏸ To‘xtatish','yoq','st'):bt('▶️ Yoqish','yoq','p'))+bt('1️⃣ Hozir 1 ta','bir')+'</div>'}
-function ls(){if(!S.l.length)return '';var h='<div class="cd">';S.l.forEach(function(x){h+='<div class="x"><span class="h">'+x[0]+'</span><span class="sp">№'+x[1]+' '+(N[x[2]]||'')+(x[4]=='f'?' 🔁':' 🤖')+'</span><span class="ln" onclick="lk('+x[3]+')">ochish ›</span></div>'});return h+'</div>'}
-function sz(){var s=S,h='<div class="cd">';[['Kuniga',s.n+' ta','kun'],['Boshi',s.bo+':00','bosh'],['Oxiri',s.ox+':00','oxir']].forEach(function(x){h+='<div class="x"><span class="sp">'+x[0]+'</span>'+bt('−',x[2]+'-','m')+'<span class="n">'+x[1]+'</span>'+bt('+',x[2]+'+','m')+'</div>'});return h+'</div>'}
-function iz(){return S.i||E?'<div class="iz">'+(E?'⚠️ '+E+'\n':'')+(S.i||'')+'</div>':''}
-function r(){document.getElementById('w').innerHTML=S?R():'<div class="h">Yuklanmoqda…</div>'}
-'''
-_TCN_OXIR = r'''
-g();r();if(W){W.onEvent('chatDataChanged',function(){g();r()});W.ready();q('h')}
-</script>'''
-# A — bitta ekran: holat, 2 katta tugma, oxirgi 2 e'lon, ⚙️ ichida jadval + bo'limlar
-TASHCO_NAMUNA_A = _TCN_CSS + "var X='dA';" + _TCN_JS + r'''function R(){var h;if(!V)return hd()+hol()+ls()+'<button onclick="V=1;r()">⚙️ Sozlamalar</button>'+iz();
-h='<div class="r"><button class="m" onclick="V=0;r()">‹ Orqaga</button><span class="sp"></span><span class="v">A</span><b>Sozlamalar</b></div><div class="lb">JADVAL (Toshkent vaqti)</div>'+sz()+'<div class="lb">BO‘LIMLAR · navbatda</div><div class="cd">';
-S.b.forEach(function(x,i){h+='<div class="x">'+bt((x[0]?'✓ ':'')+N[i],'b'+i,'m'+(x[0]?' gr':''))+'<span class="sp"></span><span class="h">'+x[1]+' ta</span></div>'});return h+'</div>'+iz()}''' + _TCN_OXIR
-# B — bo'limli: Holat / Navbat / Sozlama segmentlari, almashtirgichlar
-TASHCO_NAMUNA_B = _TCN_CSS + "var X='dB';" + _TCN_JS + r'''function R(){var h=hd()+'<div class="seg">';['Holat','Navbat','Sozlama'].forEach(function(t,i){h+='<button class="'+(T==i?'ak':'')+'" onclick="T='+i+';r()">'+t+'</button>'});h+='</div>';
-if(T==0)h+=hol();else if(T==1){h+='<div class="lb">NAVBATDA · '+nav()+' ta</div><div class="cd">';S.b.forEach(function(x,i){if(x[0])h+='<div class="x"><span class="sp">'+N[i]+'</span><b>'+x[1]+' ta</b></div>'});h+='</div><div class="lb">OXIRGI YUBORILGANLAR</div>'+ls()}
-else{h+=sz()+'<div class="cd">';S.b.forEach(function(x,i){h+='<div class="x"><button class="sw'+(x[0]?' y':'')+(B?' b':'')+'" onclick="q(\'b'+i+'\')"><i></i></button><span class="sp">'+N[i]+'</span><span class="h">'+x[1]+' ta</span></div>'});h+='</div>'+bt('🧪 Klon guruhga sinov','sinov')}
-return h+iz()}''' + _TCN_OXIR
-_TCN_HOLAT = {}
-_TCN_IZOH = "🧪 Namuna — haqiqiy TashkentComp'ga hech narsa ketmadi"
-
-
-def _tcn_sukut():
-    # oxirgi e'lonlar — haqiqiy panel holati yuklangan bo'lsa undan («ochish ›» haqiqiy postni ochsin), aks holda namuna
-    kal = list(TASHCO_NOM)
-    h = _TC_JOY.get('h') or {}
-    l = [[_tc_vaqt(ts), num, kal.index(k) if k in kal else -1, mid, u]
-         for ts, num, k, mid, u in reversed((h.get('oxirgi') or [])[-2:])]
-    if not l:
-        l = [['13:20', 6012, 1, 0, 'b'], ['11:05', 5998, 2, 0, 'f']]
-    return {'y': 1, 's': 3, 'n': 5, 'bo': 9, 'ox': 21, 'j': int(time.time()) - 120,
-            'b': [[1, 4], [1, 8], [1, 12], [1, 3], [1, 21], [0, 5], [1, 2]], 'l': l, 'i': ''}
-
-
-def _tcn_json(d):
-    from datetime import datetime, timezone, timedelta
-    t = datetime.now(timezone(timedelta(hours=5)))
-    hoz = t.hour * 60 + t.minute
-    ky = ''
-    if d['y']:
-        if d['s'] >= d['n'] or hoz >= d['ox'] * 60:
-            ky = 'tugadi'
-        elif hoz < d['bo'] * 60:
-            ky = f"{d['bo']:02d}:00"
-        else:
-            m = hoz + max(10, (d['ox'] * 60 - hoz) // (d['n'] - d['s']))
-            m = min(d['ox'] * 60 - 1, (m + 4) // 5 * 5)
-            ky = f'{m // 60:02d}:{m % 60:02d}'
-    return json.dumps(dict(d, ky=ky), ensure_ascii=False, separators=(',', ':'))
-
-
-def tashco_namuna_amal(v, amal):
-    # 3475: A/B namuna vidjeti tugmasi → yangi holat (JSON). Faqat xotira — jadval, guruh, Jasur'ga tegmaydi.
-    with _tc_qulf:
-        d = _TCN_HOLAT.get(v)
-        if d is None:
-            d = _TCN_HOLAT[v] = _tcn_sukut()
-        if amal != 'h':
-            d['i'] = _TCN_IZOH
-        if amal == 'yoq':
-            d['y'] = 0 if d['y'] else 1
-        elif amal == 'bir':
-            if d['s'] >= d['n']:
-                d['i'] = '✅ Bugungi ' + str(d['n']) + ' ta yuborib bo‘lingan (namuna)'
-            else:
-                from datetime import datetime, timezone, timedelta
-                d['s'] += 1
-                d['j'] = int(time.time())
-                num = (max([x[1] for x in d['l']] or [6000]) or 6000) + 1
-                d['l'] = ([[datetime.now(timezone(timedelta(hours=5))).strftime('%H:%M'), num, 2, 0, 'b']] + d['l'])[:2]
-        elif amal == 'sinov':
-            d['i'] = "🧪 Namuna — klon guruhga sinov yuborilmadi"
-        else:
-            m = re.fullmatch(r'(kun|bosh|oxir)([+-])', amal)
-            b = re.fullmatch(r'b([0-6])', amal)
-            if m:
-                k, z = m.group(1), 1 if m.group(2) == '+' else -1
-                if k == 'kun':
-                    d['n'] = min(TASHCO_KUN_MAX, max(1, d['n'] + z))
-                elif k == 'bosh':
-                    d['bo'] = min(d['ox'] - 1, max(0, d['bo'] + z))
-                else:
-                    d['ox'] = min(24, max(d['bo'] + 1, d['ox'] + z))
-            elif b:
-                x = d['b'][int(b.group(1))]
-                x[0] = 0 if x[0] else 1
-        return _tcn_json(d)
-
-
-def tashco_namuna_yubor(chat):
-    # 3475: /panelab — Owner lichkasiga A va B namuna panellari (har biri — alohida xabar). Guruh / kanalga emas.
-    with _tc_qulf:
-        _TCN_HOLAT.clear()
-    natija = []
-    for v, html, izoh in (('A', TASHCO_NAMUNA_A, 'bitta ekran'), ('B', TASHCO_NAMUNA_B, "bo'limli: Holat · Navbat · Sozlama")):
-        j = _tg_j('sendWidget', {'chat_id': chat, 'html': html, 'chat_data': tashco_namuna_amal(v, 'h'),
-                                 'allow_queries': True,
-                                 'caption': f"🅰️ A — TashkentComp paneli, {izoh}" if v == 'A' else
-                                            f"🅱️ B — TashkentComp paneli, {izoh}"})
-        natija.append(bool(j.get('ok')))
-        if not j.get('ok'):
-            logger.error(f"tashco namuna {v}: yuborilmadi ({str(j.get('description', ''))[:150]})")
-    if all(natija):
-        send_msg(chat, "👆 Ikkita namuna panel: <b>A</b> va <b>B</b>. Tugmalarni bosib ko'ring — ma'lumot namuna, "
-                       "TashkentComp'ga hech narsa ketmaydi.\nQaysi biri yoqdi — «A» yoki «B» deb ayting.")
-    return natija
+# 4242 (Owner 2026-11-23 «barcha control panellarni o'chir»): lichkadagi HTML vidjet (/tashco) va A/B namuna panellari
+# (/panelab) olib tashlandi. Boshqaruv — oddiy matn buyruqlari (tugmasiz): /tashco [amal] → tashco_buyruq.
 
 
 def _tc_vaqt(ts):
@@ -9661,80 +9459,94 @@ def _tc_vaqt(ts):
     return datetime.fromtimestamp(ts, timezone(timedelta(hours=5))).strftime('%d.%m %H:%M')
 
 
-def _tc_holat_json(h):
-    """Vidjet holati (chat_data) — ≤1024 bayt. Matnlar Toshkent vaqtida."""
+TASHCO_YORDAM = ("<b>/tashco</b> — holat\n"
+                 "<code>/tashco bir</code> — hozir 1 ta e'lon (Jasur yuboradi)\n"
+                 "<code>/tashco kor</code> — sinov e'lonini ko'rdim\n"
+                 "<code>/tashco yoq</code> — yoqish / to'xtatish\n"
+                 "<code>/tashco kun+</code> · <code>kun-</code> · <code>bosh+</code> · <code>bosh-</code> · "
+                 "<code>oxir+</code> · <code>oxir-</code> — jadval\n"
+                 "<code>/tashco b:telefon:on</code> · <code>b:telefon:+</code> · <code>b:telefon:-</code> · "
+                 "<code>b:telefon:u</code> — bo'lim (yoqish, kuniga, usul)\n"
+                 "<code>/tashco sinov</code> — klon guruhga sinov")
+
+
+def tashco_holat_matn(h):
+    """4242: holat — oddiy matn (tugmasiz). Toshkent vaqtida."""
     by_num, _ = elon_cache_hammasi()
     navbat = tashco_navbat(h, by_num)
-    kalitlar = list(TASHCO_NOM)
+    kb = _tc_bugun(h)
+    ky = _tc_keyingi_vaqt(h)
+    q = [f"🏷 <b>TashkentComp</b> — {'● ishlayapti' if h['yoq'] and h['korildi'] else '⏸ to‘xtagan'}",
+         f"Bugun: {kb['s']} / {h['kun']}" + (' · bugungisi tugadi' if ky == 'tugadi' else
+                                              f' · keyingisi ≈ {ky}' if ky else ''),
+         f"Jadval: {h['bosh']:02d}:00 – {h['oxir']:02d}:00"]
     ish = h.get('ish') or {}
-    q = ''
     if ish.get('num'):
-        q = (f"№{ish['num']} ({TASHCO_NOM.get(ish.get('k'), '')}) — Jasur " +
-             ('yuboryapti' if ish.get('holat') == 'berildi' else 'olishini kutyapti'))
-    izoh = _TC_JOY['izoh'] + ('\n⚠️ Sozlama jadvalga saqlanmadi — bot qayta urinadi' if _TC_JOY['iflos'] else '')
-    d = {'y': int(h['yoq']), 'k': int(h['korildi']), 't': int(bool(h['sinov'].get('mid'))),
-         's': _tc_bugun(h)['s'], 'n': h['kun'], 'bo': h['bosh'], 'ox': h['oxir'], 'ky': _tc_keyingi_vaqt(h),
-         'j': int(_TC_JOY.get('jasur_ts') or 0) or -1, 'q': q, 'i': izoh.strip()[:200],
-         'b': [[h['b'][k]['on'], h['b'][k]['n'], int(h['b'][k]['u'] == 'b'), len(navbat[k])] for k in kalitlar],
-         'l': [[_tc_vaqt(ts), num, kalitlar.index(k) if k in kalitlar else -1, mid, u]
-               for ts, num, k, mid, u in reversed(h['oxirgi'][-3:])]}
-    while True:
-        out = json.dumps(d, ensure_ascii=False, separators=(',', ':'))
-        if len(out.encode()) <= 1024:
-            return out
-        if d['l']:
-            d['l'].pop()
-        else:
-            d['i'] = d['i'][:max(0, len(d['i']) - 60)]
+        q.append(f"⏳ №{ish['num']} ({TASHCO_NOM.get(ish.get('k'), '')}) — Jasur " +
+                 ('yuboryapti' if ish.get('holat') == 'berildi' else 'olishini kutyapti'))
+    jt = _TC_JOY.get('jasur_ts')
+    q.append('👤 Jasur: ' + (f"{max(0, round((time.time() - jt) / 60))} daq oldin" if jt else 'hali ulanmagan'))
+    if not h['korildi']:
+        q.append("Sinov e'loni chiqdi — ko'rib <code>/tashco kor</code>." if h['sinov'].get('mid')
+                 else "Avval <code>/tashco bir</code>, TashkentComp'da ko'ring.")
+    q.append('\nBo‘limlar (navbatda · kuniga · usul):')
+    for k in TASHCO_NOM:
+        b = h['b'][k]
+        q.append(f"{'✓' if b['on'] else '·'} {TASHCO_NOM[k]} ({k}) — {len(navbat[k])} ta · {b['n'] or '∞'} · "
+                 f"{'🤖' if b['u'] == 'b' else '🔁'}")
+    if h['oxirgi']:
+        q.append('\nOxirgi:')
+        for ts, num, k, mid, u in reversed(h['oxirgi'][-3:]):
+            q.append(f"{_tc_vaqt(ts)} — №{num} {TASHCO_NOM.get(k, '')} {'🔁' if u == 'f' else '🤖'}"
+                     + (f' · <a href="{tashco_link(mid)}">ochish</a>' if mid else ''))
+    izoh = (_TC_JOY['izoh'] + ('\n⚠️ Sozlama jadvalga saqlanmadi — bot qayta urinadi' if _TC_JOY['iflos'] else '')).strip()
+    if izoh:
+        q.append('\n' + html_escape(izoh))
+    return '\n'.join(q)
 
 
-def tashco_panel(yangi=False):
-    """Lichkadagi vidjet holatini yangilaydi (editMessageWidgetData). Vidjet yo'q bo'lsa — jim (Owner /tashco yozadi)."""
+def tashco_eski_panel_ochir():
+    """4242: eski panel xabarlari (lichkadagi vidjet, klon guruhdagi tugmali panel) — bir marta o'chiriladi."""
     with _tc_qulf:
         h = _TC_JOY['h']
-        w = (h or {}).get('w') or {}
-        if not h or not w.get('m'):
+        if not h:
             return False
-        d = _tc_holat_json(h)
-    j = _tg_j('editMessageWidgetData', {'chat_id': w['c'], 'message_id': w['m'], 'chat_data': d})
-    tav = str(j.get('description', '')).lower()
-    if j.get('ok') or 'not modified' in tav:
-        return True
-    logger.warning(f'tashco vidjet: yangilanmadi ({tav[:120]})')
-    if 'not found' in tav:
-        with _tc_qulf:
-            h['w'] = {}
-        tashco_saqla()
-    return False
+        w = dict(h.get('w') or {})
+        klon = h.get('klon') or {}
+        p, klon_id = int(klon.get('p') or 0), tashco_klon_id()
+        if not w.get('m') and not p:
+            return False
+        h['w'] = {}
+        if p:
+            klon['p'] = 0
+    if w.get('m'):
+        _tg_j('deleteMessage', {'chat_id': w['c'], 'message_id': w['m']})
+    if p and klon_id:
+        _tg_j('deleteMessage', {'chat_id': klon_id, 'message_id': p})
+    tashco_saqla()
+    logger.info("tashco: eski panel xabarlari o'chirildi (4242)")
+    return True
 
 
-def tashco_vidjet_yubor(chat):
-    """/tashco (Owner lichkasi): yangi vidjet; eskisi va klon guruhdagi eski tugmali panel o'chiriladi."""
+def tashco_buyruq(chat, soz):
+    """/tashco [amal] (Owner lichkasi): amal bajariladi, javob — holat matni (tugmasiz)."""
     if not tashco_yukla():
         send_msg(chat, "⚠️ Sozlama jadvaldan o'qilmadi — 1 daqiqadan keyin /tashco ni qayta yuboring.")
         return
-    with _tc_qulf:
-        h = _TC_JOY['h']
-        eski = dict(h.get('w') or {})
-        d = _tc_holat_json(h)
-    j = _tg_j('sendWidget', {'chat_id': chat, 'html': TASHCO_VIDJET, 'chat_data': d, 'allow_queries': True,
-                             'caption': "🏷 TashkentComp — e'lon tarqatish"})
-    if not j.get('ok'):
-        logger.error(f"tashco vidjet: yuborilmadi ({str(j.get('description', ''))[:150]})")
-        send_msg(chat, "⚠️ Panel (vidjet) ochilmadi: <code>" + html_escape(str(j.get('description', ''))[:150]) +
-                 "</code>\nTelegram ilovasini yangilang va /tashco ni qayta yuboring.")
+    amal = (soz[0] if soz else '').strip().lower()
+    if amal in ('yordam', 'help', '?'):
+        send_msg(chat, TASHCO_YORDAM)
         return
+    if amal:
+        saqla, keyin = _tc_amal(amal)
+        if not saqla and not keyin and not _TC_JOY['izoh']:
+            send_msg(chat, "⚠️ Bunday amal yo'q.\n\n" + TASHCO_YORDAM)
+            return
+        _tc_keyin(saqla, keyin, None)
     with _tc_qulf:
-        h['w'] = {'c': chat, 'm': j['result']['message_id']}
-        klon = h.get('klon') or {}
-        p, klon_id = int(klon.get('p') or 0), tashco_klon_id()
-        if p:
-            klon['p'] = 0
-    if eski.get('m') and eski.get('m') != h['w']['m']:
-        _tg_j('deleteMessage', {'chat_id': eski['c'], 'message_id': eski['m']})
-    if p and klon_id:
-        _tg_j('deleteMessage', {'chat_id': klon_id, 'message_id': p})   # eski tugmali panel (guruhda)
-    tashco_saqla()
+        matn = tashco_holat_matn(_TC_JOY['h'])
+        _TC_JOY['izoh'] = ''
+    send_msg(chat, matn + ('' if amal else '\n\n' + TASHCO_YORDAM))
 
 
 def _tc_amal(amal):
@@ -9796,58 +9608,6 @@ def _tc_keyin(saqla, keyin, chat=None):
         saqla = False   # tashco_bir o'zi saqlaydi
     if saqla:
         tashco_saqla()
-
-
-def tashco_tugma(chat, data):
-    """Eski tc:… tugmalari (klon guruhdagi eski panel; faqat admin — handle_update tekshiradi)."""
-    if not tashco_yukla():
-        return
-    saqla, keyin = _tc_amal(data[3:])
-    _tc_keyin(saqla, keyin, chat)
-    tashco_panel()
-
-
-def _tc_vidjet_amal(amal, chat, mid):
-    """widget_query'ning tez qismi (sinxron): amal xotirada → (holat JSON, saqla, keyin)."""
-    saqla, keyin = (False, '') if amal == 'h' else _tc_amal(amal)
-    with _tc_qulf:
-        h = _TC_JOY['h']
-        if mid and chat == ADMIN_ID and (h.get('w') or {}).get('m') != mid:
-            h['w'] = {'c': ADMIN_ID, 'm': mid}   # oxirgi bosilgan vidjet — yangilanadigani
-            saqla = True
-        if keyin == 'bir':
-            _TC_JOY['izoh'] = '⏳ …'
-        return _tc_holat_json(h), saqla, keyin
-
-
-async def tashco_vidjet_sorov(wq):
-    """widget_query: 15 soniyada javob shart. Tez amal → javob (holat) → sekin ish (jadval, sinov) → vidjet yangilanadi."""
-    qid = wq.get('id')
-    try:
-        nd = str(wq.get('data') or '')[:64]
-        if nd[:3] in ('dA:', 'dB:'):   # 3475: A/B namuna paneli — faqat Owner, faqat xotira
-            d = None
-            if (wq.get('from') or {}).get('id') == ADMIN_ID:
-                d = await blok(tashco_namuna_amal, nd[1], nd[3:])
-            await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid, **({'data': d} if d else {})})
-            return
-        if (wq.get('from') or {}).get('id') != ADMIN_ID or not _TC_JOY['yuklandi']:
-            await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid})
-            if not _TC_JOY['yuklandi']:
-                asyncio.create_task(blok(tashco_yukla))
-            return
-        d, saqla, keyin = await blok(_tc_vidjet_amal, str(wq.get('data') or '')[:64],
-                                     (wq.get('chat') or {}).get('id'), wq.get('message_id'))
-        await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid, 'data': d})
-        if saqla or keyin:
-            await blok(_tc_keyin, saqla, keyin)
-            await blok(tashco_panel)
-    except Exception as e:
-        logger.error(f'tashco_vidjet_sorov: {type(e).__name__}: {_maxfiy(e)}')
-        try:
-            await blok(_tg_j, 'answerWidgetQuery', {'widget_query_id': qid})
-        except Exception:
-            pass
 
 
 def tashco_sinov(chat, num=None):
@@ -9951,7 +9711,6 @@ def tashco_ish_ber():
     if not ish.get('num') or ish.get('holat') != 'kut':
         if ozg:
             tashco_saqla()
-            tashco_panel()
         return {'ok': True, 'ish': None}
     num, kalit = str(ish['num']), ish['k']
     elon, models = elon_cache_get(num)
@@ -9960,7 +9719,6 @@ def tashco_ish_ber():
             h['ish'] = {}
             _TC_JOY['izoh'] = f"⚠️ №{num} endi faol emas (sotilgan?) — o'tkazib yuborildi."
         tashco_saqla()
-        tashco_panel()
         return {'ok': True, 'ish': None}
     post = _tc_post_tanla(elon, kalit) if h['b'][kalit]['u'] == 'a' else None
     yon = post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc'))
@@ -9974,7 +9732,6 @@ def tashco_ish_ber():
         if (h.get('ish') or {}).get('num') == ish['num']:
             h['ish']['holat'], h['ish']['bt'] = 'berildi', int(time.time())
     tashco_saqla()
-    tashco_panel()
     return {'ok': True, 'ish': javob}
 
 
@@ -9997,7 +9754,6 @@ def tashco_natija(num, mid, usul, xato=''):
             h['log'][str(num)] = int(time.time() - TASHCO_HAFTA + 86400)   # bugun qayta urinilmaydi
             _TC_JOY['izoh'] = f'❌ №{num} yuborilmadi (Jasur): {str(xato)[:150]}'
     tashco_saqla()
-    tashco_panel()
     if mid:
         logger.info(f'tashco: №{num} → {TASHCO_NOM[kalit]} (Jasur, {"forward" if usul == "f" else "o‘zi"}, id {mid})')
         if sinov:
@@ -10079,7 +9835,6 @@ async def tashco_jasur_endpoint(request):
             if not await blok(tashco_yukla):
                 return web.json_response({'ok': False, 'xato': 'holat'})
             izoh = await blok(tashco_sinov, tashco_klon_id())
-            await blok(tashco_panel)
             return web.json_response({'ok': True, 'izoh': izoh})
         return web.json_response({'ok': False, 'xato': 'amal'}, status=400)
     except Exception as e:
@@ -10088,7 +9843,7 @@ async def tashco_jasur_endpoint(request):
 
 
 def tashco_sozla(chat, forum, xabar_joy, soz):
-    """/tashco (klon guruhda, admin): 7 mavzu (borlari takrorlanmaydi), General'ga panel (qadalgan).
+    """/tashco (klon guruhda, admin): 7 mavzu (borlari takrorlanmaydi); eski tugmali panel o'chiriladi (4242).
     «/tashco yangi» — boshqa guruh ulangan bo'lsa ham shu guruhga o'tadi. «/tashco sinov 123» — №123 shu guruhga."""
     if not forum:
         send_msg(xabar_joy, "⚠️ Bu guruhda «Topics» (Mavzular) yoqilmagan: sozlamalar → Topics → yoqing, keyin /tashco.")
@@ -10104,7 +9859,6 @@ def tashco_sozla(chat, forum, xabar_joy, soz):
     if soz[:1] == ['sinov'] and eski == chat:
         num = soz[1] if len(soz) > 1 and re.fullmatch(r'\d{1,6}', soz[1]) else None
         send_msg(xabar_joy, html_escape(tashco_sinov(chat, num)))
-        tashco_panel()
         return
     with _tc_qulf:
         if eski != chat:
@@ -10125,14 +9879,13 @@ def tashco_sozla(chat, forum, xabar_joy, soz):
     if xato:
         send_msg(xabar_joy, f"⚠️ Ba'zi mavzular ochilmadi: <code>{html_escape(xato)}</code>\n"
                             "Botga «Mavzularni boshqarish» huquqi bering va /tashco ni qayta yuboring.")
-    send_msg(xabar_joy, f"✅ Mavzular tayyor ({len(m)}/7). Boshqaruv paneli endi lichkada: botga <b>/tashco</b> yozing.")
+    send_msg(xabar_joy, f"✅ Mavzular tayyor ({len(m)}/7). Boshqaruv — lichkada: botga <b>/tashco</b> yozing.")
     with _tc_qulf:
         p = int(h['klon'].get('p') or 0)
         h['klon']['p'] = 0
     if p:
         _tg_j('deleteMessage', {'chat_id': chat, 'message_id': p})   # eski tugmali panel
         tashco_saqla()
-    tashco_panel()
     logger.info(f'tashco: klon guruh sozlandi ({ochildi} mavzu ochildi)')
 
 
@@ -10231,11 +9984,6 @@ def _cq_toast(cq_data):
 
 async def handle_update(data):
     try:
-        # 3428: lichkadagi TashkentComp vidjeti (HTML panel) tugmasi
-        if data.get('widget_query'):
-            asyncio.create_task(tashco_vidjet_sorov(data['widget_query']))
-            return
-
         # BUGUN16 §1: «@bot …» — inline rejim
         if data.get('inline_query'):
             await inline_javob(data['inline_query'])
@@ -10273,7 +10021,7 @@ async def handle_update(data):
                                              Joy(chat_id, message.get('message_thread_id')), text.split()[1:3]))
                 return
             if tashco_klon_id() and chat_id == tashco_klon_id():
-                return   # 3428: klon guruh — faqat /tashco va panel tugmalari
+                return   # 3428: klon guruh — faqat /tashco
             if buyruq == '/guruh':
                 if user.get('id') == ADMIN_ID and text.split()[1:2] == ['namuna']:   # 3214.1: fonda (T1 — 10 namuna + xulosa)
                     asyncio.create_task(blok(guruh_namuna, chat_id, Joy(chat_id, message.get('message_thread_id'))))
@@ -10306,10 +10054,6 @@ async def handle_update(data):
             toast = _cq_toast(cq_data)
             await blok(req.post, f'{TG_API}/answerCallbackQuery',
                        json={'callback_query_id': cq_id, **({'text': toast} if toast else {})}, timeout=5)
-            # 3428: TashCo paneli (faqat admin, faqat klon guruhda)
-            if cq_data.startswith('tc:') and cq_user.get('id') == ADMIN_ID and tashco_klon_id()                     and cq_msg.get('chat', {}).get('id') == tashco_klon_id():
-                asyncio.create_task(blok(tashco_tugma, tashco_klon_id(), cq_data))
-                return
             if cq_data == 'kk_qatnash' and cq_chat:   # BUGUN147: /start dagi konkurs bloki tugmasi
                 await start_konkurs_flow(cq_chat, cq_user)
             if cq_data.startswith('yon:') and cq_chat:   # BUGUN213: oddiy /start dagi 3 yo'nalish tugmasi
@@ -10378,14 +10122,9 @@ async def handle_update(data):
         if not chat_id:
             return
 
-        # 3428: /tashco lichkada (faqat Owner) — TashkentComp boshqaruv paneli (HTML vidjet)
-        if not guruhdan and chat_id == ADMIN_ID and user.get('id') == ADMIN_ID and                 text.split(' ')[0].split('@')[0] == '/tashco':
-            asyncio.create_task(blok(tashco_vidjet_yubor, chat_id))
-            return
-        # 3475: /panelab — panel ko'rinishi A va B namunalari (Owner tanlashi uchun)
-        if not guruhdan and chat_id == ADMIN_ID and user.get('id') == ADMIN_ID and \
-                text.split(' ')[0].split('@')[0] == '/panelab':
-            asyncio.create_task(blok(tashco_namuna_yubor, chat_id))
+        # 3428 / 4242: /tashco lichkada (faqat Owner) — TashkentComp holati va amallari, oddiy matn (panel yo'q)
+        if not guruhdan and chat_id == ADMIN_ID and user.get('id') == ADMIN_ID and text.split(' ')[0].split('@')[0] == '/tashco':
+            asyncio.create_task(blok(tashco_buyruq, chat_id, text.split()[1:2]))
             return
 
         # 3301: «🚚 Yo'lda» bosilgan, isbot kutilmoqda — rasm-e'lon / istak javobidan OLDIN
