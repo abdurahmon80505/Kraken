@@ -9073,7 +9073,7 @@ def tashco_link(mid):
 
 
 def _tc_sukut():
-    return {'yoq': False, 'korildi': False, 'kun': 5, 'bosh': 9, 'oxir': 21,
+    return {'yoq': False, 'korildi': False, 'pauza': False, 'kun': 5, 'bosh': 9, 'oxir': 21,
             'b': {k: {'on': 1, 'n': 0, 'u': 'a'} for k in TASHCO_NOM},
             'log': {}, 'oxirgi': [], 'klon': {}, 'kunlik': {}, 'sinov': {}, 'ish': {}, 'w': {}}
 
@@ -9083,7 +9083,7 @@ def _tc_tozala(h):
     s = _tc_sukut()
     if not isinstance(h, dict):
         return s
-    for k in ('yoq', 'korildi'):
+    for k in ('yoq', 'korildi', 'pauza'):
         s[k] = bool(h.get(k))
     for k, a, b in (('kun', 1, TASHCO_KUN_MAX), ('bosh', 0, 23), ('oxir', 1, 24)):
         try:
@@ -9476,7 +9476,8 @@ def tashco_holat_matn(h):
     navbat = tashco_navbat(h, by_num)
     kb = _tc_bugun(h)
     ky = _tc_keyingi_vaqt(h)
-    q = [f"🏷 <b>TashkentComp</b> — {'● ishlayapti' if h['yoq'] and h['korildi'] else '⏸ to‘xtagan'}",
+    q = [f"🏷 <b>TashkentComp</b> — {'● ishlayapti' if h['yoq'] and h['korildi'] else '⏸ to‘xtagan'}"
+         + (' · ⏸ pauza (Boss)' if h.get('pauza') else ''),
          f"Bugun: {kb['s']} / {h['kun']}" + (' · bugungisi tugadi' if ky == 'tugadi' else
                                               f' · keyingisi ≈ {ky}' if ky else ''),
          f"Jadval: {h['bosh']:02d}:00 – {h['oxir']:02d}:00"]
@@ -9562,6 +9563,11 @@ def _tc_amal(amal):
                 _TC_JOY['izoh'] = "⚠️ Avval «1 ta yuborish», TashkentComp'da ko'rib «👀 Ko'rdim» bosing."
                 return False, ''
             h['yoq'] = not h['yoq']
+            return True, ''
+        if amal in ('pauza', 'davom'):   # 4249: Boss panelidan — Jasur yubormaydi / yana yuboradi
+            h['pauza'] = amal == 'pauza'
+            _TC_JOY['izoh'] = ("⏸ Jasur pauzada — TashComp'ga hech narsa ketmaydi." if h['pauza']
+                               else '▶️ Jasur yana ishlaydi.')
             return True, ''
         if amal == 'kor':
             if not h['sinov'].get('mid'):
@@ -9649,6 +9655,9 @@ def tashco_bir():
         if ish.get('num'):
             _TC_JOY['izoh'] = f"⏳ №{ish['num']} Jasur navbatida — biroz kuting."
             return
+        if h.get('pauza'):
+            _TC_JOY['izoh'] = "⚠️ Jasur pauzada — avval «▶️ Davom»."
+            return
         if not h['korildi'] and h['sinov'].get('mid'):
             _TC_JOY['izoh'] = "⚠️ Sinov e'loni allaqachon chiqqan — avval ko'ring, keyin «👀 Ko'rdim»."
             return
@@ -9708,7 +9717,7 @@ def tashco_ish_ber():
         _TC_JOY['jasur_ts'] = time.time()
         ozg = _tc_ish_eskir(h)
         ish = dict(h.get('ish') or {})
-    if not ish.get('num') or ish.get('holat') != 'kut':
+    if not ish.get('num') or ish.get('holat') != 'kut' or h.get('pauza'):   # 4249: pauzada ish berilmaydi
         if ozg:
             tashco_saqla()
         return {'ok': True, 'ish': None}
@@ -9775,8 +9784,9 @@ TASHCO_KUT_PING = 25
 def _tc_ish_kutyapti():
     if _KK_QONG.get('id') and _KK_QONG.get('holat') == 'kut':
         return True   # 3462: konkurs «Ko'rdim» qo'ng'irog'i navbatda — Jasur darhol «ol» qiladi
-    ish = (_TC_JOY.get('h') or {}).get('ish') or {}
-    return bool(ish.get('num')) and ish.get('holat') == 'kut'
+    h = _TC_JOY.get('h') or {}
+    ish = h.get('ish') or {}
+    return bool(ish.get('num')) and ish.get('holat') == 'kut' and not h.get('pauza')
 
 
 async def _tc_jasur_kut(request):
@@ -9807,6 +9817,89 @@ async def _tc_jasur_kut(request):
     return javob
 
 
+# 4249 (Owner 2026-11-24): Boss ilovasidagi Jasur paneli — Malika (kompyuter) shu kalit bilan holatni oladi, buyruq beradi va
+#   «🏷 TashComp'ga» belgisini o'zgartiradi. Telegram'ga hech narsa yozilmaydi — faqat xotira / jadval.
+TASHCO_PANEL_MAX = 40
+
+
+def tashco_boss_holat():
+    """Boss paneli uchun holat (JSON). Vaqtlar — epoch soniya (Toshkent vaqtiga sahifa o'zi o'giradi)."""
+    if not tashco_yukla():
+        return {'ok': False, 'xato': 'holat yuklanmadi'}
+    by_num, models = elon_cache_hammasi()
+    h = _TC_JOY['h']
+    with _tc_qulf:
+        _tc_ish_eskir(h)
+        navbat = tashco_navbat(h, by_num)
+        kb = dict(_tc_bugun(h))
+        tanlov = tashco_tanla(h, navbat)
+        ish = dict(h.get('ish') or {})
+        oxirgi = max([x[0] for x in h['oxirgi']] or [0])
+        navbatda = {x[2] for v in navbat.values() for x in v}
+        belgili = []
+        for num, e in by_num.items():
+            k = str((e or {}).get('tashco', '') or '').strip().lower()
+            if not str(num).isdigit() or k not in TASHCO_NOM or elon_status(e) != 'active':
+                continue
+            model = (models or {}).get(str(e.get('specId', '') or ''), {})
+            belgili.append({'num': int(num), 'nom': str(elon_nomi(e, model, 'uz'))[:60], 'b': k,
+                            'ts': int(h['log'].get(str(num), 0) or 0), 'n': str(num) in navbatda})
+        belgili.sort(key=lambda x: (not x['n'], x['ts'], -x['num']))
+        return {'ok': True, 'pauza': bool(h.get('pauza')), 'korildi': bool(h['korildi']),
+                'sinov': tashco_link(h['sinov'].get('mid')) if h['sinov'].get('mid') and not h['korildi'] else '',
+                'ish': {'num': ish['num'], 'b': ish.get('k', ''), 'holat': ish.get('holat', ''), 'ts': ish.get('ts', 0)}
+                if ish.get('num') else None,
+                'bugun': int(kb.get('s', 0)), 'kun': h['kun'], 'oraliq': TASHCO_ORALIQ,
+                'keyingi': int(oxirgi + TASHCO_ORALIQ) if time.time() < oxirgi + TASHCO_ORALIQ else 0,
+                'navbatdagi': int(tanlov[0]) if tanlov else 0,
+                'jasur_ts': int(_TC_JOY.get('jasur_ts') or 0),
+                'bolimlar': dict(TASHCO_NOM),
+                'belgili': belgili[:TASHCO_PANEL_MAX], 'belgili_soni': len(belgili),
+                'oxirgi': [{'ts': ts, 'num': num, 'b': k, 'link': tashco_link(mid)}
+                           for ts, num, k, mid, _u in reversed(h['oxirgi'][-5:])],
+                'izoh': _TC_JOY['izoh']}
+
+
+def tashco_boshqar(buyruq):
+    """Boss paneli buyrug'i: bir | kor | pauza | davom → {ok, izoh}."""
+    if buyruq not in ('bir', 'kor', 'pauza', 'davom'):
+        return {'ok': False, 'izoh': "Bunday buyruq yo'q"}
+    if not tashco_yukla():
+        return {'ok': False, 'izoh': "Holat jadvaldan o'qilmadi — keyinroq"}
+    saqla, keyin = _tc_amal(buyruq)
+    if saqla or keyin:
+        _tc_keyin(saqla, keyin, None)
+    with _tc_qulf:
+        izoh = _TC_JOY['izoh'] or '✅'
+        _TC_JOY['izoh'] = ''
+    return {'ok': not izoh.startswith(('⚠️', '⏳')) or (buyruq == 'bir' and 'hozir yuboradi' in izoh), 'izoh': izoh}
+
+
+def tashco_belgi(num, bolim):
+    """Boss paneli: e'longa «🏷 TashComp'ga» belgisi (bo'lim kaliti | 'avto') yoki olib tashlash ('')."""
+    num = str(num or '').strip()
+    bolim = str(bolim or '').strip().lower()
+    if not re.fullmatch(r'\d{1,6}', num):
+        return {'ok': False, 'izoh': "Nomer noto'g'ri"}
+    if bolim and bolim != 'avto' and bolim not in TASHCO_NOM:
+        return {'ok': False, 'izoh': "Bo'lim noto'g'ri"}
+    elon, models = elon_cache_get(num)
+    if not elon:
+        return {'ok': False, 'izoh': f"№{num} topilmadi"}
+    if bolim == 'avto':
+        bolim = tashco_avto(elon, models)
+        if not bolim:
+            return {'ok': False, 'izoh': f"№{num}: bo'limni o'zim topa olmadim — qo'lda tanlang"}
+    if not _sheets_update({'num': int(num), 'tashco': bolim}):
+        return {'ok': False, 'izoh': 'Jadvalga yozilmadi'}
+    with _elon_cache_lock:
+        e = _ELON_CACHE['by_num'].get(num)
+        if e is not None:
+            e['tashco'] = bolim
+    return {'ok': True, 'b': bolim,
+            'izoh': f"✅ №{num} → {TASHCO_NOM[bolim]}" if bolim else f"✅ №{num} — belgi olindi"}
+
+
 async def tashco_jasur_endpoint(request):
     """POST {kalit, amal: 'ol' | 'natija' | 'sinov' | 'kut', …} — faqat Jasur skripti (kalit — tashco_jasur_kalit)."""
     try:
@@ -9831,6 +9924,12 @@ async def tashco_jasur_endpoint(request):
             mid = int(mid) if str(mid or '').isdigit() else None
             return web.json_response(await blok(tashco_natija, str(data.get('num', '')), mid,
                                                 str(data.get('usul', '')), str(data.get('xato', ''))))
+        if amal == 'panel':   # 4249: Boss paneli (Malika orqali)
+            return web.json_response(await blok(tashco_boss_holat))
+        if amal == 'boshqar':
+            return web.json_response(await blok(tashco_boshqar, str(data.get('buyruq', ''))))
+        if amal == 'belgi':
+            return web.json_response(await blok(tashco_belgi, data.get('num'), data.get('bolim', '')))
         if amal == 'sinov':   # klon guruhga (Owner'ning o'z guruhi) — forward + bot e'loni; TashkentComp'ga emas
             if not await blok(tashco_yukla):
                 return web.json_response({'ok': False, 'xato': 'holat'})
