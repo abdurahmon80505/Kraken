@@ -9032,7 +9032,7 @@ async def webhook(request):
 
 
 # ═══ 3428 (Owner 2026-11-11): TashkentComp ochiq guruhiga e'lonlarni bot tarqatadi (kuniga ~5 ta, hafta davomida) ═══
-# Saytda e'longa «🏷 TashCo'ga» belgisi (jadval `tashco` ustuni — TashkentComp bo'limi kaliti). Kanalda posti bor bo'lsa —
+# Saytda e'longa «🏷 TashComp'ga» belgisi (jadval `tashco` ustuni — TashkentComp bo'limi kaliti). Kanalda posti bor bo'lsa —
 # o'sha post forward qilinadi, yo'q bo'lsa (aksessuar va h.k.) bot o'zi rich post yuboradi. Bir e'lon — haftada ko'pi bilan
 # bir marta, sotilgani — hech qachon. Boshqaruv — Owner lichkasida /tashco matn buyruqlari (4242: panellar yo'q; klon
 # forum-guruh — faqat sinov uchun). Holat — Apps Script «Script Properties» (TASHCO_HOLAT, action tashcoHolat).
@@ -9661,7 +9661,7 @@ def tashco_bir():
             return
         tanlov = tashco_tanla(h)
         if not tanlov:
-            _TC_JOY['izoh'] = "⚠️ Yuboradigan e'lon yo'q — saytda e'longa «🏷 TashCo'ga» belgisini qo'ying."
+            _TC_JOY['izoh'] = "⚠️ Yuboradigan e'lon yo'q — saytda e'longa «🏷 TashComp'ga» belgisini qo'ying."
             return
         num, kalit = tanlov
         _tc_ish_qoy(h, num, kalit, 'bir')
@@ -9890,7 +9890,7 @@ def tashco_sozla(chat, forum, xabar_joy, soz):
 
 
 async def tashco_endpoint(request):
-    """3428: saytdagi «🏷 TashCo'ga» — e'longa TashkentComp bo'limi. {initData, num, bolim: 'avto'|kalit|''} → {ok, bolim, nom}."""
+    """3428: saytdagi «🏷 TashComp'ga» — e'longa TashkentComp bo'limi. {initData, num, bolim: 'avto'|kalit|''} → {ok, bolim, nom}."""
     try:
         data = await request.json()
         uid = check_init_data(data.get('initData', ''))
@@ -15416,7 +15416,7 @@ async def main():
     app.router.add_post('/elon_changed', elon_changed_endpoint)   # G10.3: admin saqlaganda xotira yangilanadi + G11.2 kanal sinxron
     app.router.add_post('/kanal_post', kanal_post_endpoint)       # G11.2: saytdan «Kanalga» / «Yana keldi»
     app.router.add_post('/tashco/jasur', tashco_jasur_endpoint)   # 3428: Jasur skripti — ish olish / natija
-    app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashCo'ga» — TashkentComp bo'limi
+    app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashComp'ga» — TashkentComp bo'limi
     app.router.add_post('/tashco_taxmin', tashco_taxmin_endpoint)   # 3828: «⭐ mos» bo'lim taxmini
     app.router.add_post('/konkurs_qayta', konkurs_qayta_endpoint)   # 3668: Mijozlar → konkurs «Qayta yozish»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
