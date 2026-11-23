@@ -110,7 +110,6 @@ assert bot.tashco_link(77) == 'https://t.me/TashkentComp/77'
 
 # Jasur modeli: bot TashkentComp'ga o'zi yozmaydi — Jasurga ish beradi; 1 ta sinovdan keyin Owner «Ko'rdim» demaguncha to'xtaydi
 bot.tashco_saqla = lambda: True
-bot.tashco_panel = lambda yangi=False: True
 bot._TC_JOY['yuklandi'] = True
 bot.tashco_yukla = lambda: True
 bot.kanal_manbalari = lambda elon: ['https://x/1.jpg']
@@ -205,16 +204,20 @@ r = asyncio.run(bot.tashco_jasur_endpoint(Rq({'kalit': bot.tashco_jasur_kalit(),
 assert r.status == 200 and _j.loads(r.body)['ok']
 assert len(bot.tashco_jasur_kalit()) == 32
 
-# vidjet: holat ≤1024 B, HTML ≤32768 B va zlib ≤4096 B; widget_query — ALLOWED_UPDATES da
-import zlib  # noqa: E402
+# 4242: panel yo'q (vidjet, A/B namuna, tugmali panel) — /tashco lichkada oddiy matn
+for nom in ('TASHCO_VIDJET', 'TASHCO_NAMUNA_A', 'tashco_vidjet_sorov', 'tashco_vidjet_yubor', 'tashco_namuna_yubor',
+            'tashco_tugma', 'tashco_panel', '_tc_holat_json'):
+    assert not hasattr(bot, nom), nom
+assert 'widget_query' not in bot.ALLOWED_UPDATES
 h['oxirgi'] = [[int(time.time()), 10000 + i, 'telefon', 1234567, 'f'] for i in range(10)]
-bot._TC_JOY['izoh'] = 'x' * 900
-d = bot._tc_holat_json(h)
-assert len(d.encode()) <= 1024 and _j.loads(d)['n'] == h['kun'], len(d.encode())
-assert len(bot.TASHCO_VIDJET.encode()) <= 32768 and len(zlib.compress(bot.TASHCO_VIDJET.encode(), 9)) <= 4096
-assert 'widget_query' in bot.ALLOWED_UPDATES
-# widget_query: admin emas — javob bo'sh, amal yo'q
+bot._TC_JOY['izoh'] = ''
+m = bot.tashco_holat_matn(h)
+assert 'TashkentComp' in m and all(n in m for n in bot.TASHCO_NOM.values()), m
 so_rov.clear()
-asyncio.run(bot.tashco_vidjet_sorov({'id': 'q1', 'from': {'id': 5}, 'chat': {'id': 5}, 'message_id': 9, 'data': 'yoq'}))
-assert so_rov[-1][0] == 'answerWidgetQuery' and 'data' not in so_rov[-1][1]
-print('OK', len(zlib.compress(bot.TASHCO_VIDJET.encode(), 9)), 'B')
+bot.tashco_buyruq(bot.ADMIN_ID, ['kun-'])
+assert so_rov and so_rov[-1][0] == 'sendMessage' and 'reply_markup' not in so_rov[-1][1], so_rov[-1:]
+assert all(u not in ('sendWidget', 'editMessageWidgetData') for u, _ in so_rov)
+so_rov.clear()
+bot.tashco_buyruq(bot.ADMIN_ID, ['nimadir'])
+assert "Bunday amal yo'q" in so_rov[-1][1]['text']
+print("OK — panel yo'q, /tashco matn")
