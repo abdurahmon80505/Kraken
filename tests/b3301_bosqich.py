@@ -328,7 +328,9 @@ bosish(f'bh:yolda:{MIJOZ}:TB02')
 yozish(photo=[{'file_id': 'kichikF'}, {'file_id': 'CHEK_FID'}])
 b = yozuv('TB02')
 ph = [d for d in sorov('sendPhoto')]
-sinov('file_id mijozga sendPhoto', len(ph) == 1 and ph[0]['chat_id'] == MIJOZ and ph[0]['photo'] == 'CHEK_FID', repr(ph))
+sinov('file_id mijozga sendPhoto', len(ph) == 2 and ph[0]['chat_id'] == MIJOZ and ph[0]['photo'] == 'CHEK_FID', repr(ph))
+sinov("4266: Owner'ga mijoz ko'rgan rasm nusxasi", ph[1]['chat_id'] == ADMIN and ph[1]['photo'] == 'FID_YANGI'
+      and yuborildi_mi(ADMIN, 'mijozga yetdi'), repr(ph))
 sinov('isbot: rasm, fid', b['holat'] == 'yolda' and b['yetkaz']['isbot']['tur'] == 'rasm' and b['yetkaz']['isbot']['fid'] == 'CHEK_FID', repr(b.get('yetkaz')))
 sinov('mijozga ⚠️ yo\'q', not yuborildi_mi(ADMIN, 'mijozga xabar bormadi'), repr(SOROV)[:300])
 
