@@ -982,12 +982,13 @@ def _eski_tugmami(text):
     return bool(t) and not t.startswith('/') and len(t) <= 60 and any(t == x or t.startswith(x + ' ') for x in _ESKI_TUGMA_SOZ)
 
 
-def eski_klaviatura_olib_tashla(chat_id):
+def eski_klaviatura_olib_tashla(chat_id, jim=False):
     """Eski reply-klaviatura (pastdagi tugmalar) ni yopadi: remove_keyboard faqat xabar bilan ketadi — qisqa xabar yuborilib,
-    darhol o'chiriladi (chatda iz qolmaydi). Xato bo'lsa jim — asosiy javobga xalaqit bermaydi."""
+    darhol o'chiriladi (chatda iz qolmaydi). Xato bo'lsa jim — asosiy javobga xalaqit bermaydi.
+    4266: jim=True — bildirishnomasiz (bot ishga tushganda Owner chatida qolib ketgan raqam tugmasini olish uchun)."""
     try:
-        r = req.post(f'{TG_API}/sendMessage', json={'chat_id': chat_id, 'text': '👇',
-                                                    'reply_markup': {'remove_keyboard': True}}, timeout=8)
+        r = req.post(f'{TG_API}/sendMessage', json={'chat_id': chat_id, 'text': '👇', 'reply_markup': {'remove_keyboard': True},
+                                                    **({'disable_notification': True} if jim else {})}, timeout=8)
         mid = (r.json().get('result') or {}).get('message_id') if r.status_code == 200 else None
         if mid:
             req.post(f'{TG_API}/deleteMessage', json={'chat_id': chat_id, 'message_id': mid}, timeout=8)
@@ -6925,6 +6926,15 @@ async def start_konkurs_flow(chat_id, user):
     if not _kk_aktivmi(k) or not _kk_korsatsinmi(k, user.get('id', chat_id)):
         return 'yopiq', await blok(send_msg, chat_id, f"😕 Hozirda aktiv konkurs yo'q.\n\nKanalimizni kuzating: {CHANNEL}")
 
+    # 4266 (Owner 2026-11-24): admin chatiga «📱 Raqamni ulashish» (reply klaviatura) HECH QACHON chiqmaydi — u pastda qolib
+    # ketadi, Owner uni mijoz tugmasi deb ko'radi; 'phone' holati ham qo'yilmaydi — aks holda Owner'ning keyingi matni
+    # (taksi havolasi) konkurs raqami deb olinardi. Admin konkurs xabarini ko'radi, tugmasiz (qolgan tugma ham olinadi).
+    if _admin_mi(chat_id) or _admin_mi(user.get('id')):
+        return 'ok', await blok(send_msg, chat_id,
+            f"🎁 <b>{html_escape(k.get('prize','Sovrin'))}</b>\n\n"
+            "🛡 Siz adminsiz — mijozga shu yerda «📱 Raqamni ulashish» tugmasi chiqadi, sizga chiqmaydi.",
+            {'remove_keyboard': True})
+
     yet = await blok(yetishmagan_kanallar, chat_id)
     if yet:
         return 'obuna', await blok(not_member_msg, chat_id, yet)
@@ -10497,6 +10507,8 @@ async def tiklash_holati(chat_id, user):
     """E3: aktiv konkursdan `user_states` ni tiklaydi. Konkurs yo'q — False."""
     if chat_id in user_states:
         return True
+    if _admin_mi(chat_id) or _admin_mi(user.get('id')):   # 4266: admin — konkurs raqami so'ralmaydi
+        return False
     k = await blok(get_konkurs)
     if not k or not k.get('id') or not _kk_aktivmi(k) or not _kk_korsatsinmi(k, user.get('id', chat_id)):
         return False
@@ -11948,11 +11960,80 @@ def _havola_almashmi(b):
 def _buyurtma_mijozga(uid, b, yangi, havola='', almash=False):
     """Mijozga botda qisqa xabar. (natija) 'yuborildi' | boshqa. 3812: har urinish «Yuborilgan» jurnaliga.
     3851: almash — taksi havolasi almashdi (yangi alohida xabar, «🔁» matni)."""
+    return _buyurtma_mijozga_nusxa(uid, b, yangi, havola, almash)[0]
+
+
+def _tovar_rasm(b):
+    """4266: buyurtmadagi birinchi tovar e'lonining 1-rasmi (suv belgili, saytdagi kabi) — '' (rasm yo'q / e'lon topilmadi)."""
+    for x in (b or {}).get('tovar') or []:
+        if not isinstance(x, dict) or not x.get('num'):
+            continue
+        try:
+            e, _ = elon_cache_get(x['num'])
+            im = images_of(e) if e else []
+        except Exception as ex:
+            logger.error(f'tovar rasm: {type(ex).__name__}')
+            im = []
+        if im:
+            return belgili(im[0])
+    return ''
+
+
+def _havola_qator(havola):
+    """4266: mijoz xabari izohida havolaning o'zi ham (tugmadan tashqari) — Owner: «rasm + №, yo'lda, havola»."""
+    return f"\n\n🔗 {html_escape(havola)}" if havola else ''
+
+
+def _nusxa_ol(natija, j):
+    """Mijozga ketgan xabar (Telegram result) yoki {'_sabab': …} — Owner'ga ko'rsatish uchun."""
+    r = (j or {}).get('result') if natija == 'yuborildi' else None
+    return r if isinstance(r, dict) else {'_sabab': str((j or {}).get('description') or natija or '')}
+
+
+def _buyurtma_mijozga_nusxa(uid, b, yangi, havola='', almash=False):
+    """(natija, nusxa). 4266: havolali «yo'lda» xabari mijozga TOVAR RASMI bilan ketadi (rasm + izoh: №, yo'lda, havola + tugma);
+    rasm topilmasa yoki Telegram rasmni olmasa — eskicha matn. nusxa — mijozga ketgan xabarning o'zi: Owner'ga aynan shu
+    ko'rinish qaytariladi."""
     matn, klava = _mijoz_matn_klava(b, yangi, havola, almash)
-    natija, j = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML',
-                                       **({'reply_markup': klava} if klava else {})}, urinish=2)
-    _yuborilgan_yoz(b, yangi, 'havola' if havola else 'matn', natija, j)
-    return natija
+    matn += _havola_qator(havola)
+    natija, j, turi = 'xato', None, 'havola' if havola else 'matn'
+    rasm = _tovar_rasm(b) if havola and yangi == 'yolda' else ''
+    if rasm:
+        natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'photo': rasm, 'caption': matn, 'parse_mode': 'HTML',
+                                         **({'reply_markup': klava} if klava else {})}, timeout=40, urinish=2)
+        if natija == 'xato':   # rasm manzili ochilmadi — matn bilan (mijoz havolasiz qolmasin)
+            logger.warning(f"yolda rasm: №{b.get('order')} — {str((j or {}).get('description') or '')[:80]}")
+        else:
+            turi = 'havola+rasm'
+    if not rasm or natija == 'xato':
+        natija, j = _kk_tg('sendMessage', {'chat_id': uid, 'text': matn, 'parse_mode': 'HTML',
+                                           **({'reply_markup': klava} if klava else {})}, urinish=2)
+    _yuborilgan_yoz(b, yangi, turi, natija, j)
+    return natija, _nusxa_ol(natija, j)
+
+
+def _mijozga_ketgan_adminga(chat_id, order, natija, nusxa, reply_id=None):
+    """4266: Owner'ga — mijozga ketgan xabarning AYNAN nusxasi (rasm / izoh / tugmalar), yoki ochiq «❌ bormadi» + sabab."""
+    o = html_escape(order)
+    rp = {'reply_parameters': {'message_id': reply_id, 'allow_sending_without_reply': True}} if reply_id else {}
+    r = nusxa or {}
+    if natija != 'yuborildi' or not r.get('message_id'):
+        sabab = {'bloklagan': "mijoz botni to'xtatgan", 'noaniq': "tarmoq uzildi — ketgan-ketmagani noaniq"}.get(
+            natija, html_escape(str(r.get('_sabab') or natija or 'xato'))[:120])
+        _kk_tg('sendMessage', {'chat_id': int(chat_id), 'parse_mode': 'HTML', **rp, 'text':
+               f"❌ №{o} — mijozga xabar bormadi: <b>{sabab}</b>.\nHolat saqlandi — «Mijozga yozish» orqali o'zingiz yuboring."},
+               urinish=2)
+        return
+    _kk_tg('sendMessage', {'chat_id': int(chat_id), 'parse_mode': 'HTML', **rp,
+                           'text': f"✅ №{o} — mijozga yetdi. U ko'rgan xabar 👇"}, urinish=2)
+    km = {'reply_markup': r['reply_markup']} if r.get('reply_markup') else {}
+    if r.get('photo'):
+        _kk_tg('sendPhoto', {'chat_id': int(chat_id), 'photo': r['photo'][-1].get('file_id'), 'caption': r.get('caption') or '',
+                             **({'caption_entities': r['caption_entities']} if r.get('caption_entities') else {}), **km},
+               timeout=40, urinish=2)
+    else:
+        _kk_tg('sendMessage', {'chat_id': int(chat_id), 'text': r.get('text') or '',
+                               **({'entities': r['entities']} if r.get('entities') else {}), **km}, urinish=2)
 
 
 def _sotuv_sheet_yoz(uid, b):
@@ -12311,32 +12392,40 @@ async def yolda_isbot_qabul(chat_id, message, k):
             k['asl'] = {'message_id': x.get('m'), ('caption' if c else 'text'): x.get('t'),
                         ('caption_entities' if c else 'entities'): x.get('e')}
         tur, q = isb
-        natija = ''
+        natija, nusxa = '', None
         almash = _havola_almashmi(b)   # 3851
+        eski = (b.get('yetkaz') or {}).get('isbot') or {}
         if tur == 'havola':
             isbot = {'tur': 'havola', 'url': q}
+            if eski.get('tur') == 'rasm' and eski.get('fid'):   # 4266: avval chek rasmi kelgan — u yo'qolmasin
+                isbot['fid'] = eski['fid']
         else:
+            # 4266: chek rasmi + havola birga (izohda) — ikkalasi mijozga bitta xabarda; yolg'iz rasm — oldingi havola saqlanadi
+            hv = _rasm_izoh_havola(message) or _eski_havola(b)
             rasm = q if tur == 'rasm' else await blok(_isbot_rasm_ol, q)
             if not rasm:
                 if not k.get('bevosita'):
                     _yolda_kut_qoy(chat_id, k)
                 await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: fayl olinmadi — rasm sifatida yuboring.")
                 return
-            natija, fid = await blok(_isbot_rasm_yubor, uid, b, rasm)
+            natija, fid, nusxa = await blok(_isbot_rasm_yubor, uid, b, rasm, hv, True)
             if not fid:
                 if not k.get('bevosita'):
                     _yolda_kut_qoy(chat_id, k)
                 await blok(send_msg, chat_id, f"⚠️ №{html_escape(order)}: rasm Telegram'ga yuklanmadi — qayta yuboring.")
                 return
-            isbot = {'tur': 'rasm', 'fid': fid}
+            isbot = dict({'tur': 'rasm', 'fid': fid}, **({'url': hv} if hv else {}))
         kod, b = await blok(_buyurtma_yetkaz, uid, order, 'isbot', 'admin', isbot=isbot)
         if kod == 'ok' and tur == 'havola':
-            natija = await blok(_buyurtma_mijozga, uid, b, 'yolda', q, almash)
+            natija, nusxa = await blok(_buyurtma_mijozga_nusxa, uid, b, 'yolda', q, almash)
         if b and (k['asl'] or {}).get('message_id'):
             await _buyurtma_xabar_yangila(chat_id, k['asl']['message_id'], k['asl'], uid, order, b, b.get('holat'), kod)
         if k['soroq']:
             await _yolda_soroq_yop(chat_id, k['soroq'], f"✅ №{order} — isbot qabul qilindi." if kod == 'ok'
                                    else f"ℹ️ №{order} — holat o'zgarmadi.")
+        if kod == 'ok':   # 4266: Owner mijozga NIMA ketganini ko'radi (yoki ketmaganini) — yakundagi umumiy ⚠️ takrorlanmaydi
+            await blok(_mijozga_ketgan_adminga, chat_id, order, natija, nusxa, message.get('message_id'))
+            natija = 'yuborildi'
         await _buyurtma_holat_yakun(chat_id, uid, order, b, kod, natija)
     except Exception as e:
         logger.error(f'yolda_isbot_qabul: {type(e).__name__}')
@@ -13341,8 +13430,13 @@ def _buyurtma_xabar_ish():
 
 
 async def buyurtma_xabar_loop():
-    """BUGUN295: har ~2 daqiqada — adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham)."""
-    await asyncio.sleep(90)   # ishga tushganda avval mijoz_sync_loop Sheets'dan yuklab olsin
+    """BUGUN295: har ~2 daqiqada — adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham).
+    4266: ilgari 90 s kutib boshlardi — Sheets (mijozHammasi) sekin / bir urinishda javob bermasa, xotira bo'sh edi: sayt
+    zaxirasidagi ESKI buyurtmalar «yangi» bo'lib qo'shilib, adminga «♻️ Qayta yuborildi» bo'lib qayta kelardi (Owner 2026-11-24).
+    Endi Sheets'dan yuklangunicha (_MIJOZ_YUKLANDI) sikl hech narsa yubormaydi."""
+    await asyncio.sleep(90)
+    while _mijoz_sync_yoqilgan() and not _MIJOZ_YUKLANDI.is_set():
+        await asyncio.sleep(15)
     while True:
         try:
             n = await blok(_buyurtma_xabar_ish)
@@ -13805,14 +13899,18 @@ def _mijoz_sheet_birlash(j):
         return len(_MIJOZ), sum(len(m['buyurtma']) for m in _MIJOZ.values())
 
 
-def mijoz_sheet_yuklash():
+_MIJOZ_YUKLANDI = threading.Event()   # 4266: Sheets → xotira muvaffaqiyatli bo'ldi (buyurtma_xabar_loop shuni kutadi)
+
+
+def mijoz_sheet_yuklash(urinish=5):
     """Bot ishga tushganda (fon oqimida): Sheets → xotira. Apps Script uxlab turgan / eski bo'lsa — 5 marta urinadi."""
     if not _mijoz_sync_yoqilgan():
         return False
-    for n in range(5):
+    for n in range(urinish):
         j = _kk_sheet('mijozHammasi', timeout=60)
         if j and j.get('ok'):
             mj, by = _mijoz_sheet_birlash(j)
+            _MIJOZ_YUKLANDI.set()
             logger.info(f'mijoz: Sheets dan {mj} mijoz, {by} buyurtma yuklandi')
             return True
         time.sleep(10 * (n + 1))
@@ -13823,8 +13921,12 @@ def mijoz_sheet_yuklash():
 async def mijoz_sync_loop():
     """Bot ishga tushganda yuklaydi, keyin navbatni bo'shatib turadi."""
     await blok(mijoz_sheet_yuklash)
+    keyingi = time.time() + 60
     while True:
         await asyncio.sleep(MIJOZ_SYNC_ORALIQ_S)
+        if _mijoz_sync_yoqilgan() and not _MIJOZ_YUKLANDI.is_set() and time.time() > keyingi:   # 4266: yuklanmagan — qayta
+            keyingi = time.time() + 60
+            await blok(mijoz_sheet_yuklash, 1)
         if _MIJOZ_SYNC:
             try:
                 await blok(_mijoz_sync_yubor)
@@ -14616,15 +14718,18 @@ def _sharh_mod_ish(chat, msg_id, data):
                                           'reply_markup': _sharh_admin_klava(q[2], q[3], hol)}, urinish=2)
 
 
-def _isbot_rasm_yubor(uid, b, rasm):
+def _isbot_rasm_yubor(uid, b, rasm, havola='', nusxa=False):
     """Isbot rasmi → mijozning bot chatiga (caption — «yo'lga chiqdi» + tugma). Mijozga bormasa (botni to'xtatgan) — adminning
-    o'ziga: file_id baribir kerak (sayt rasmni shu orqali ko'rsatadi). Qaytaradi (mijozga natija, file_id | '')."""
-    matn, klava = _mijoz_matn_klava(b, 'yolda')
+    o'ziga: file_id baribir kerak (sayt rasmni shu orqali ko'rsatadi). Qaytaradi (mijozga natija, file_id | '').
+    4266: havola — rasm bilan birga kelgan (izohdagi) yoki oldingi taksi havolasi: izohda + «Kuzatish» tugmasi;
+    nusxa=True — (natija, file_id, mijozga ketgan xabar) — Owner'ga ko'rsatish uchun."""
+    matn, klava = _mijoz_matn_klava(b, 'yolda', havola)
+    matn += _havola_qator(havola)
     if isinstance(rasm, str):   # 3301: botga yuborilgan rasm — Telegram'da bor, file_id o'zi isbot
         natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'photo': rasm, 'caption': matn, 'parse_mode': 'HTML',
                                          **({'reply_markup': klava} if klava else {})}, timeout=40, urinish=2)
         _yuborilgan_yoz(b, 'yolda', 'rasm', natija, j)   # 3812
-        return natija, rasm
+        return (natija, rasm, _nusxa_ol(natija, j)) if nusxa else (natija, rasm)
     natija, j = _kk_tg('sendPhoto', {'chat_id': uid, 'caption': matn, 'parse_mode': 'HTML',
                                      **({'reply_markup': klava} if klava else {})},
                        files={'photo': ('isbot.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
@@ -14634,7 +14739,22 @@ def _isbot_rasm_yubor(uid, b, rasm):
                                     f"isboti (mijozga bormadi)"},
                       files={'photo': ('isbot.jpg', rasm, 'image/jpeg')}, timeout=40, urinish=2)
     r = (j or {}).get('result') or {}
-    return natija, ((r.get('photo') or [{}])[-1]).get('file_id') or ''
+    fid = ((r.get('photo') or [{}])[-1]).get('file_id') or ''
+    if nusxa:
+        return natija, fid, (r if natija == 'yuborildi' else {'_sabab': str((j or {}).get('description') or natija)})
+    return natija, fid
+
+
+def _rasm_izoh_havola(message):
+    """4266: chek rasmining izohidagi havola (Owner rasm va havolani bitta xabarda yuborsa) — '' yo'q."""
+    m = _ISBOT_HAVOLA_RE.search((message or {}).get('caption') or '')
+    return m.group(0).rstrip('.,;:!?)') if m else ''
+
+
+def _eski_havola(b):
+    """4266: buyurtmada avval yozilgan taksi havolasi (havola isboti yoki rasm + havola) — chek rasmi keyin kelsa ham qoladi."""
+    i = ((b or {}).get('yetkaz') or {}).get('isbot') or {}
+    return str(i.get('url') or '') if i.get('tur') in ('havola', 'rasm') else ''
 
 
 def _isbot_rasm_ol(fid):
@@ -15532,6 +15652,7 @@ async def main():
     # Servis uxlab qolmasin — har 10 daqiqada o'ziga so'rov
     asyncio.create_task(keep_alive())
     asyncio.create_task(mijoz_sync_loop())   # BUGUN227: Sheets dan yuklash + yozish navbati
+    _fonda(eski_klaviatura_olib_tashla, ADMIN_ID, True)   # 4266: Owner chatida qolgan «📱 Raqamni ulashish» — jim olinadi
     asyncio.create_task(buyurtma_xabar_loop())   # BUGUN295: adminga yetmagan buyurtma xabarlari (sayt zaxirasi ham)
     asyncio.create_task(chek_eslatma_loop())   # BUGUN305: 1 soat chek kelmasa — adminga bitta eslatma
     asyncio.create_task(sharh_loop())   # 3262: 3 kundan keyin baho so'rash, sharh — adminga
