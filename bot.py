@@ -1838,6 +1838,13 @@ def elon_nomi(elon, model, lang='uz'):
     return own or model_display_name(model, lang)
 
 
+def toliq_nommi(elon):
+    """4805: e'lon nomi to'liqmi (Elonlar `toliqNom` = 1) — sayt bir marta yasab saqlagan (shablon + xotira + rang), Owner
+    o'zgartirgan bo'lishi mumkin; bo'lsa sarlavhaga xotira / rang qo'shilmaydi. Sayt: toliqNommi."""
+    e = elon or {}
+    return str(e.get('toliqNom', '') or '').strip() in ('1', '1.0') and bool(str(e.get('nameUz') or e.get('name') or '').strip())
+
+
 def _model_shakllar(nom):
     """«Google Pixel 7» → ['google pixel 7', 'pixel 7']: nom e'londa brend bilan ham, brendsiz ham yozilishi mumkin."""
     w = str(nom or '').lower().split()
@@ -1955,9 +1962,11 @@ def build_elon(item, models_by_id):
         add(tur_emoji)
     add(" ")
     qavs = elon_qavs(item)
-    title = name_uz + (f" ({qavs})" if qavs else '')
+    # 4805: to'liq nom (toliqNom = 1) — saytdagi bilan bir xil, xotira / rang qo'shilmaydi
+    tn = toliq_nommi(item)
+    title = name_uz if tn else name_uz + (f" ({qavs})" if qavs else '')
     add_fmt(title, 'bold')
-    if color_clean:
+    if color_clean and not tn:
         add(f" {color_clean}")
     add("\n")
     add(f"#{tur_teg} #{num}\n")   # 3184.5: tur bo'yicha (ilgari hammasi #phone); 3422: aksessuar — o'z turi
@@ -2260,7 +2269,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     # v6: slideshow — hammasi. v8 (2026-09-18, foydalanuvchi): «N ta rasm — suring» izohi OLIB TASHLANDI
     media = rich_media(images_of(elon), kollaj, rasm_src)
 
-    title = name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')
+    title = name if toliq_nommi(elon) else name + (f' ({storage})' if storage else '') + (f' {color}' if color else '')   # 4805
     tugadi = tugadi_matni(elon)
     if tugadi:
         # B13 soni / 3421: ko'p donali tovar tugasa «QOLMADI» (e'lon o'chmaydi — yana kelsa post tahrirlanadi), donalik — «SOTILDI»
@@ -4775,7 +4784,7 @@ def build_olx_text(item, models_by_id):
     cond_uz, cond_ru, _ = holati_matni(cond, cycle)
     # 3218: sarlavha — kanal posti bilan bir xil (e'lonning o'z nomi + qavsda xotira / xususiyat)
     qavs = elon_qavs(item)
-    sarlavha = (elon_nomi(item, model, 'uz') + (f" ({qavs})" if qavs else '')).strip()
+    sarlavha = (elon_nomi(item, model, 'uz') + ('' if toliq_nommi(item) else (f" ({qavs})" if qavs else ''))).strip()   # 4805
     izoh_uz, izoh_ru = izoh_matni(item, 'uz'), izoh_matni(item, 'ru')
 
     lines = []
