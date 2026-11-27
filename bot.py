@@ -9727,6 +9727,20 @@ def _tc_tg_html(rich, chegara=1024):
     return html_escape(toza[:chegara - 40].rstrip()) + '…'
 
 
+def tashco_ish_shakl(num, elon, models, kalit, h):
+    """Jasurga beriladigan ish — nima (forward yoki matn + rasm), qayerga. Yagona joy: tashco_ish_ber va 4806.3 ko'rinishi
+    (/tashco_kor) shu funksiyadan oladi — saytdagi ko'rinish Jasur yuboradigan bilan farq qilmaydi. Hech narsa yozmaydi."""
+    post = _tc_post_tanla(elon, kalit) if h['b'][kalit]['u'] == 'a' else None
+    yon = post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc'))
+    javob = {'num': int(num), 'nishon': TASHCO_NISHON, 'thread': TASHCO_THREAD[kalit], 'bolim': TASHCO_NOM[kalit],
+             'usul': 'f' if post else 'b',
+             'matn': _tc_tg_html(build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)),
+             'rasmlar': kanal_manbalari(elon)[:4]}
+    if post:
+        javob.update(kanal=post[0], kanal_mid=int(post[1]))
+    return javob
+
+
 def tashco_ish_ber():
     """Jasur so'rovi: navbatdagi ish (bo'lsa) — nima, qayerga, qanday. Ish «berildi» bo'ladi (ikki marta berilmaydi)."""
     if not tashco_yukla():
@@ -9748,14 +9762,7 @@ def tashco_ish_ber():
             _TC_JOY['izoh'] = f"⚠️ №{num} endi faol emas (sotilgan?) — o'tkazib yuborildi."
         tashco_saqla()
         return {'ok': True, 'ish': None}
-    post = _tc_post_tanla(elon, kalit) if h['b'][kalit]['u'] == 'a' else None
-    yon = post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc'))
-    javob = {'num': int(num), 'nishon': TASHCO_NISHON, 'thread': TASHCO_THREAD[kalit], 'bolim': TASHCO_NOM[kalit],
-             'usul': 'f' if post else 'b',
-             'matn': _tc_tg_html(build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)),
-             'rasmlar': kanal_manbalari(elon)[:4]}
-    if post:
-        javob.update(kanal=post[0], kanal_mid=int(post[1]))
+    javob = tashco_ish_shakl(num, elon, models, kalit, h)
     with _tc_qulf:
         if (h.get('ish') or {}).get('num') == ish['num']:
             h['ish']['holat'], h['ish']['bt'] = 'berildi', int(time.time())
@@ -10063,6 +10070,44 @@ async def tashco_endpoint(request):
         return web.json_response(javob)
     except Exception as e:
         logger.error(f'tashco_endpoint: {type(e).__name__}: {_maxfiy(e)}')
+        return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
+
+
+async def tashco_kor_endpoint(request):
+    """4806.3: saytdagi «🔍 Proverka» — TashComp ko'rinishi. {initData, nums: [..≤20]} → {ok, kor: {num: shakl}, navbat: {kalit: [num]},
+    belgili: N}. shakl — tashco_ish_shakl (Jasur oladiganning o'zi) + kalit, tanlangan (jadval `tashco`), faol, oxirgi, post.
+    Faqat o'qiydi: hech narsa yuborilmaydi, ish berilmaydi, jadvalga yozilmaydi."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        nums = [str(n).strip() for n in (data.get('nums') or [])][:20]
+
+        def ish():
+            tashco_yukla()
+            h = _TC_JOY['h'] or _tc_sukut()
+            by_num, _ = elon_cache_hammasi()
+            navbat = tashco_navbat(h, by_num)
+            kor = {}
+            for num in nums:
+                if not re.fullmatch(r'\d{1,6}', num):
+                    continue
+                elon, models = elon_cache_get(num)
+                if not elon:
+                    continue
+                tanlangan = tashco_bolim(elon)
+                kalit = tanlangan or tashco_avto(elon, models)
+                sh = tashco_ish_shakl(num, elon, models, kalit, h)
+                sh.update(kalit=kalit, tanlangan=bool(tanlangan), faol=elon_status(elon) == 'active',
+                          oxirgi=int(float(h['log'].get(num, 0) or 0)),
+                          post=post_havola(sh['kanal'], sh['kanal_mid']) if sh.get('kanal') else '')
+                kor[num] = sh
+            belgili = sum(1 for e in by_num.values() if tashco_bolim(e) and elon_status(e) == 'active')
+            return {'ok': True, 'kor': kor, 'navbat': {k: [x[2] for x in v] for k, v in navbat.items()}, 'belgili': belgili}
+        return web.json_response(await blok(ish))
+    except Exception as e:
+        logger.error(f'tashco_kor: {type(e).__name__}: {_maxfiy(e)}')
         return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
 
 
@@ -15646,6 +15691,7 @@ async def main():
     app.router.add_post('/tashco/jasur', tashco_jasur_endpoint)   # 3428: Jasur skripti — ish olish / natija
     app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashComp'ga» — TashkentComp bo'limi
     app.router.add_post('/tashco_taxmin', tashco_taxmin_endpoint)   # 3828: «⭐ mos» bo'lim taxmini
+    app.router.add_post('/tashco_kor', tashco_kor_endpoint)       # 4806.3: Proverka — TashComp ko'rinishi (faqat o'qish)
     app.router.add_post('/konkurs_qayta', konkurs_qayta_endpoint)   # 3668: Mijozlar → konkurs «Qayta yozish»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
     app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
