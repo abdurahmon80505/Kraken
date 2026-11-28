@@ -8735,6 +8735,35 @@ def _inline_karta(num, elon, model, sarlavha=None, izoh=None):
     }
 
 
+# 4513 (Owner 2026-11-28): «!» so'rovi (Madina userbot) ham kanal posti ko'rinishida — rasm, kanal postining to'liq matni, tugmalar.
+#     Ilgari _inline_karta (qisqa: nom / narx · holat / E'lon №) ketardi — kanalda posti yo'q e'lonni Madina shunday yuborgan.
+#     rich_message emas (GramJS o'qiy olmaydi, 3836): build_rich_html → oddiy HTML, xarakteristika — yig'ilgan iqtibos,
+#     <tg-button> lar — reply_markup tugmalari (kanal postidagi tartibda).
+def _inline_kanal_karta(num, elon, models):
+    model = (models or {}).get(str(elon.get('specId', '') or ''), {}) if isinstance(models, dict) else {}
+    karta = _inline_karta(num, elon, model)
+    if not karta:
+        return None
+    rich = build_rich_html(elon, models or {}, premium=False)
+    qatorlar = []
+    for row in re.findall(r'(?is)<tg-button-row\b[^>]*>(.*?)</tg-button-row>', rich):
+        q = [{'text': _html.unescape(re.sub(r'<[^>]+>', '', m).strip()), 'url': _html.unescape(u)}
+             for u, m in re.findall(r'(?is)<tg-button\b[^>]*?\burl="([^"]+)"[^>]*>(.*?)</tg-button>', row)
+             if u.startswith('http')]
+        if q:
+            qatorlar.append(q)
+    rich = re.sub(r'(?is)<tg-button-row\b.*?</tg-button-row>', '', rich)
+    # xarakteristika (<details>) — sarlavhasi qator, ichi yig'ilgan iqtibos (\x01 / \x02 — _tc_tg_html teglarni o'chirmasin)
+    rich = re.sub(r'(?is)<details\b[^>]*>\s*<summary\b[^>]*>(.*?)</summary>(.*?)</details>', lambda m: f'<p>{m[1]}</p>\x01{m[2]}\x02', rich)
+    matn = _tc_tg_html(rich, chegara=4096)
+    matn = re.sub(r'\s*\x01\s*', '\n<blockquote expandable>', matn)
+    matn = re.sub(r'\s*\x02\s*', '</blockquote>\n', matn).strip()
+    karta['input_message_content'] = {**karta['input_message_content'], 'message_text': matn}
+    if qatorlar:
+        karta['reply_markup'] = {'inline_keyboard': qatorlar}
+    return karta
+
+
 def elon_cache_hammasi():
     """(by_num nusxasi, models) — xotira hech yuklanmagan bo'lsa bir urinish (60 s da bir)."""
     c = _ELON_CACHE
@@ -8748,7 +8777,7 @@ async def inline_javob(iq):
     """inline_query → answerInlineQuery (sahifa 50 tadan, next_offset bilan)."""
     try:
         by_num, models = await blok(elon_cache_hammasi)
-        # 3836: «!#331» — faqat karta (article + havola-ko'rinish), rich yo'q. Nega: Madina userbot'i (GramJS, LAYER 198)
+        # 3836: «!#331» — faqat karta (article + havola-ko'rinish), rich yo'q; 4513: karta matni — kanal posti (to'liq). Nega: Madina userbot'i (GramJS, LAYER 198)
         # rich_message natijani o'qiy olmaydi — «Could not find a matching Constructor ID». Oddiy so'rov o'zgarmaydi.
         sorov = str(iq.get('query', '') or '')
         faqat_karta = sorov.lstrip().startswith('!')
@@ -8773,8 +8802,7 @@ async def inline_javob(iq):
             await asyncio.sleep(0.25)
 
         if faqat_karta:
-            natijalar = [n for n in (_inline_karta(_num_int(e), e, (models or {}).get(str(e.get('specId', '') or ''), {}))
-                                     for e in sahifa) if n]
+            natijalar = [n for n in (_inline_kanal_karta(_num_int(e), e, models) for e in sahifa) if n]   # 4513
         else:
             natijalar = [n for n in (inline_natija(e, models) for e in sahifa) if n]
         hammasi_rich = all('rich_message' in n.get('input_message_content', {}) for n in natijalar)
