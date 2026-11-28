@@ -145,7 +145,7 @@ sinov("admin xabarida «📍 🏪 O'zim olib ketaman»", "📍 🏪 O'zim olib k
 st = buyurtma('TO02', tur='emu')
 sinov("EMU, filialsiz → 400 (o'zgarmagan)", st == 400, st)
 st = buyurtma('TO03', tur='bts', manzil='Toshkent, Chilonzor filiali')
-sinov("BTS, filial bilan → 200, matnda filial", st == 200 and 'BTS: Toshkent, Chilonzor filiali' in admin_matn(), admin_matn()[:400])
+sinov("BTS, filial bilan → 200, matnda filial", st == 200 and 'BTS: <code>Toshkent, Chilonzor filiali</code>' in admin_matn(), admin_matn()[:400])
 
 print(f'{NATIJA[0]} ✓, {NATIJA[1]} ✗')
 sys.exit(1 if NATIJA[1] else 0)
