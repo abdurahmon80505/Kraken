@@ -10114,6 +10114,45 @@ async def tashco_kor_endpoint(request):
         return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
 
 
+def tashco_namuna(num):
+    """4810: Jasur oladigan matn (tashco_ish_shakl) — HTML (parse_mode HTML, nomlar <b>) bilan TashComp NUSXA (klon) guruhining
+    o'sha bo'lim mavzusiga. TashComp'ning o'ziga hech qachon emas; ish berilmaydi, jadvalga yozilmaydi. (mid, kalit, xato)."""
+    if not tashco_yukla():
+        return None, '', 'holat yuklanmadi'
+    elon, models = elon_cache_get(str(num))
+    if not elon:
+        return None, '', "e'lon topilmadi"
+    h = _TC_JOY['h'] or _tc_sukut()
+    kalit = tashco_bolim(elon) or tashco_avto(elon, models)
+    chat = tashco_klon_id()
+    thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
+    if not chat or not thread or chat == TASHCO_NISHON:
+        return None, kalit, 'NUSXA guruh sozlanmagan (/tashco)'
+    sh = tashco_ish_shakl(num, elon, models, kalit, h)
+    j = _tg_j('sendMessage', {'chat_id': chat, 'message_thread_id': thread, 'text': sh['matn'], 'parse_mode': 'HTML',
+                              'link_preview_options': {'is_disabled': True}, 'disable_notification': True})
+    if j.get('ok'):
+        return (j.get('result') or {}).get('message_id'), kalit, ''
+    return None, kalit, str(j.get('description') or 'xato')[:200]
+
+
+async def tashco_namuna_endpoint(request):
+    """4810: {initData, num} → {ok, mid, kalit} — faqat admin. Namuna NUSXA guruhga (tashco_namuna)."""
+    try:
+        data = await request.json()
+        uid = check_init_data(data.get('initData', ''))
+        if not uid or uid != ADMIN_ID:
+            return web.json_response({'error': 'Faqat admin'}, status=401)
+        num = str(data.get('num') or '').strip()
+        if not re.fullmatch(r'\d{1,6}', num):
+            return web.json_response({'ok': False, 'error': 'num'}, status=400)
+        mid, kalit, xato = await blok(tashco_namuna, num)
+        return web.json_response({'ok': bool(mid), 'mid': mid, 'kalit': kalit, 'xato': xato})
+    except Exception as e:
+        logger.error(f'tashco_namuna: {type(e).__name__}: {_maxfiy(e)}')
+        return web.json_response({'ok': False, 'error': 'Server xatosi'}, status=500)
+
+
 async def tashco_taxmin_endpoint(request):
     """3828: «⭐ mos» — saytdagi bo'lim menyusi uchun har e'lonning taxminiy TashComp bo'limi (tashco_avto, hech narsa yozilmaydi).
     {initData, nums: [..]} → {ok, taxmin: {num: kalit}}."""
@@ -15695,6 +15734,7 @@ async def main():
     app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashComp'ga» — TashkentComp bo'limi
     app.router.add_post('/tashco_taxmin', tashco_taxmin_endpoint)   # 3828: «⭐ mos» bo'lim taxmini
     app.router.add_post('/tashco_kor', tashco_kor_endpoint)       # 4806.3: Proverka — TashComp ko'rinishi (faqat o'qish)
+    app.router.add_post('/tashco_namuna', tashco_namuna_endpoint) # 4810: namuna — faqat NUSXA guruhga (HTML)
     app.router.add_post('/konkurs_qayta', konkurs_qayta_endpoint)   # 3668: Mijozlar → konkurs «Qayta yozish»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
     app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
