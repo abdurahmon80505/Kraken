@@ -10988,6 +10988,27 @@ def send_reroll_notify(data):
         logger.error(f'reroll channel: {e}')
 
 
+# 4816: /publish ochiq (sayt initData yubormaydi, brauzerda ham ishlaydi) — adminga spam bo'lmasin: bir raqam 60 s da bir
+# marta, hammasi 10 daqiqada 10 ta. Admin initData bilan kelsa — cheklovsiz.
+_PUBLISH_IZ = {'num': {}, 'hammasi': []}
+
+
+def _publish_cheklov(num, now=None):
+    """'' — o'tadi; aks holda sabab (javobga). Faqat xotirada, qayta ishga tushsa tozalanadi."""
+    now = now or time.time()
+    iz = _PUBLISH_IZ
+    iz['hammasi'] = [t for t in iz['hammasi'] if now - t < 600]
+    if now - iz['num'].get(num, 0) < 60:
+        return "Shu e'lon hozirgina yuborildi — 1 daqiqadan keyin"
+    if len(iz['hammasi']) >= 10:
+        return "Juda ko'p — 10 daqiqadan keyin"
+    iz['num'][num] = now
+    iz['hammasi'].append(now)
+    if len(iz['num']) > 500:
+        iz['num'] = {k: v for k, v in iz['num'].items() if now - v < 60}
+    return ''
+
+
 async def publish_endpoint(request):
     """Sayt «Menga yuborish» bosganda — bot adminga OLX matni + kanal elonini yuboradi.
     E1: ish fonda ketadi, sayt javobni kutib turmaydi.
@@ -11002,12 +11023,16 @@ async def publish_endpoint(request):
         if not m:
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         num = m.group(1)
+        if check_init_data(str(data.get('initData', '') or '')) != ADMIN_ID:
+            sabab = _publish_cheklov(num)
+            if sabab:
+                return web.json_response({'error': sabab}, status=429)
         asyncio.get_event_loop().run_in_executor(
             None, preview_elon_to_admin, num, admin_joy('olx'))
         return web.json_response({'ok': True})
     except Exception as e:
-        logger.error(f'publish_endpoint: {e}')
-        return web.json_response({'error': str(e)}, status=500)
+        logger.error(f'publish_endpoint: {type(e).__name__}: {_maxfiy(e)[:200]}')
+        return web.json_response({'error': 'xato'}, status=500)   # 4816: ichki xato matni tashqariga chiqmaydi
 
 # (update_channel_endpoint olib tashlandi — D2 qarori: kanalga avto-yuborish
 #  qaytarilmadi. Endpoint faqat 'skipped' qaytarardi, sayt esa uni endi
