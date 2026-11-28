@@ -10798,9 +10798,16 @@ async def _json_tana(request):
     return data if isinstance(data, dict) else None
 
 
+_KS_OXIRGI = [0.0]   # 4816: /konkurs_started oxirgi chaqiruv vaqti
+
+
 async def konkurs_started_endpoint(request):
     """Sayt konkursni 'active' qilganda — bot tugash taymerini o'rnatadi. Tana kerak emas — signal yetarli:
-    konkurs jadvaldan qayta o'qiladi (BUGUN108)."""
+    konkurs jadvaldan qayta o'qiladi (BUGUN108). 4816: tekshiruvsiz ochiq — tez-tez chaqirib jadvalni qiynamasin: 15 s da 1."""
+    now = time.time()
+    if now - _KS_OXIRGI[0] < 15:
+        return web.json_response({'ok': True, 'taymer': None, 'kech': True})
+    _KS_OXIRGI[0] = now
     try:
         _konkurs_cache['data'] = None
         _konkurs_cache['time'] = 0
