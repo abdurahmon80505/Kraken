@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import traceback
 import asyncio
 import base64
 import functools
@@ -814,14 +815,17 @@ def send_msg(chat_id, text, keyboard=None, id_qaytar=False):
     try:
         r = req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
     except Exception as e:
-        logger.error(f'sendMessage: {e}')
+        logger.error(f'sendMessage: {type(e).__name__}: {_maxfiy(e)[:200]}')
         return None if id_qaytar else False
     try:
         j = r.json()
+        if not j.get('ok'):   # 4816: Telegram rad etsa sababi logda (ilgari jim)
+            logger.warning(f"sendMessage {chat_id}: {str(j.get('description') or r.status_code)[:200]}")
         if id_qaytar:
             return (j.get('result') or {}).get('message_id') if j.get('ok') else None
         return bool(j.get('ok'))   # BUGUN233: /konkurs/boshla — xabar mijozga yetdimi (botni boshlamagan — 403)
     except Exception:
+        logger.warning(f'sendMessage {chat_id}: javob JSON emas (HTTP {r.status_code})')
         return None if id_qaytar else False
 
 
@@ -10620,7 +10624,10 @@ async def handle_update(data):
                     await blok(eski_klaviatura_olib_tashla, chat_id)
                 await blok(send_msg, chat_id, NOMALUM_XABAR, BOT_HUB_KB if lichka else START_KB)
     except Exception as e:
-        logger.error(f'handle_update: {e}')
+        # 4816: qayerda buzilgani ko'rinsin — xato turi va oxirgi qator (to'liq traceback emas: unda token bo'lishi mumkin)
+        tb = traceback.extract_tb(e.__traceback__)
+        joy = f' @{tb[-1].lineno} {tb[-1].name}' if tb else ''
+        logger.error(f'handle_update: {type(e).__name__}{joy}: {_maxfiy(e)[:300]}')
 
 
 # E4: noma'lum xabarga javob. Mijoz botga yozsa hech narsa kelmasligi — eng
