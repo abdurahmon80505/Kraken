@@ -1031,7 +1031,7 @@ def yonalish_post(chat_id, yon):
     send_msg(chat_id, YON_POST_MATN[yon], kb)
 
 
-XUSH_RASM =os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
+XUSH_RASM = START_RASM   # 4816: bir fayl (kanal_xush_kelibsiz.png) — bir yo'l
 XUSH_MATN = (
     "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
     "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
@@ -11011,7 +11011,6 @@ async def publish_endpoint(request):
 def check_init_data(init_data, max_age=86400):
     """Telegram Mini App initData imzosini tekshiradi (HMAC-SHA256).
     To'g'ri bo'lsa foydalanuvchi id'sini, aks holda None qaytaradi."""
-    import hmac, hashlib, time as _t
     try:
         got = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
         h = got.pop('hash', '')
@@ -11031,7 +11030,7 @@ def check_init_data(init_data, max_age=86400):
                 break
         if not imzo_ok:
             return None
-        if _t.time() - int(got.get('auth_date', 0) or 0) > max_age:
+        if time.time() - int(got.get('auth_date', 0) or 0) > max_age:
             return None   # eskirgan
         return int(json.loads(got.get('user', '{}')).get('id', 0)) or None
     except Exception as e:
