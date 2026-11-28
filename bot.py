@@ -9737,6 +9737,10 @@ def _tc_tg_html(rich, chegara=1024):
     s = re.sub(r'(?is)<a\s+href="tel:[^"]*"[^>]*>(.*?)</a>', r'\1', s)
     s = re.sub(r'(?i)<br\s*/?>', '\n', s)
     s = re.sub(r'(?i)</p>|</h\d>|<hr\s*/?>', '\n\n', s)
+    # 4811: sarlavha («📋 … Характеристики») — alohida qatorda, qalin; izoh bloki tugashi — yangi paragraf
+    #     («…X4.📦 Holati» yopishardi)
+    s = re.sub(r'(?is)<summary\b[^>]*>(.*?)</summary>', r'\n<b>\1</b>', s)
+    s = re.sub(r'(?i)</blockquote>|</details>', '\n\n', s)
     # 4810: xarakteristika jadvali — Telegram HTML'da <table> yo'q: har qator alohida qatorga, «nom: qiymat»
     s = re.sub(r'(?is)</t[dh]>\s*<t[dh]\b[^>]*>', ': ', s)
     s = re.sub(r'(?i)</tr>|</?table\b[^>]*>', '\n', s)
