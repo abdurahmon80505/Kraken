@@ -8753,11 +8753,8 @@ def _inline_kanal_karta(num, elon, models):
         if q:
             qatorlar.append(q)
     rich = re.sub(r'(?is)<tg-button-row\b.*?</tg-button-row>', '', rich)
-    # xarakteristika (<details>) — sarlavhasi qator, ichi yig'ilgan iqtibos (\x01 / \x02 — _tc_tg_html teglarni o'chirmasin)
-    rich = re.sub(r'(?is)<details\b[^>]*>\s*<summary\b[^>]*>(.*?)</summary>(.*?)</details>', lambda m: f'<p>{m[1]}</p>\x01{m[2]}\x02', rich)
+    # xarakteristika (<details>) va izoh — yig'ilgan iqtibos, sarlavha uning birinchi qatori (4814: _tc_tg_html o'zi, TashComp bilan bir xil)
     matn = _tc_tg_html(rich, chegara=4096)
-    matn = re.sub(r'\s*\x01\s*', '\n<blockquote expandable>', matn)
-    matn = re.sub(r'\s*\x02\s*', '</blockquote>\n', matn).strip()
     karta['input_message_content'] = {**karta['input_message_content'], 'message_text': matn}
     if qatorlar:
         karta['reply_markup'] = {'inline_keyboard': qatorlar}
@@ -9735,10 +9732,16 @@ def _tc_tg_html(rich, chegara=1024):
                 for u, m in re.findall(r'(?is)<tg-button\b[^>]*?\burl="([^"]+)"[^>]*>(.*?)</tg-button>', s)]
     s = re.sub(r'(?is)<tg-button-row\b.*?</tg-button-row>|<tg-button\b.*?</tg-button>|<img\b[^>]*>', '', s)
     s = re.sub(r'(?is)<a\s+href="tel:[^"]*"[^>]*>(.*?)</a>', r'\1', s)
+    # 4814 (Owner 2026-11-28): xarakteristika (<details>) va izoh — kanal postidagidek YIG'ILGAN blok (<blockquote expandable>;
+    #     Bot API HTML ham, Jasur / Madina — GramJS HTML ham o'qiydi), sarlavha — blokning birinchi qatori.
+    #     \x01 / \x02 — blok chegarasi, teg tozalashdan omon qoladi; oxirida blockquote'ga aylanadi
+    s = re.sub(r'(?is)<details\b[^>]*>\s*<summary\b[^>]*>(.*?)</summary>(.*?)</details>',
+               lambda m: f'\x01<b>{m[1]}</b>\n{m[2]}\x02', s)
+    s = re.sub(r'(?is)<blockquote\b[^>]*>(.*?)</blockquote>', '\x01\\1\x02', s)
     s = re.sub(r'(?i)<br\s*/?>', '\n', s)
     s = re.sub(r'(?i)</p>|</h\d>|<hr\s*/?>', '\n\n', s)
     # 4811: sarlavha («📋 … Характеристики») — alohida qatorda, qalin; izoh bloki tugashi — yangi paragraf
-    #     («…X4.📦 Holati» yopishardi)
+    #     («…X4.📦 Holati» yopishardi) — 4814 dan faqat juftsiz teg qolsa
     s = re.sub(r'(?is)<summary\b[^>]*>(.*?)</summary>', r'\n<b>\1</b>', s)
     s = re.sub(r'(?i)</blockquote>|</details>', '\n\n', s)
     # 4810: xarakteristika jadvali — Telegram HTML'da <table> yo'q: har qator alohida qatorga, «nom: qiymat»
@@ -9751,12 +9754,17 @@ def _tc_tg_html(rich, chegara=1024):
     s = re.sub(r'(?is)</?(?!(?:b|i|u|s|a|code)\b)[a-z][^>]*>', '', s)
     s = re.sub(r'(?is)<(b|i|u|s|code)\b[^>]+>', r'<\1>', s)
     s = re.sub(r'[ \t ]+\n', '\n', s)
+    s = re.sub(r'\s*\x01\s*', '\n\n<blockquote expandable>', s)   # 4814
+    s = re.sub(r'\s*\x02\s*', '</blockquote>\n\n', s)
+    s = re.sub(r'(<blockquote expandable><b>[^\n]*</b>)\n\n', r'\1\n', s)   # sarlavha bilan ro'yxat orasida bo'sh qator yo'q
     s = re.sub(r'\n{3,}', '\n\n', s).strip()
     pastki = '\n'.join(f'🔗 <a href="{u}">{html_escape(_html.unescape(m))}</a>' for u, m in tugmalar if u.startswith('http'))
     out = s + ('\n\n' + pastki if pastki else '')
-    if len(out) <= chegara:
+    # 4814: Telegram chegarasi — teglarsiz ko'rinadigan matn (UTF-16); HTML uzunligi bilan yig'ilgan blok bekorga yo'qolardi
+    kor = lambda t: _utf16len(_html.unescape(re.sub(r'<[^>]+>', '', t)))
+    if kor(out) <= chegara:
         return out
-    if len(s) <= chegara:
+    if kor(s) <= chegara:
         return s
     toza = _html.unescape(re.sub(r'<[^>]+>', '', s))
     return html_escape(toza[:chegara - 40].rstrip()) + '…'
