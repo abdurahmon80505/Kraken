@@ -10448,7 +10448,9 @@ async def handle_update(data):
             await handle_admin_photo(chat_id, file_id, mgid, message.get('message_id', 0))
             return
 
-        if text.startswith('/yubor') or text.startswith('/elon'):
+        # 4816: buyruq — birinchi so'z aniq (ilgari startswith: «/statXYZ» ham /stat, «/elonlar» ham /elon edi)
+        buyruq0 = text.split()[0].split('@')[0] if text.split() else ''
+        if buyruq0 in ('/yubor', '/elon'):
             if not adm:
                 return
             await send_new_elons(chat_id, text)
@@ -10456,7 +10458,7 @@ async def handle_update(data):
 
         # B34 (BUGUN42): demo saytni Telegram ICHIDA ochish tugmasi — «📣 Yuborish» (B29) initData bilan ishlaydi, oddiy
         # brauzerda initData yo'q. Manzil faqat Render env DEMO_URL da (repo ochiq — demo havolasi kodga yozilmaydi).
-        if text.startswith('/demo') and adm:
+        if buyruq0 == '/demo' and adm:
             demo = os.environ.get('DEMO_URL', '').strip()
             if not demo.startswith('https://'):
                 await blok(send_msg, chat_id, "DEMO_URL sozlanmagan (Render → Environment → DEMO_URL = demo sayt manzili, https://…).")
@@ -10499,11 +10501,11 @@ async def handle_update(data):
             return
 
         # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
-        if text.startswith('/stat') and adm:
+        if buyruq0 == '/stat' and adm:
             asyncio.create_task(handle_stat(chat_id, text))
             return
 
-        if text.startswith('/tozala') and adm:
+        if buyruq0 in ('/tozala', '/tozala_test') and adm:
             # Fonda ishlaydi — Telegram javobni kutmasin (aks holda buyruqni qayta yuboradi)
             asyncio.create_task(handle_tozala(chat_id, text))
             return
