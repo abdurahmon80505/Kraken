@@ -9,6 +9,9 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import bot  # noqa: E402
 
+# 4815: kanal posti bor — forward; yo'q — kanal posti yasovchisi (kanal_rich) bilan, xuddi kanalga yuborgandek
+bot._tc_post_tanla = lambda el, k: None if (el or {}).get('postsiz') else ('@kanal', 900 + int(el['num']))
+
 bot._ELON_CACHE['turkumlar'] = [
     {'key': 'keyboard', 'labelUz': 'Klaviaturalar', 'type': 'accessory'},
     {'key': 'phone', 'labelUz': 'Smartfonlar', 'type': 'phone'},
@@ -52,6 +55,8 @@ assert [x[2] for x in nv['telefon']] == ['10'], nv['telefon']
 assert [x[2] for x in nv['aksessuar']] == ['15']
 h['log']['11'] = time.time() - 8 * 86400          # 8 kun — yana mumkin, lekin hech yuborilmagani oldin
 assert [x[2] for x in bot.tashco_navbat(h, by)['telefon']] == ['10', '11']
+by17 = dict(by, **{'17': e(17, '4', 'H', tashco='telefon', postsiz=1)})
+assert '17' in [x[2] for x in bot.tashco_navbat(h, by17)['telefon']], "4815: kanal posti yo'q e'lon ham navbatda"
 
 # tanlash: bugun eng kam yuborilgan bo'lim; o'chirilgan / kunlik chegarasi to'lgani — o'tkaziladi
 nv = bot.tashco_navbat(h, by)
@@ -68,7 +73,7 @@ assert [bot._tc_soat(x) for x in bot._tc_slotlar(h2)] == ['10:12', '12:36', '15:
 
 # tozalash: noto'g'ri holat — sukut / chegarada
 t = bot._tc_tozala({'kun': 99, 'bosh': 22, 'oxir': 5, 'b': {'telefon': {'on': 0, 'n': 50, 'u': 'b'}, 'yoq_bolim': {}}})
-assert t['kun'] == 5 and (t['bosh'], t['oxir']) == (9, 21) and t['b']['telefon'] == {'on': 0, 'n': 5, 'u': 'b'}
+assert t['kun'] == 5 and (t['bosh'], t['oxir']) == (9, 21) and t['b']['telefon'] == {'on': 0, 'n': 5}
 assert 'yoq_bolim' not in t['b']
 
 # TashkentComp'dan kelgan xabar — bot jim (username katta-kichik harf farqsiz)
@@ -98,24 +103,30 @@ bot._ELON_CACHE['by_num'] = {'15': by['15'], '12': by['12']}
 bot._ELON_CACHE['models'] = models
 bot._ELON_CACHE['time'] = time.time()
 bot._TC_JOY['h'] = bot._tc_sukut()
-bot.kanal_rich = lambda elon, models, kollaj=False, yonalish=None: ('<p>x</p>', None, [])
 mid, usul, kalit, xato = bot.tashco_yubor('15')
-assert (mid, usul, kalit) == (77, 'b', 'aksessuar'), (mid, usul, kalit, xato)
+assert (mid, usul, kalit) == (77, 'f', 'aksessuar'), (mid, usul, kalit, xato)
 usl, j = so_rov[-1]
-assert usl == 'sendRichMessage' and j['chat_id'] == '@TashkentComp' and j['message_thread_id'] == 917420, j
+assert usl == 'forwardMessage' and j['chat_id'] == '@TashkentComp' and j['message_thread_id'] == 917420, j
+assert (j['from_chat_id'], j['message_id']) == ('@kanal', 915), j
 assert not isinstance(j['chat_id'], bot.Joy)
 n = len(so_rov)
 assert bot.tashco_yubor('12')[0] is None and len(so_rov) == n, 'sotilgan — yuborilmaydi'
+by['17'] = by17['17']
+bot._ELON_CACHE['by_num']['17'] = by['17']
+bot._ELON_CACHE['models']['4'] = {'series': 'px'}
+mid, usul, kalit, xato = bot.tashco_yubor('17')
+assert (mid, usul, kalit) == (77, 'b', 'telefon') and len(so_rov) == n + 1, (mid, usul, kalit, xato)
+usl, j = so_rov[-1]
+html, media, _ = bot.kanal_rich(by['17'], bot._ELON_CACHE['models'],
+                                yonalish=bot.post_yonalish(by['17'], bot._ELON_CACHE['models'], 'mobile'))
+assert usl == 'sendRichMessage' and j['rich_message']['html'] == html and j['message_thread_id'] == bot.TASHCO_THREAD['telefon'], j
+assert not hasattr(bot, '_tc_forward') and not hasattr(bot, 'TC_POSTSIZ')
 assert bot.tashco_link(77) == 'https://t.me/TashkentComp/77'
 
 # Jasur modeli: bot TashkentComp'ga o'zi yozmaydi — Jasurga ish beradi; 1 ta sinovdan keyin Owner «Ko'rdim» demaguncha to'xtaydi
 bot.tashco_saqla = lambda: True
 bot._TC_JOY['yuklandi'] = True
 bot.tashco_yukla = lambda: True
-bot.kanal_manbalari = lambda elon: ['https://x/1.jpg']
-bot.build_rich_html = lambda *a, **k: ('<p><b>Apex</b> 10$<br>Holati a\'lo</p><tg-slideshow><img src="x"></tg-slideshow>'
-                                       '<tg-button-row><tg-button url="https://t.me/b?startapp=e15">🛒 Saytda</tg-button>'
-                                       '</tg-button-row><a href="tel:+998">+998</a>')
 assert bot._tc_amal('yoq') == (False, '') and not bot._TC_JOY['h']['yoq'], 'sinovsiz yoqilmasin'
 assert bot._tc_amal('kor') == (False, '') and not bot._TC_JOY['h']['korildi'], "sinovsiz «Ko'rdim» ishlamasin"
 bot._ELON_CACHE['by_num'] = {'15': by['15']}
@@ -126,9 +137,8 @@ assert ish['num'] == 15 and ish['holat'] == 'kut' and len(so_rov) == n, (ish, bo
 bot.tashco_bir()
 assert 'navbatida' in bot._TC_JOY['izoh'], 'navbatda ish bor — ikkinchisi qo\'yilmasin'
 v = bot.tashco_ish_ber()['ish']
-assert v['num'] == 15 and v['nishon'] == '@TashkentComp' and v['thread'] == 917420 and v['usul'] == 'b', v
-assert v['rasmlar'] == ['https://x/1.jpg'] and '<b>Apex</b>' in v['matn'] and 'tg-' not in v['matn'], v['matn']
-assert 'tel:' not in v['matn'] and '🔗 <a href="https://t.me/b?startapp=e15">' in v['matn'], v['matn']
+assert v['num'] == 15 and v['nishon'] == '@TashkentComp' and v['thread'] == 917420 and v['usul'] == 'f', v
+assert (v['kanal'], v['kanal_mid']) == ('@kanal', 915) and 'matn' not in v and 'rasmlar' not in v, v
 assert bot.tashco_ish_ber()['ish'] is None, 'bitta ish ikki marta berilmasin'
 assert not bot.tashco_natija('99', 5, 'b')['ok'], 'boshqa raqam natijasi qabul qilinmasin'
 bot.tashco_natija('15', 501, 'b')

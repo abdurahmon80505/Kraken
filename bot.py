@@ -9076,8 +9076,9 @@ async def webhook(request):
 
 
 # ═══ 3428 (Owner 2026-11-11): TashkentComp ochiq guruhiga e'lonlarni bot tarqatadi (kuniga ~5 ta, hafta davomida) ═══
-# Saytda e'longa «🏷 TashComp'ga» belgisi (jadval `tashco` ustuni — TashkentComp bo'limi kaliti). Kanalda posti bor bo'lsa —
-# o'sha post forward qilinadi, yo'q bo'lsa (aksessuar va h.k.) bot o'zi rich post yuboradi. Bir e'lon — haftada ko'pi bilan
+# Saytda e'longa «🏷 TashComp'ga» belgisi (jadval `tashco` ustuni — TashkentComp bo'limi kaliti). 4815 (Owner 2026-11-28):
+# TashComp'ga kanal postining o'zi forward qilinadi (rasm, bezak, tugmalar bilan); kanalda posti yo'q e'lon — kanal postini
+# yasaydigan o'sha funksiya (kanal_rich) bilan, kanalga yuborgandek. Alohida TashComp shabloni yo'q. Bir e'lon — haftada ko'pi bilan
 # bir marta, sotilgani — hech qachon. Boshqaruv — Owner lichkasida /tashco matn buyruqlari (4242: panellar yo'q; klon
 # forum-guruh — faqat sinov uchun). Holat — Apps Script «Script Properties» (TASHCO_HOLAT, action tashcoHolat).
 # 🔴 Klon guruh id'si logga / xabarga yozilmaydi (faqat holat ichida). Avtomat yoqilishi uchun avval 1 ta jonli e'lon
@@ -9118,7 +9119,7 @@ def tashco_link(mid):
 
 def _tc_sukut():
     return {'yoq': False, 'korildi': False, 'pauza': False, 'kun': 5, 'bosh': 9, 'oxir': 21,
-            'b': {k: {'on': 1, 'n': 0, 'u': 'a'} for k in TASHCO_NOM},
+            'b': {k: {'on': 1, 'n': 0} for k in TASHCO_NOM},
             'log': {}, 'oxirgi': [], 'klon': {}, 'kunlik': {}, 'sinov': {}, 'ish': {}, 'w': {}}
 
 
@@ -9138,8 +9139,7 @@ def _tc_tozala(h):
         s['bosh'], s['oxir'] = 9, 21
     for k, v in (h.get('b') or {}).items() if isinstance(h.get('b'), dict) else []:
         if k in s['b'] and isinstance(v, dict):
-            s['b'][k] = {'on': 1 if v.get('on', 1) else 0, 'n': min(TASHCO_KUN_MAX, max(0, int(v.get('n') or 0))),
-                         'u': 'b' if v.get('u') == 'b' else 'a'}
+            s['b'][k] = {'on': 1 if v.get('on', 1) else 0, 'n': min(TASHCO_KUN_MAX, max(0, int(v.get('n') or 0)))}
     if isinstance(h.get('log'), dict):
         s['log'] = {str(k): float(v) for k, v in h['log'].items() if str(k).isdigit() and isinstance(v, (int, float))}
     if isinstance(h.get('oxirgi'), list):
@@ -9266,8 +9266,31 @@ def _tc_post_tanla(elon, kalit):
     return postlar[0][1], postlar[0][2]
 
 
-def _tc_rich(chat, thread, elon, models, yon):
-    """sendRichMessage — chat oddiy (Joy emas) va mavzu aniq: _TgReq mavzusiz (General'ga) qayta yubormaydi."""
+def tashco_yubor(num, klonga=False, kalit=None):
+    """Bitta e'lon: kanal posti forward, yo'q bo'lsa — kanal posti yasovchisi bilan. (mid, 'f'|'b', kalit, xato).
+    klonga=True — faqat klon guruhga (sinov). kalit — bo'lim (3826: saytdan berilgan)."""
+    elon, models = elon_cache_get(str(num))
+    if not elon:
+        return None, '', '', "e'lon topilmadi"
+    if elon_status(elon) != 'active':
+        return None, '', '', "e'lon faol emas (sotilgan / kutilmoqda)"
+    kalit = kalit if kalit in TASHCO_NOM else (tashco_bolim(elon) or tashco_avto(elon, models))
+    h = _TC_JOY['h'] or _tc_sukut()
+    if klonga:
+        chat = tashco_klon_id()
+        thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
+        if not chat or not thread:
+            return None, '', kalit, 'klon guruh sozlanmagan (/tashco)'
+    else:
+        chat, thread = TASHCO_NISHON, TASHCO_THREAD[kalit]
+    mid, usul, xato = _tc_post_yubor(chat, thread, elon, models, kalit)
+    return (mid, usul, kalit, '') if mid else (None, '', kalit, xato)
+
+
+def _tc_rich(chat, thread, elon, models, kalit):
+    """Kanal posti yasovchisi (kanal_rich) bilan — kanalga yuborgandek (rasm, rich matn, tugmalar). (mid, xato).
+    chat oddiy (Joy emas) va mavzu aniq: _TgReq mavzusiz (General'ga) qayta yubormaydi."""
+    yon = post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc'))
     html, media, _ = kanal_rich(elon, models, yonalish=yon)
 
     def yub(h, md):
@@ -9289,45 +9312,31 @@ def _tc_rich(chat, thread, elon, models, yon):
     return None, str(j.get('description') or 'xato')[:200]
 
 
-def tashco_yubor(num, klonga=False, usul=None, kalit=None):
-    """Bitta e'lonni yuboradi. (mid, usul 'f'|'b', kalit, xato). klonga=True — faqat klon guruhga (sinov).
-    usul: 'a' — kanal posti bo'lsa forward, 'b' — bot o'zi; None — bo'lim sozlamasi. kalit — bo'lim (3826: saytdan berilgan)."""
-    elon, models = elon_cache_get(str(num))
-    if not elon:
-        return None, '', '', "e'lon topilmadi"
-    if elon_status(elon) != 'active':
-        return None, '', '', "e'lon faol emas (sotilgan / kutilmoqda)"
-    kalit = kalit if kalit in TASHCO_NOM else (tashco_bolim(elon) or tashco_avto(elon, models))
-    h = _TC_JOY['h'] or _tc_sukut()
-    if klonga:
-        chat = tashco_klon_id()
-        thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
-        if not chat or not thread:
-            return None, '', kalit, 'klon guruh sozlanmagan (/tashco)'
-    else:
-        chat, thread = TASHCO_NISHON, TASHCO_THREAD[kalit]
-    usul = usul or h['b'].get(kalit, {}).get('u', 'a')
-    xato = ''
-    if usul == 'a':
-        post = _tc_post_tanla(elon, kalit)
-        if post:
-            j = _tg_j('forwardMessage', {'chat_id': chat, 'message_thread_id': thread,
-                                         'from_chat_id': post[0], 'message_id': post[1]})
-            if j.get('ok'):
-                return (j.get('result') or {}).get('message_id'), 'f', kalit, ''
-            xato = str(j.get('description') or '')[:200]
-            logger.warning(f'tashco №{num}: forward bo\'lmadi ({xato}) — bot o\'zi yuboradi')
-    mid, x = _tc_rich(chat, thread, elon, models, post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc')))
-    return (mid, 'b', kalit, '') if mid else (None, '', kalit, x or xato)
+def _tc_post_yubor(chat, thread, elon, models, kalit):
+    """4815: kanal posti bor — forward; yo'q — _tc_rich (kanal posti yasovchisi). (mid, 'f'|'b', xato)."""
+    post = _tc_post_tanla(elon, kalit)
+    if not post:
+        mid, xato = _tc_rich(chat, thread, elon, models, kalit)
+        return mid, 'b', xato
+    j = {'chat_id': chat, 'from_chat_id': post[0], 'message_id': post[1]}
+    if thread:
+        j['message_thread_id'] = thread
+    r = _tg_j('forwardMessage', j)
+    if r.get('ok'):
+        return (r.get('result') or {}).get('message_id'), 'f', ''
+    logger.warning(f"tashco №{elon.get('num')}: forward bo'lmadi ({str(r.get('description') or '')[:120]}) — kanal_rich bilan")
+    mid, xato = _tc_rich(chat, thread, elon, models, kalit)
+    return mid, 'b', xato
 
 
 def tashco_test_yubor(num, kalit):
-    """3826: klon guruh sozlanmagan / mavzusi yo'q va saytda «🧪 TEST kanal» yoqiq — TashComp posti test kanalga (bot o'zi).
+    """3826: klon guruh sozlanmagan / mavzusi yo'q va saytda «🧪 TEST kanal» yoqiq — TashComp posti test kanalga.
     Haqiqiy TashComp guruhiga hech qachon emas. (mid, xato)."""
     elon, models = elon_cache_get(str(num))
     if not elon or elon_status(elon) != 'active':
         return None, "e'lon topilmadi / faol emas"
-    return _tc_rich(kanal_tanla('sinov'), None, elon, models, post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc')))
+    mid, _u, xato = _tc_post_yubor(kanal_tanla('sinov'), None, elon, models, kalit)
+    return mid, xato
 
 def _tc_klonga_nusxa(kalit, mid):
     """Jonli yuborilgan xabar — klon guruhning o'sha mavzusiga (Owner ko'rib tursin). Bo'lmasa — jim."""
@@ -9509,8 +9518,8 @@ TASHCO_YORDAM = ("<b>/tashco</b> — holat\n"
                  "<code>/tashco yoq</code> — yoqish / to'xtatish\n"
                  "<code>/tashco kun+</code> · <code>kun-</code> · <code>bosh+</code> · <code>bosh-</code> · "
                  "<code>oxir+</code> · <code>oxir-</code> — jadval\n"
-                 "<code>/tashco b:telefon:on</code> · <code>b:telefon:+</code> · <code>b:telefon:-</code> · "
-                 "<code>b:telefon:u</code> — bo'lim (yoqish, kuniga, usul)\n"
+                 "<code>/tashco b:telefon:on</code> · <code>b:telefon:+</code> · <code>b:telefon:-</code> — "
+                 "bo'lim (yoqish, kuniga)\n"
                  "<code>/tashco sinov</code> — klon guruhga sinov")
 
 
@@ -9534,11 +9543,10 @@ def tashco_holat_matn(h):
     if not h['korildi']:
         q.append("Sinov e'loni chiqdi — ko'rib <code>/tashco kor</code>." if h['sinov'].get('mid')
                  else "Avval <code>/tashco bir</code>, TashkentComp'da ko'ring.")
-    q.append('\nBo‘limlar (navbatda · kuniga · usul):')
+    q.append('\nBo‘limlar (navbatda · kuniga):')
     for k in TASHCO_NOM:
         b = h['b'][k]
-        q.append(f"{'✓' if b['on'] else '·'} {TASHCO_NOM[k]} ({k}) — {len(navbat[k])} ta · {b['n'] or '∞'} · "
-                 f"{'🤖' if b['u'] == 'b' else '🔁'}")
+        q.append(f"{'✓' if b['on'] else '·'} {TASHCO_NOM[k]} ({k}) — {len(navbat[k])} ta · {b['n'] or '∞'}")
     if h['oxirgi']:
         q.append('\nOxirgi:')
         for ts, num, k, mid, u in reversed(h['oxirgi'][-3:]):
@@ -9630,7 +9638,7 @@ def _tc_amal(amal):
                 h['oxir'] = min(24, max(h['bosh'] + 1, h['oxir'] + d))
             return True, ''
         # bo'lim: vidjetda «b2o» (raqam), eski tugmada «b:telefon:on»
-        m = re.fullmatch(r'b(\d)([o+u-])', amal) or re.fullmatch(r'b:([a-z]+):(on|[+u-])', amal)
+        m = re.fullmatch(r'b(\d)([o+-])', amal) or re.fullmatch(r'b:([a-z]+):(on|[+-])', amal)
         if m:
             k = m.group(1)
             k = list(TASHCO_NOM)[int(k)] if k.isdigit() and int(k) < len(TASHCO_NOM) else k
@@ -9640,10 +9648,8 @@ def _tc_amal(amal):
             a = m.group(2)
             if a in ('o', 'on'):
                 s['on'] = 0 if s['on'] else 1
-            elif a in ('-', '+'):
-                s['n'] = min(TASHCO_KUN_MAX, max(0, s['n'] + (1 if a == '+' else -1)))
             else:
-                s['u'] = 'b' if s['u'] == 'a' else 'a'
+                s['n'] = min(TASHCO_KUN_MAX, max(0, s['n'] + (1 if a == '+' else -1)))
             return True, ''
         if amal in ('sinov', 'bir'):
             return False, amal
@@ -9661,7 +9667,7 @@ def _tc_keyin(saqla, keyin, chat=None):
 
 
 def tashco_sinov(chat, num=None):
-    """🧪 Klon guruhga: bitta e'lon kanaldan forward, bitta — bot o'zi (TashkentComp'ga hech narsa ketmaydi)."""
+    """🧪 Klon guruhga: kanal posti bor bitta e'lon (forward) — TashkentComp'ga hech narsa ketmaydi."""
     h = _TC_JOY['h']
     by_num, _ = elon_cache_hammasi()
     if not tashco_klon_id():
@@ -9674,16 +9680,13 @@ def tashco_sinov(chat, num=None):
         nomzod = [x[2] for v in navbat.values() for x in v] or \
                  [n for n, e in sorted(by_num.items(), key=lambda x: -int(x[0]) if str(x[0]).isdigit() else 0)
                   if str(n).isdigit() and elon_status(e) == 'active'][:30]
-    natija = []
-    kanalli = next((n for n in nomzod if _tc_post_tanla(by_num.get(n), 'telefon')), None)
-    for n, usul in ((kanalli, 'a'), (next((x for x in nomzod if x != kanalli), kanalli), 'b')):
-        if not n:
-            natija.append('🔁 forward: kanal posti bor e\'lon topilmadi' if usul == 'a' else '🤖 bot: e\'lon topilmadi')
-            continue
-        mid, u, kalit, xato = tashco_yubor(n, klonga=True, usul=usul)
-        natija.append(f'{"🔁 forward" if u == "f" else "🤖 bot"}: №{n} → {TASHCO_NOM.get(kalit, kalit)} ✅' if mid
-                      else f'{"🔁" if usul == "a" else "🤖"} №{n}: ❌ {xato}')
-    _TC_JOY['izoh'] = '🧪 Klon guruhga sinov:\n' + '\n'.join(natija)
+    n = next((n for n in nomzod if _tc_post_tanla(by_num.get(n), 'telefon')), None)
+    if not n:
+        natija = "🔁 kanal posti bor e'lon topilmadi"
+    else:
+        mid, _u, kalit, xato = tashco_yubor(n, klonga=True)
+        natija = f'🔁 №{n} → {TASHCO_NOM.get(kalit, kalit)} ✅' if mid else f'🔁 №{n}: ❌ {xato}'
+    _TC_JOY['izoh'] = '🧪 Klon guruhga sinov:\n' + natija
     return _TC_JOY['izoh']
 
 
@@ -9725,8 +9728,8 @@ def tashco_bir():
 
 # ── Jasur (foydalanuvchi akkaunti) — /tashco/jasur ──
 def _tc_tg_html(rich, chegara=1024):
-    """Kanal rich HTML → oddiy Telegram HTML (rasm izohi uchun, ≤1024): rasm / slayd / telefon havolasi olib tashlanadi,
-    tugmalar — «🔗 havola» qatorlari (sig'masa — tushiriladi)."""
+    """Kanal rich HTML → oddiy Telegram HTML: rasm / slayd / telefon havolasi olib tashlanadi, tugmalar — «🔗 havola»
+    qatorlari (sig'masa — tushiriladi). 4815: TashComp'ga ishlatilmaydi (u yerga kanal posti forward) — faqat inline karta."""
     s = re.sub(r'(?is)<tg-slideshow\b.*?</tg-slideshow>', '', rich or '')
     tugmalar = [(u, re.sub(r'<[^>]+>', '', m).strip())
                 for u, m in re.findall(r'(?is)<tg-button\b[^>]*?\burl="([^"]+)"[^>]*>(.*?)</tg-button>', s)]
@@ -9770,18 +9773,25 @@ def _tc_tg_html(rich, chegara=1024):
     return html_escape(toza[:chegara - 40].rstrip()) + '…'
 
 
-def tashco_ish_shakl(num, elon, models, kalit, h):
-    """Jasurga beriladigan ish — nima (forward yoki matn + rasm), qayerga. Yagona joy: tashco_ish_ber va 4806.3 ko'rinishi
-    (/tashco_kor) shu funksiyadan oladi — saytdagi ko'rinish Jasur yuboradigan bilan farq qilmaydi. Hech narsa yozmaydi."""
-    post = _tc_post_tanla(elon, kalit) if h['b'][kalit]['u'] == 'a' else None
-    yon = post_yonalish(elon, models, TASHCO_YON.get(kalit, 'pc'))
-    javob = {'num': int(num), 'nishon': TASHCO_NISHON, 'thread': TASHCO_THREAD[kalit], 'bolim': TASHCO_NOM[kalit],
-             'usul': 'f' if post else 'b',
-             'matn': _tc_tg_html(build_rich_html(elon, models, premium=False, belgi=True, yonalish=yon)),
-             'rasmlar': kanal_manbalari(elon)[:4]}
-    if post:
-        javob.update(kanal=post[0], kanal_mid=int(post[1]))
-    return javob
+def tashco_ish_shakl(num, elon, kalit, post=None):
+    """Jasurga beriladigan ish — qaysi postni qayerga forward qilish (Jasur matn yig'maydi). Yagona joy: tashco_ish_ber va
+    4806.3 ko'rinishi (/tashco_kor). post — (chat, mid); berilmasa kanal posti. Yo'q — None. Hech narsa yozmaydi."""
+    post = post or _tc_post_tanla(elon, kalit)
+    if not post:
+        return None
+    return {'num': int(num), 'nishon': TASHCO_NISHON, 'thread': TASHCO_THREAD[kalit], 'bolim': TASHCO_NOM[kalit],
+            'usul': 'f', 'kanal': post[0], 'kanal_mid': int(post[1])}
+
+
+def _tc_jasurga_post(elon, models, kalit, h):
+    """4815: kanal posti yo'q e'lon — bot kanal posti yasovchisi bilan NUSXA guruhning bo'lim mavzusiga chiqaradi, Jasur
+    shuni TashComp'ga forward qiladi (tugmalar saqlanadi). (chat, mid) yoki (None, xato)."""
+    chat = tashco_klon_id()
+    thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
+    if not chat or not thread or chat == TASHCO_NISHON:
+        return None, 'NUSXA guruh sozlanmagan (/tashco)'
+    mid, xato = _tc_rich(chat, thread, elon, models, kalit)
+    return (chat, mid) if mid else (None, xato)
 
 
 def tashco_ish_ber():
@@ -9805,7 +9815,16 @@ def tashco_ish_ber():
             _TC_JOY['izoh'] = f"⚠️ №{num} endi faol emas (sotilgan?) — o'tkazib yuborildi."
         tashco_saqla()
         return {'ok': True, 'ish': None}
-    javob = tashco_ish_shakl(num, elon, models, kalit, h)
+    javob = tashco_ish_shakl(num, elon, kalit)
+    if not javob:
+        post, xato = _tc_jasurga_post(elon, models, kalit, h)
+        javob = tashco_ish_shakl(num, elon, kalit, post) if post else None
+        if not javob:
+            with _tc_qulf:
+                h['ish'] = {}
+                _TC_JOY['izoh'] = f"⚠️ №{num}: {xato}"
+            tashco_saqla()
+            return {'ok': True, 'ish': None}
     with _tc_qulf:
         if (h.get('ish') or {}).get('num') == ish['num']:
             h['ish']['holat'], h['ish']['bt'] = 'berildi', int(time.time())
@@ -10099,7 +10118,7 @@ async def tashco_endpoint(request):
         if klon:
             if not _TC_JOY.get('yuklandi'):
                 await blok(tashco_yukla)
-            mid, _u, _k, xato = await blok(tashco_yubor, num, True, None, bolim)
+            mid, _u, _k, xato = await blok(tashco_yubor, num, True, bolim)
             joy = 'klon'
             if not mid and test:
                 logger.warning(f'tashco №{num}: klonga ketmadi ({xato}) — test kanalga')
@@ -10141,7 +10160,7 @@ async def tashco_kor_endpoint(request):
                     continue
                 tanlangan = tashco_bolim(elon)
                 kalit = tanlangan or tashco_avto(elon, models)
-                sh = tashco_ish_shakl(num, elon, models, kalit, h)
+                sh = tashco_ish_shakl(num, elon, kalit) or {'num': int(num), 'usul': 'b'}   # 'b' — kanal_rich bilan
                 sh.update(kalit=kalit, tanlangan=bool(tanlangan), faol=elon_status(elon) == 'active',
                           oxirgi=int(float(h['log'].get(num, 0) or 0)),
                           post=post_havola(sh['kanal'], sh['kanal_mid']) if sh.get('kanal') else '')
@@ -10155,8 +10174,8 @@ async def tashco_kor_endpoint(request):
 
 
 def tashco_namuna(num):
-    """4810: Jasur oladigan matn (tashco_ish_shakl) — HTML (parse_mode HTML, nomlar <b>) bilan TashComp NUSXA (klon) guruhining
-    o'sha bo'lim mavzusiga. TashComp'ning o'ziga hech qachon emas; ish berilmaydi, jadvalga yozilmaydi. (mid, kalit, xato)."""
+    """4815: TashComp'ga ketadiganning o'zi (kanal posti forward, yo'q bo'lsa kanal_rich) — NUSXA (klon) guruhining o'sha
+    bo'lim mavzusiga. TashComp'ning o'ziga hech qachon emas; ish berilmaydi, jadvalga yozilmaydi. (mid, kalit, xato)."""
     if not tashco_yukla():
         return None, '', 'holat yuklanmadi'
     elon, models = elon_cache_get(str(num))
@@ -10168,12 +10187,8 @@ def tashco_namuna(num):
     thread = int(((h.get('klon') or {}).get('m') or {}).get(kalit) or 0)
     if not chat or not thread or chat == TASHCO_NISHON:
         return None, kalit, 'NUSXA guruh sozlanmagan (/tashco)'
-    sh = tashco_ish_shakl(num, elon, models, kalit, h)
-    j = _tg_j('sendMessage', {'chat_id': chat, 'message_thread_id': thread, 'text': sh['matn'], 'parse_mode': 'HTML',
-                              'link_preview_options': {'is_disabled': True}, 'disable_notification': True})
-    if j.get('ok'):
-        return (j.get('result') or {}).get('message_id'), kalit, ''
-    return None, kalit, str(j.get('description') or 'xato')[:200]
+    mid, _u, xato = _tc_post_yubor(chat, thread, elon, models, kalit)
+    return mid, kalit, xato
 
 
 async def tashco_namuna_endpoint(request):
@@ -15774,7 +15789,7 @@ async def main():
     app.router.add_post('/tashco', tashco_endpoint)               # 3428: saytdan «🏷 TashComp'ga» — TashkentComp bo'limi
     app.router.add_post('/tashco_taxmin', tashco_taxmin_endpoint)   # 3828: «⭐ mos» bo'lim taxmini
     app.router.add_post('/tashco_kor', tashco_kor_endpoint)       # 4806.3: Proverka — TashComp ko'rinishi (faqat o'qish)
-    app.router.add_post('/tashco_namuna', tashco_namuna_endpoint) # 4810: namuna — faqat NUSXA guruhga (HTML)
+    app.router.add_post('/tashco_namuna', tashco_namuna_endpoint) # 4815: namuna — TashComp'ga ketadiganning o'zi, faqat NUSXA guruhga
     app.router.add_post('/konkurs_qayta', konkurs_qayta_endpoint)   # 3668: Mijozlar → konkurs «Qayta yozish»
     app.router.add_post('/kanal_toplam', kanal_toplam_endpoint)   # B29: saytda belgilanganlar → bitta to'plam posti
     app.router.add_post('/kanal_guruh', kanal_guruh_endpoint)     # BUGUN251: rang guruhi posti
