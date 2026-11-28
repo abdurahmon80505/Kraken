@@ -1031,7 +1031,7 @@ def yonalish_post(chat_id, yon):
     send_msg(chat_id, YON_POST_MATN[yon], kb)
 
 
-XUSH_RASM =os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kanal_xush_kelibsiz.png')
+XUSH_RASM = START_RASM   # 4816: bir fayl (kanal_xush_kelibsiz.png) — bir yo'l
 XUSH_MATN = (
     "🇺🇿 <b>Xush kelibsiz! Biz barcha smartfonlarimizni ushbu saytga joyladik. "
     "Kanaldan ko'ra qulayroq, albatta kirib ko'ring.</b>\n\n"
@@ -2197,53 +2197,30 @@ def belgi_src(elon):
 
 # 3189 (A60, Owner 2026-10-25): post OXIRI — e'lon va rang guruhi postida bir xil. Matn oxirida 📞 admin (telefon + @),
 #   kanallar; tugmalar — «🛒 Sotib olish» (shu e'lon Mini App'da) va «🛍 Boshqa e'lonlar» (sayt bosh sahifasi). «Admin» /
-#   «Kanal» tugmalari olib tashlandi. Kanallar qayerda — POST_SHABLON: 1 — Yangiliklar tugmada, yo'nalish kanali matnda ·
-#   2 — ikkalasi tugmada · 3 — ikkalasi matnda. 3191 (Owner 2026-10-26, xabar 1247 ni o'zi tahrirlab): 2 tanlandi.
-POST_SHABLON = 2
-# 3191: tugmalar joylashuvi — 1: «🛒 Sotib olish» / «🛍 Boshqa e'lonlar» / kanallar (har biri o'z qatorida, Owner namunasi) ·
-#   2: 1-qatorda chapda «Boshqa e'lonlar», o'ngda «Sotib olish», 2-qatorda kanallar. Telegram bir qatordagi tugmalarni teng
-#   kenglikda chizadi (RichMessageButton'da kenglik yo'q) — 2 da ikkalasi teng. Ranglar (style) Owner namunasidan: Sotib olish —
-#   primary (ko'k), Boshqa e'lonlar — success (yashil), kanallar — danger (to'q sariq namunaga eng yaqini; Bot API'da boshqasi
-#   yo'q: danger / success / primary, link — faqat callback).
-POST_TUGMA = 1
-# 3191.2 (Owner 2026-10-26): narx qatori — 1: butun qator qalin «💰 Narxi / Цена: 390$» (ilgari faqat raqam qalin edi) ·
-#   2: <h4> sarlavha (3191.3, Owner 2026-10-26 01:38: «H3 emas h4» — biroz kattaroq; shrifti serifga o'xshab ketishi mumkin —
-#   sinov uchun, Owner ko'rib tanlaydi).
-#   3191.4 (Owner 2026-10-26 02:27, №311 ni o'zi tahrirlab): heading yo'q, oddiy matn, narx tepasida va pastida divider (<hr/>) —
-#   3: narx bullet bilan («• 💰 Narxi / Цена: 390$») · 4: bullet'siz oddiy qator.
-#   3191.5 (Owner 2026-10-26 03:16: «narxni bullet'ni olib tashlab center qil»): 5 (C) — narx <aside> ichida, divider'lar orasida.
-#   Rich formatda markazlash faqat <aside> (pull quote — «centered text») va jadval katagida (align); <p> da align yo'q.
-#   <hr/> (RichBlockDivider) maydonsiz — enini Telegram o'zi chizadi (o'rtada qisqa chiziq), uzaytirib bo'lmaydi.
-#   3191.6 (Boss qarori, Owner 03:16 so'zi bo'yicha): sukut — 5 (C); 1 / 2 / 3 / 4 — muqobil sifatida qoladi.
-#   3200 (Owner 2026-10-26 22:24: «pull quote va dividerlarsiz, faqat narxni bullet qilamiz»): 6 — narx bullet bilan
-#   («• 💰 Narxi / Цена: 390$»), <hr/> ham, <aside> ham yo'q; qoldiq — tagida oddiy paragraf. Sukut — 6; 1–5 muqobil.
-POST_NARX = 6
+#   «Kanal» tugmalari olib tashlandi. 3191 (Owner 2026-10-26): ikkala kanal — tugmada (2-qatorda, danger); tugmalar har biri
+#   o'z qatorida (🛒 Sotib olish / 🛍 Boshqa e'lonlar). Ranglar Owner namunasidan: primary / success / danger.
+#   4816: tanlanmagan muqobil variantlar (POST_SHABLON 1/3, POST_TUGMA 2, POST_NARX 1–5) olib tashlandi — git tarixida.
 YON_EMOJI = {'mobile': '📱', 'pc': '💻', 'camera': '📷'}
 
 
-def post_oxiri(sahifa, yonalish, shablon=None, tugma=None):
+def post_oxiri(sahifa, yonalish):
     """(aloqa <p>…</p>, tugma qatorlari) — sahifa: startapp qiymati («elon_307»), yonalish — YON_KANAL kaliti.
     3191: aloqa — 📞 raqam va 📩 admin YOPISHIQ (bitta paragraf, <br/>), alohida qatorda."""
-    shablon = shablon or POST_SHABLON
-    tugma = tugma or POST_TUGMA
     kanal_nomi, kanal = YON_KANAL[yonalish if yonalish in YON_KANAL else 'mobile']
     yon = (f"{YON_EMOJI.get(yonalish, '📱')} {kanal_nomi.replace(' · ', ' ')}", kanal)   # «📱 Nuqta tech Mobile»
     yangi = (f'💡 {BREND} • Yangiliklar', TECH_SUKUT.lstrip('@'))
-    matnda, tugmada = {1: ([yon], [yangi]), 2: ([], [yon, yangi])}.get(shablon, ([yon, yangi], []))
     tel_href = re.sub(r'[^\d+]', '', ALOQA_TEL)
     aloqa = (f'<p>📞 <a href="tel:{tel_href}">{html_escape(ALOQA_TEL)}</a><br/>📩 @{ADMIN_USERNAME}'
-             + ''.join(f'<br/><a href="https://t.me/{u}">{html_escape(n)}</a>' for n, u in matnda) + '</p>')
+             + '</p>')
     sotib = f'<tg-button type="url" style="primary" url="https://t.me/{BOT_USERNAME}?startapp={sahifa}">🛒 Sotib olish</tg-button>'
     boshqa = f'<tg-button type="url" style="success" url="https://t.me/{BOT_USERNAME}?startapp=home">🛍 Boshqa e\'lonlar</tg-button>'
     qator = lambda *t: '<tg-button-row>' + ''.join(t) + '</tg-button-row>'
-    tugmalar = (qator(boshqa, sotib) if tugma == 2 else qator(sotib) + qator(boshqa)) + (
-        qator(*(f'<tg-button type="url" style="danger" url="https://t.me/{u}">{html_escape(n)}</tg-button>' for n, u in tugmada))
-        if tugmada else '')
+    tugmalar = qator(sotib) + qator(boshqa) + qator(
+        *(f'<tg-button type="url" style="danger" url="https://t.me/{u}">{html_escape(n)}</tg-button>' for n, u in (yon, yangi)))
     return aloqa, tugmalar
 
 
-def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None, shablon=None,
-                    tugma=None, narx_k=None):
+def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=False, belgi=False, yonalish=None):
     """E'lon uchun Rich HTML (slideshow). premium=False — <tg-emoji>siz.
     v6 (2026-09-14): collage bekor (foydalanuvchi: «collage atmen»), faqat slideshow.
     v9 (BUGUN31, B28): kollaj=True — admin tugma bilan kollajga o'tkazgan post (sukut — slideshow).
@@ -2282,25 +2259,10 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
         narx = f'<s>{html_escape(old)}$</s> {html_escape(price)}$'
     else:
         narx = f'{html_escape(price)}$'
-    # 3191.2: butun narx qatori qalin (POST_NARX 1) yoki <h4> (2); qoldiq («📦 N dona bor») — oddiy, alohida
-    # 3191.4: 3 / 4 — oddiy matn, ikki <hr/> orasida; 3 — <ul> bullet, 4 — <p>. Qoldiq — narx tagida, chiziqlar ichida
-    # 3191.5: 5 — markazda (<aside>), qoldiq o'sha blokda <br/> bilan
-    # 3200: 6 — faqat bullet (<ul><li>), chiziq va markaz yo'q
+    # 3200 / 3247 (Owner): narx — bullet, butun qatori qalin; qoldiq («📦 N dona bor») — tagida oddiy paragraf
     narx = f'{e("money")} Narxi / Цена: {narx}'
     soni = soni_qatori(elon)
-    narx_k = narx_k or POST_NARX
-    if narx_k == 6:
-        # 3247 (Owner 2026-10-29 17:00): bullet qatori butunlay qalin — emoji, «Narxi / Цена:» va summa birga; qoldiq — oddiy
-        narx_blok = f'<ul><li><b>{narx}</b></li></ul>' + (f'<p>{soni}</p>' if soni else '')   # 3200: chiziqsiz, quote'siz
-    elif narx_k == 5:
-        narx_blok = f'<hr/><aside>{narx}' + (f'<br/>{soni}' if soni else '') + '</aside><hr/>'
-    elif narx_k in (3, 4):
-        narx_blok = '<hr/>' + (f'<ul><li>{narx}</li></ul>' if narx_k == 3 else f'<p>{narx}</p>') + (
-            f'<p>{soni}</p>' if soni else '') + '<hr/>'
-    elif narx_k == 2:
-        narx_blok = f'<h4>{narx}</h4>' + (f'<p>{soni}</p>' if soni else '')
-    else:
-        narx_blok = f'<p><b>{narx}</b>' + (f'<br/>{soni}' if soni else '') + '</p>'   # B13: qoldiq
+    narx_blok = f'<ul><li><b>{narx}</b></li></ul>' + (f'<p>{soni}</p>' if soni else '')
 
     # v4: uz va ru jadvallari orasida chiziq (<hr/>) va sarlavha — foydalanuvchi:
     #     «o'zbekcha tugashi bilan ruscha boshlangan, 6-bo'limdek bo'lib ketgan»
@@ -2314,7 +2276,7 @@ def build_rich_html(elon, models_by_id, premium=True, rasm_src=None, kollaj=Fals
     # v4: RASM TEPADA, matn pastda — kanaldagi eski postga yaqin (foydalanuvchi so'radi);
     #     holati ikki tilda IKKI qator (bitta qatorga qo'shilgani «xunuk» edi)
     # ALOQA (2026-10-07): kanal — e'lon yuborilgan yo'nalishniki (Mobile → «Nuqta tech · Mobile» @nuqta_tech_mobile, …)
-    aloqa, tugmalar = post_oxiri(f'elon_{num}', yonalish if yonalish in YON_KANAL else post_yonalish(elon, models_by_id), shablon, tugma)
+    aloqa, tugmalar = post_oxiri(f'elon_{num}', yonalish if yonalish in YON_KANAL else post_yonalish(elon, models_by_id))
     # v5: bloklar orasida BO'SH JOY (Telegram rich'da paragraflar orasiga margin qo'ymaydi —
     #     bo'sh paragraf \u00a0 bilan). Holati + narx BITTA blok. Foydalanuvchi ko'rsatdi:
     #     xarakteristika / bo'sh / holati·holati·narx / bo'sh / tugma
@@ -3930,7 +3892,7 @@ def _guruh_rasmlar(g):
     return [str(u).strip() for u in v if str(u or '').strip()] if isinstance(v, list) else []
 
 
-def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=None, sarlavha_rang=None):
+def guruh_post_qur(g, azolar, models, havolalar=None, rang_rasm=None, sarlavha_rang=None):
     """Guruh posti HTML (rich). havolalar — {num: rang posti havolasi}; yo'q rang — saytga (startapp=elon_<num>).
     rang_rasm — 3435 ko'rinishi (har rang blokida o'z rasmi); None — GURUH_RANG_RASM. Juft guruhda doim o'chiq."""
     havolalar = havolalar or {}
@@ -4030,7 +3992,7 @@ def guruh_post_qur(g, azolar, models, havolalar=None, shablon=None, rang_rasm=No
     birinchi = _gnum(faol[0] if faol else (azolar[0] if azolar else {}))
     # 3413: rang guruhi — «Sotib olish» saytda guruhni rang TANLANMAGAN holda ochadi (startapp=guruh_<num>, 13-boshlash.js)
     sahifa = (f'elon_{birinchi}' if aralash else f'guruh_{birinchi}') if birinchi else 'home'
-    aloqa, tugmalar = post_oxiri(sahifa, post_yonalish(azolar[0], models) if azolar else 'mobile', shablon)
+    aloqa, tugmalar = post_oxiri(sahifa, post_yonalish(azolar[0], models) if azolar else 'mobile')
     bosh = f'<p><b>{sarlavha}</b></p>'
     if rang_rasm and azolar:
         # 3435 (Owner 23:15): e'lon postidagi umumiy shakl — emoji + nom, «#tur #raqam», ochiladigan xarakteristika
@@ -10695,7 +10657,7 @@ def fetch_elon_by_num(num):
 def preview_elon_to_admin(num, admin_chat):
     """«Menga yuborish»: bot e'lonni FAQAT adminga (lichkaga) yuboradi:
       1) OLX matni — nusxalab OLX'ga joylash uchun
-      2) Kanal eloni — rich (kanal posti bilan bir xil, POST_NARX sukuti) + premium emoji (kanalga qo'lda joylash uchun; 3199)
+      2) Kanal eloni — rich (kanal posti bilan bir xil, narx — bullet) + premium emoji (kanalga qo'lda joylash uchun; 3199)
 
     Kanalga hech narsa yuborilmaydi. D2 qarori (2026-09-04): avtomatik kanal
     tizimi QAYTARILMADI — kanalni admin qo'lda boshqaradi, chunki bot edit
@@ -11049,7 +11011,6 @@ async def publish_endpoint(request):
 def check_init_data(init_data, max_age=86400):
     """Telegram Mini App initData imzosini tekshiradi (HMAC-SHA256).
     To'g'ri bo'lsa foydalanuvchi id'sini, aks holda None qaytaradi."""
-    import hmac, hashlib, time as _t
     try:
         got = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
         h = got.pop('hash', '')
@@ -11069,7 +11030,7 @@ def check_init_data(init_data, max_age=86400):
                 break
         if not imzo_ok:
             return None
-        if _t.time() - int(got.get('auth_date', 0) or 0) > max_age:
+        if time.time() - int(got.get('auth_date', 0) or 0) > max_age:
             return None   # eskirgan
         return int(json.loads(got.get('user', '{}')).get('id', 0)) or None
     except Exception as e:
