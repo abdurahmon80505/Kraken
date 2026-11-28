@@ -7,6 +7,8 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import bot  # noqa: E402
 
+bot._tc_post_tanla = lambda el, k: ('@kanal', 1)   # 4815: navbatga faqat kanal posti bor e'lon
+
 
 def e(num, nom, **k):
     return dict({'num': num, 'specId': '', 'nameUz': nom, 'price': '10', 'status': 'active'}, **k)
