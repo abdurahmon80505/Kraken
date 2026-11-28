@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import traceback
 import asyncio
 import base64
 import functools
@@ -814,14 +815,17 @@ def send_msg(chat_id, text, keyboard=None, id_qaytar=False):
     try:
         r = req.post(f'{TG_API}/sendMessage', json=payload, timeout=8)
     except Exception as e:
-        logger.error(f'sendMessage: {e}')
+        logger.error(f'sendMessage: {type(e).__name__}: {_maxfiy(e)[:200]}')
         return None if id_qaytar else False
     try:
         j = r.json()
+        if not j.get('ok'):   # 4816: Telegram rad etsa sababi logda (ilgari jim)
+            logger.warning(f"sendMessage {chat_id}: {str(j.get('description') or r.status_code)[:200]}")
         if id_qaytar:
             return (j.get('result') or {}).get('message_id') if j.get('ok') else None
         return bool(j.get('ok'))   # BUGUN233: /konkurs/boshla — xabar mijozga yetdimi (botni boshlamagan — 403)
     except Exception:
+        logger.warning(f'sendMessage {chat_id}: javob JSON emas (HTTP {r.status_code})')
         return None if id_qaytar else False
 
 
@@ -10448,7 +10452,9 @@ async def handle_update(data):
             await handle_admin_photo(chat_id, file_id, mgid, message.get('message_id', 0))
             return
 
-        if text.startswith('/yubor') or text.startswith('/elon'):
+        # 4816: buyruq — birinchi so'z aniq (ilgari startswith: «/statXYZ» ham /stat, «/elonlar» ham /elon edi)
+        buyruq0 = text.split()[0].split('@')[0] if text.split() else ''
+        if buyruq0 in ('/yubor', '/elon'):
             if not adm:
                 return
             await send_new_elons(chat_id, text)
@@ -10456,7 +10462,7 @@ async def handle_update(data):
 
         # B34 (BUGUN42): demo saytni Telegram ICHIDA ochish tugmasi — «📣 Yuborish» (B29) initData bilan ishlaydi, oddiy
         # brauzerda initData yo'q. Manzil faqat Render env DEMO_URL da (repo ochiq — demo havolasi kodga yozilmaydi).
-        if text.startswith('/demo') and adm:
+        if buyruq0 == '/demo' and adm:
             demo = os.environ.get('DEMO_URL', '').strip()
             if not demo.startswith('https://'):
                 await blok(send_msg, chat_id, "DEMO_URL sozlanmagan (Render → Environment → DEMO_URL = demo sayt manzili, https://…).")
@@ -10499,11 +10505,11 @@ async def handle_update(data):
             return
 
         # F1: do'kon hisoboti. Fonda — Sheets hisobi sekin, webhook kutmasin (T1).
-        if text.startswith('/stat') and adm:
+        if buyruq0 == '/stat' and adm:
             asyncio.create_task(handle_stat(chat_id, text))
             return
 
-        if text.startswith('/tozala') and adm:
+        if buyruq0 in ('/tozala', '/tozala_test') and adm:
             # Fonda ishlaydi — Telegram javobni kutmasin (aks holda buyruqni qayta yuboradi)
             asyncio.create_task(handle_tozala(chat_id, text))
             return
@@ -10618,7 +10624,10 @@ async def handle_update(data):
                     await blok(eski_klaviatura_olib_tashla, chat_id)
                 await blok(send_msg, chat_id, NOMALUM_XABAR, BOT_HUB_KB if lichka else START_KB)
     except Exception as e:
-        logger.error(f'handle_update: {e}')
+        # 4816: qayerda buzilgani ko'rinsin — xato turi va oxirgi qator (to'liq traceback emas: unda token bo'lishi mumkin)
+        tb = traceback.extract_tb(e.__traceback__)
+        joy = f' @{tb[-1].lineno} {tb[-1].name}' if tb else ''
+        logger.error(f'handle_update: {type(e).__name__}{joy}: {_maxfiy(e)[:300]}')
 
 
 # E4: noma'lum xabarga javob. Mijoz botga yozsa hech narsa kelmasligi — eng
@@ -10789,9 +10798,16 @@ async def _json_tana(request):
     return data if isinstance(data, dict) else None
 
 
+_KS_OXIRGI = [0.0]   # 4816: /konkurs_started oxirgi chaqiruv vaqti
+
+
 async def konkurs_started_endpoint(request):
     """Sayt konkursni 'active' qilganda — bot tugash taymerini o'rnatadi. Tana kerak emas — signal yetarli:
-    konkurs jadvaldan qayta o'qiladi (BUGUN108)."""
+    konkurs jadvaldan qayta o'qiladi (BUGUN108). 4816: tekshiruvsiz ochiq — tez-tez chaqirib jadvalni qiynamasin: 15 s da 1."""
+    now = time.time()
+    if now - _KS_OXIRGI[0] < 15:
+        return web.json_response({'ok': True, 'taymer': None, 'kech': True})
+    _KS_OXIRGI[0] = now
     try:
         _konkurs_cache['data'] = None
         _konkurs_cache['time'] = 0
@@ -10979,6 +10995,27 @@ def send_reroll_notify(data):
         logger.error(f'reroll channel: {e}')
 
 
+# 4816: /publish ochiq (sayt initData yubormaydi, brauzerda ham ishlaydi) — adminga spam bo'lmasin: bir raqam 60 s da bir
+# marta, hammasi 10 daqiqada 10 ta. Admin initData bilan kelsa — cheklovsiz.
+_PUBLISH_IZ = {'num': {}, 'hammasi': []}
+
+
+def _publish_cheklov(num, now=None):
+    """'' — o'tadi; aks holda sabab (javobga). Faqat xotirada, qayta ishga tushsa tozalanadi."""
+    now = now or time.time()
+    iz = _PUBLISH_IZ
+    iz['hammasi'] = [t for t in iz['hammasi'] if now - t < 600]
+    if now - iz['num'].get(num, 0) < 60:
+        return "Shu e'lon hozirgina yuborildi — 1 daqiqadan keyin"
+    if len(iz['hammasi']) >= 10:
+        return "Juda ko'p — 10 daqiqadan keyin"
+    iz['num'][num] = now
+    iz['hammasi'].append(now)
+    if len(iz['num']) > 500:
+        iz['num'] = {k: v for k, v in iz['num'].items() if now - v < 60}
+    return ''
+
+
 async def publish_endpoint(request):
     """Sayt «Menga yuborish» bosganda — bot adminga OLX matni + kanal elonini yuboradi.
     E1: ish fonda ketadi, sayt javobni kutib turmaydi.
@@ -10993,12 +11030,16 @@ async def publish_endpoint(request):
         if not m:
             return web.json_response({'error': 'Nomer notogri'}, status=400)
         num = m.group(1)
+        if check_init_data(str(data.get('initData', '') or '')) != ADMIN_ID:
+            sabab = _publish_cheklov(num)
+            if sabab:
+                return web.json_response({'error': sabab}, status=429)
         asyncio.get_event_loop().run_in_executor(
             None, preview_elon_to_admin, num, admin_joy('olx'))
         return web.json_response({'ok': True})
     except Exception as e:
-        logger.error(f'publish_endpoint: {e}')
-        return web.json_response({'error': str(e)}, status=500)
+        logger.error(f'publish_endpoint: {type(e).__name__}: {_maxfiy(e)[:200]}')
+        return web.json_response({'error': 'xato'}, status=500)   # 4816: ichki xato matni tashqariga chiqmaydi
 
 # (update_channel_endpoint olib tashlandi — D2 qarori: kanalga avto-yuborish
 #  qaytarilmadi. Endpoint faqat 'skipped' qaytarardi, sayt esa uni endi

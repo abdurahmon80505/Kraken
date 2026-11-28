@@ -165,6 +165,7 @@ bot.preview_elon_to_admin = lambda num, joy: PREVIEW.append(num)
 
 def publish(num):
     PREVIEW.clear()
+    bot._PUBLISH_IZ.update(num={}, hammasi=[])   # 4816: spam to'sig'i — har chaqiruv yangidan
     r = asyncio.run(bot.publish_endpoint(Sorov({'num': num})))
     return r.status, PREVIEW[:]
 
